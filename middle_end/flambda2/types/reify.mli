@@ -53,5 +53,6 @@ val reify :
   var_is_defined_at_toplevel:(Variable.t -> bool) ->
   var_is_symbol_projection:(Variable.t -> bool) ->
   Typing_env.t ->
+  Name.t ->
   Type_grammar.t ->
   reification_result

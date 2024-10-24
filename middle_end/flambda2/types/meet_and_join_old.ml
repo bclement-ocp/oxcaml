@@ -562,7 +562,10 @@ and meet_head_of_kind_naked_immediate env (t1 : TG.head_of_kind_naked_immediate)
         | Unknown -> result
         | Ok (name, shape) ->
           let ty = TE.find (Meet_env.env env) name (Some Flambda_kind.value) in
-          let<* _ty, new_extension = meet env ty shape in
+          let<* ty, new_extension = meet env ty shape in
+          let new_extension =
+            TEE.add_or_replace_equation new_extension name ty
+          in
           let<+ env_extension =
             meet_env_extension env env_extension new_extension
           in
@@ -1055,10 +1058,22 @@ and meet_env_extension0 env (ext1 : TEE.t) (ext2 : TEE.t) extra_extensions :
               else new_ext :: extra_extensions
             in
             eqs, extra_extensions))
-      (TEE.to_map ext2)
-      (TEE.to_map ext1, extra_extensions)
+      ext2.TG.type_equations
+      (ext1.TG.type_equations, extra_extensions)
   in
-  let ext = TEE.from_map equations in
+  let relations =
+    (* Note: this might introduce duplicate relations relative to aliases (if we
+       have both `x = Is_int a` and `y = Is_int b` while knowing that `x`, `y`
+       and `a`, `b` are aliases.
+
+       Currently we keep things as is because we don't try too hard to recover
+       equations when joining, but we could normalize here with more aggresive
+       joining. *)
+    Name.Map.union
+      (fun _ rel1 rel2 -> Some (TG.RelationSet.union rel1 rel2))
+      ext2.TG.rel_equations ext1.TG.rel_equations
+  in
+  let ext = TEE.from_maps ~equations ~relations in
   match extra_extensions with
   | [] -> ext
   | new_ext :: extra_extensions ->
@@ -1739,9 +1754,20 @@ and join_env_extension env (ext1 : TEE.t) (ext2 : TEE.t) : TEE.t =
               MTC.check_equation name ty;
               Some ty)
           | Unknown -> None))
-      (TEE.to_map ext1) (TEE.to_map ext2)
+      ext1.TG.type_equations ext2.TG.type_equations
   in
-  TEE.from_map equations
+  let relations =
+    Name.Map.merge
+      (fun _ rel1_opt rel2_opt ->
+        match rel1_opt, rel2_opt with
+        | None, _ | _, None -> None
+        | Some rel1, Some rel2 ->
+          (* Normalize [rel1] and [rel2] first? *)
+          let rel = TG.RelationSet.inter rel1 rel2 in
+          if TG.RelationSet.is_empty rel then None else Some rel)
+      ext1.TG.rel_equations ext2.TG.rel_equations
+  in
+  TEE.from_maps ~equations ~relations
 
 let meet_shape env t ~shape ~result_var ~result_kind : _ Or_bottom.t =
   if TE.is_bottom env

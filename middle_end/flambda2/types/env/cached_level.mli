@@ -30,6 +30,10 @@ val names_to_types :
 
 val aliases : t -> Aliases.t
 
+val relations : t -> Type_grammar.RelationSet.t Name.Map.t
+
+val add_relation : t -> Name.t -> Type_grammar.relation -> t
+
 val add_or_replace_binding :
   t -> Name.t -> Type_grammar.t -> Binding_time.t -> Name_mode.t -> t
 

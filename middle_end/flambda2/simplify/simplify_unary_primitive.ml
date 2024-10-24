@@ -190,7 +190,7 @@ let simplify_tag_immediate dacc ~original_term ~arg:_ ~arg_ty:naked_number_ty
   SPR.create original_term ~try_reify:true dacc
 
 let simplify_is_int_or_get_tag dacc ~original_term ~scrutinee ~scrutinee_ty:_
-    ~result_var ~make_shape =
+    ~result_var ~make_shape ~rel =
   (* CR vlaviron: We could use prover functions to simplify but it's probably
      not going to help that much.
 
@@ -200,6 +200,19 @@ let simplify_is_int_or_get_tag dacc ~original_term ~scrutinee ~scrutinee_ty:_
      ([Is_int x] instead of a constant). However, in practice the information
      can be recovered both when switching on the value (through regular meet) or
      when trying to lift a block containing the value (through reify). *)
+  let denv = DA.denv dacc in
+  let dacc =
+    Simple.pattern_match scrutinee
+      ~name:(fun scrutinee ~coercion:_ ->
+        let tenv = DE.typing_env denv in
+        let text =
+          TEE.one_relation (Name.var (Bound_var.var result_var)) (rel scrutinee)
+        in
+        let tenv = TE.add_env_extension tenv text in
+        let dacc = DA.with_denv dacc (DE.with_typing_env denv tenv) in
+        dacc)
+      ~const:(fun _ -> dacc)
+  in
   let dacc = DA.add_variable dacc result_var (make_shape scrutinee) in
   SPR.create original_term ~try_reify:true dacc
 
@@ -208,7 +221,9 @@ let simplify_is_int ~variant_only dacc ~original_term ~arg:scrutinee
   if variant_only
   then
     simplify_is_int_or_get_tag dacc ~original_term ~scrutinee ~scrutinee_ty
-      ~result_var ~make_shape:(fun scrutinee ->
+      ~result_var
+      ~rel:(fun scrutinee -> Is_int scrutinee)
+      ~make_shape:(fun scrutinee ->
         Simple.pattern_match scrutinee
           ~name:(fun scrutinee ~coercion:_ -> T.is_int_for_scrutinee ~scrutinee)
           ~const:(fun const ->
@@ -229,7 +244,9 @@ let simplify_is_int ~variant_only dacc ~original_term ~arg:scrutinee
 let simplify_get_tag dacc ~original_term ~arg:scrutinee ~arg_ty:scrutinee_ty
     ~result_var =
   simplify_is_int_or_get_tag dacc ~original_term ~scrutinee ~scrutinee_ty
-    ~result_var ~make_shape:(fun block ->
+    ~result_var
+    ~rel:(fun s -> Get_tag s)
+    ~make_shape:(fun block ->
       Simple.pattern_match block
         ~name:(fun block ~coercion:_ -> T.get_tag_for_block ~block)
         ~const:(fun _ ->

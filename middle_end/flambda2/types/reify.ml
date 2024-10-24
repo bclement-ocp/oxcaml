@@ -167,7 +167,7 @@ end)
 (* CR mshinwell: Think more to identify all the cases that should be in this
    function. *)
 let reify ~allowed_if_free_vars_defined_in ~var_is_defined_at_toplevel
-    ~var_is_symbol_projection env t : reification_result =
+    ~var_is_symbol_projection env name t : reification_result =
   let min_name_mode = Name_mode.normal in
   let var_allowed (alloc_mode : Alloc_mode.For_types.t) var =
     (* It is only safe to lift a [Local] allocation if it can be guaranteed that
@@ -397,7 +397,7 @@ let reify ~allowed_if_free_vars_defined_in ~var_is_defined_at_toplevel
        *     in
        *     Lift_set_of_closures { function_slot; function_types; value_slots } *)
     | Naked_immediate _ -> (
-      match Provers.prove_naked_immediates env t with
+      match Provers.prove_naked_immediates env name t with
       | Proved imms -> (
         match Targetint_31_63.Set.get_singleton imms with
         | None -> try_canonical_simple ()

@@ -143,7 +143,7 @@ let try_to_reify dacc dbg (term : Simplified_named.t) ~bound_to
         DE.is_defined_at_toplevel denv var)
       ~var_is_symbol_projection:(fun var ->
         Option.is_some (DE.find_symbol_projection denv var))
-      typing_env ty
+      typing_env (Name.var bound_to) ty
   in
   match reify_result with
   | Lift to_lift ->

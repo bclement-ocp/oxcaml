@@ -21,6 +21,7 @@ type t =
   { defined_vars : K.t Variable.Map.t;
     binding_times : Variable.Set.t Binding_time.Map.t;
     equations : TG.t Name.Map.t;
+    rel_equations : TG.RelationSet.t Name.Map.t;
     symbol_projections : Symbol_projection.t Variable.Map.t
   }
 
@@ -47,8 +48,37 @@ let print_equations ppf equations =
            Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name TG.print ty))
       equations
 
+let print_rel ppf rel =
+  match rel with
+  | TG.Is_int name ->
+    Format.fprintf ppf "@[<hov 1>(is_int %a)@]" Name.print name
+  | TG.Get_tag name ->
+    Format.fprintf ppf "@[<hov 1>(get_tag %a)@]" Name.print name
+
+let print_rels ppf rels =
+  let rels = TG.RelationSet.elements rels in
+  match rels with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space print_rel ppf rels;
+    Format.pp_print_string ppf ")"
+
+let print_relations ppf relations =
+  let relations = Name.Map.bindings relations in
+  match relations with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space
+      (fun ppf (name, rels) ->
+        Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print_rels
+          rels)
+      ppf relations;
+    Format.pp_print_string ppf ")"
+
 let [@ocamlformat "disable"] print ppf
-      { defined_vars; binding_times = _; equations;
+      { defined_vars; binding_times = _; equations; rel_equations;
         symbol_projections = _; } =
   (* CR mshinwell: Print [defined_vars] when not called from
      [Typing_env.print] *)
@@ -56,16 +86,20 @@ let [@ocamlformat "disable"] print ppf
     Format.fprintf ppf
       "@[<hov 1>(\
         @[<hov 1>(equations@ @[<v 1>%a@])@])\
+        @[<hov 1>(relations@ @[<v 1>%a@])@])\
         @]"
       print_equations equations
+      print_relations rel_equations
   else
     Format.fprintf ppf
       "@[<hov 1>(\
         @[<hov 1>(defined_vars@ @[<hov 1>%a@])@]@ \
         @[<hov 1>(equations@ @[<v 1>%a@])@]@ \
+        @[<hov 1>(relations@ @[<v 1>%a@])@])\
         )@]"
       Variable.Set.print (Variable.Map.keys defined_vars)
       print_equations equations
+      print_relations rel_equations
 
 let fold_on_defined_vars f t init =
   Binding_time.Map.fold
@@ -81,16 +115,25 @@ let empty =
   { defined_vars = Variable.Map.empty;
     binding_times = Binding_time.Map.empty;
     equations = Name.Map.empty;
+    rel_equations = Name.Map.empty;
     symbol_projections = Variable.Map.empty
   }
 
-let is_empty { defined_vars; binding_times; equations; symbol_projections } =
+let is_empty
+    { defined_vars;
+      binding_times;
+      equations;
+      rel_equations;
+      symbol_projections
+    } =
   Variable.Map.is_empty defined_vars
   && Binding_time.Map.is_empty binding_times
   && Name.Map.is_empty equations
+  && Name.Map.is_empty rel_equations
   && Variable.Map.is_empty symbol_projections
 
-let create ~defined_vars ~binding_times ~equations ~symbol_projections =
+let create ~defined_vars ~binding_times ~equations ~relations
+    ~symbol_projections =
   (if Flambda_features.check_invariants ()
   then
     let all_defined_vars = Variable.Map.keys defined_vars in
@@ -102,9 +145,16 @@ let create ~defined_vars ~binding_times ~equations ~symbol_projections =
       Misc.fatal_error
         "[defined_vars] and [binding_times] disagree on the set of variables \
          involved");
-  { defined_vars; binding_times; equations; symbol_projections }
+  { defined_vars;
+    binding_times;
+    equations;
+    rel_equations = relations;
+    symbol_projections
+  }
 
 let equations t = t.equations
+
+let relations t = t.rel_equations
 
 let symbol_projections t = t.symbol_projections
 
@@ -136,6 +186,16 @@ let add_or_replace_equation t name ty =
   then { t with equations = Name.Map.remove name t.equations }
   else { t with equations = Name.Map.add name ty t.equations }
 
+let add_relation t name rel =
+  let rel_equations =
+    Name.Map.update name
+      (function
+        | None -> Some (TG.RelationSet.singleton rel)
+        | Some rels -> Some (TG.RelationSet.add rel rels))
+      t.rel_equations
+  in
+  { t with rel_equations }
+
 let concat ~earlier:(t1 : t) ~later:(t2 : t) =
   let defined_vars =
     Variable.Map.union
@@ -163,12 +223,17 @@ let concat ~earlier:(t1 : t) ~later:(t2 : t) =
     (* We rely on the fact that equations in later levels are more precise *)
     Name.Map.union (fun _ _ty1 ty2 -> Some ty2) t1.equations t2.equations
   in
+  let rel_equations =
+    Name.Map.union
+      (fun _ rel1 rel2 -> Some (TG.RelationSet.union rel1 rel2))
+      t1.rel_equations t2.rel_equations
+  in
   let symbol_projections =
     Variable.Map.union
       (fun _var _proj1 proj2 -> Some proj2)
       t1.symbol_projections t2.symbol_projections
   in
-  { defined_vars; binding_times; equations; symbol_projections }
+  { defined_vars; binding_times; equations; rel_equations; symbol_projections }
 
 let ids_for_export t =
   let variables = Variable.Map.keys t.defined_vars in
@@ -178,6 +243,16 @@ let ids_for_export t =
     Ids_for_export.add_name ids name
   in
   let ids = Name.Map.fold equation t.equations ids in
+  let relation rel ids =
+    match rel with
+    | TG.Is_int name -> Ids_for_export.add_name ids name
+    | TG.Get_tag name -> Ids_for_export.add_name ids name
+  in
+  let relations name rels ids =
+    let ids = TG.RelationSet.fold relation rels ids in
+    Ids_for_export.add_name ids name
+  in
+  let ids = Name.Map.fold relations t.rel_equations ids in
   let symbol_projection var proj ids =
     let ids =
       Ids_for_export.union ids (Symbol_projection.ids_for_export proj)
@@ -187,7 +262,12 @@ let ids_for_export t =
   Variable.Map.fold symbol_projection t.symbol_projections ids
 
 let as_extension_without_bindings
-    ({ defined_vars; binding_times; equations; symbol_projections } as t) =
+    ({ defined_vars;
+       binding_times;
+       equations;
+       rel_equations;
+       symbol_projections
+     } as t) =
   if Flambda_features.check_invariants ()
   then
     if Variable.Map.is_empty defined_vars
@@ -198,4 +278,4 @@ let as_extension_without_bindings
       Misc.fatal_errorf
         "Typing_env_level.as_extension_without_bindings:@ level %a has bindings"
         print t;
-  TG.Env_extension.create ~equations
+  TG.Env_extension.create ~equations ~relations:rel_equations

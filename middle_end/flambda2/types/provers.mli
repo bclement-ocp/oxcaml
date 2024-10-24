@@ -46,7 +46,10 @@ val meet_naked_immediates :
   Typing_env.t -> Type_grammar.t -> Targetint_31_63.Set.t meet_shortcut
 
 val prove_naked_immediates :
-  Typing_env.t -> Type_grammar.t -> Targetint_31_63.Set.t proof_of_property
+  Typing_env.t ->
+  Name.t ->
+  Type_grammar.t ->
+  Targetint_31_63.Set.t proof_of_property
 
 val meet_equals_single_tagged_immediate :
   Typing_env.t -> Type_grammar.t -> Targetint_31_63.t meet_shortcut

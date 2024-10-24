@@ -25,6 +25,7 @@ module P = Flambda_primitive
 module RI = Apply_cont_rewrite_id
 module T = Flambda2_types
 module TE = Flambda2_types.Typing_env
+module TEE = Flambda2_types.Typing_env_extension
 module List = ListLabels
 
 type t =
@@ -146,7 +147,7 @@ let cse_with_eligible_lhs ~typing_env_at_fork ~cse_at_each_use ~params prev_cse
                   (* If [param] has an extra equation associated to it, we
                      shouldn't propagate equations on it as it will mess with
                      the application of constraints later *)
-                  if Name.Map.mem (BP.name param) extra_equations
+                  if TEE.mem (BP.name param) extra_equations
                   then None
                   else Some (BP.simple param)
                 | Already_in_scope _ | New_let_binding _
@@ -266,16 +267,21 @@ let join_one_cse_equation ~cse_at_each_use prim bound_to_map
         | Unary (Is_int { variant_only = true }, scrutinee) ->
           Simple.pattern_match scrutinee
             ~name:(fun scrutinee ~coercion:_ ->
-              Name.Map.add (Name.var var)
-                (T.is_int_for_scrutinee ~scrutinee)
-                extra_equations)
+              let extra_equations =
+                TEE.add_relation extra_equations (Name.var var)
+                  (Is_int scrutinee)
+              in
+              TEE.add_or_replace_equation extra_equations (Name.var var)
+                (T.is_int_for_scrutinee ~scrutinee))
             ~const:(fun _ -> extra_equations)
         | Unary (Get_tag, block) ->
           Simple.pattern_match block
             ~name:(fun block ~coercion:_ ->
-              Name.Map.add (Name.var var)
-                (T.get_tag_for_block ~block)
-                extra_equations)
+              let extra_equations =
+                TEE.add_relation extra_equations (Name.var var) (Get_tag block)
+              in
+              TEE.add_or_replace_equation extra_equations (Name.var var)
+                (T.get_tag_for_block ~block))
             ~const:(fun _ -> extra_equations)
         | _ -> extra_equations
       in
@@ -296,9 +302,7 @@ module Join_result = struct
   type nonrec t =
     { cse_at_join_point : t;
       extra_params : EPA.t;
-      (* CR-someday mshinwell: Change [extra_equations] to
-         [Typing_env_extension.t]. *)
-      extra_equations : T.t Name.Map.t;
+      extra_extension : TEE.t;
       extra_allowed_names : Name_occurrences.t
     }
 end
@@ -329,7 +333,7 @@ let join0 ~typing_env_at_fork ~cse_at_fork ~cse_at_each_use ~params
       EP.Map.fold
         (join_one_cse_equation ~cse_at_each_use)
         new_cse
-        (EP.Map.empty, EPA.empty, Name.Map.empty, allowed)
+        (EP.Map.empty, EPA.empty, TEE.empty, allowed)
     in
     let need_other_round =
       (* If we introduce new parameters, then CSE equations involving the
@@ -341,9 +345,7 @@ let join0 ~typing_env_at_fork ~cse_at_fork ~cse_at_each_use ~params
     (* The order of cse arguments does not matter since only simples already in
        scope are used as extra arguments. *)
     let extra_params = EPA.concat ~outer:extra_params' ~inner:extra_params in
-    let extra_equations =
-      Name.Map.disjoint_union extra_equations extra_equations'
-    in
+    let extra_equations = TEE.disjoint_union extra_equations extra_equations' in
     cse, extra_params, extra_equations, allowed, need_other_round
   in
   let cse, extra_params, extra_equations, allowed =
@@ -362,7 +364,7 @@ let join0 ~typing_env_at_fork ~cse_at_fork ~cse_at_each_use ~params
           extra_equations,
           allowed )
     in
-    do_rounds 1 EP.Map.empty EPA.empty Name.Map.empty Name_occurrences.empty
+    do_rounds 1 EP.Map.empty EPA.empty TEE.empty Name_occurrences.empty
   in
   let have_propagated_something = ref false in
   let cse_at_join_point =
@@ -390,7 +392,7 @@ let join0 ~typing_env_at_fork ~cse_at_fork ~cse_at_each_use ~params
     Some
       { Join_result.cse_at_join_point;
         extra_params;
-        extra_equations;
+        extra_extension = extra_equations;
         extra_allowed_names = allowed
       }
 

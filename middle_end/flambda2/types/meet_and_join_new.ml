@@ -819,8 +819,15 @@ and meet_head_of_kind_naked_immediate env (t1 : TG.head_of_kind_naked_immediate)
           | Ok (name, shape) -> (
             match meet env (TE.find env name (Some K.value)) shape with
             | Bottom -> Bottom
-            | Ok (_, env) ->
-              (* We do not need the result of the meet, only the environment. *)
+            | Ok (ty, env) ->
+              let env =
+                match ty with
+                | New_result ty ->
+                  TE.add_equation env name ty ~meet_type:(New meet_type)
+                | Right_input ->
+                  TE.add_equation env name shape ~meet_type:(New meet_type)
+                | Left_input | Both_inputs -> env
+              in
               Ok (r, env)))
       in
       TG.RelationSet.fold reduce relations result)
@@ -1983,9 +1990,26 @@ and join_env_extension env (ext1 : TEE.t) (ext2 : TEE.t) : TEE.t =
               MTC.check_equation name ty;
               Some ty)
           | Unknown -> None))
-      (TEE.to_map ext1) (TEE.to_map ext2)
+      ext1.TG.type_equations ext2.TG.type_equations
   in
-  TEE.from_map equations
+  let relations =
+    Name.Map.merge
+      (fun _ rel1_opt rel2_opt ->
+        match rel1_opt, rel2_opt with
+        | None, _ | _, None -> None
+        | Some rel1, Some rel2 ->
+          (* Note: this might introduce duplicate relations relative to aliases
+             (if we have both `x = Is_int a` and `y = Is_int b` while knowing
+             that `x`, `y` and `a`, `b` are aliases.
+
+             Currently we keep things as is because we don't try too hard to
+             recover equations when joining, but we could normalize here with
+             more aggresive joining. *)
+          let rel = TG.RelationSet.inter rel1 rel2 in
+          if TG.RelationSet.is_empty rel then None else Some rel)
+      ext1.TG.rel_equations ext2.TG.rel_equations
+  in
+  TG.Env_extension.create ~equations ~relations
 
 (* Exposed to the outside world with Or_bottom type *)
 let meet env ty1 ty2 : _ Or_bottom.t =

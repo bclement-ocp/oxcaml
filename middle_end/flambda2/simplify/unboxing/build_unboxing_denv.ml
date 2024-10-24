@@ -89,6 +89,13 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
       DE.add_equation_on_variable denv tag.param
         (T.get_tag_for_block ~block:(Name.var param_var))
     in
+    let denv =
+      let tenv = DE.typing_env denv in
+      DE.with_typing_env denv
+      @@ TE.add_env_extension tenv
+           (TEE.one_relation (Name.var tag.param)
+              (Get_tag (Name.var param_var)))
+    in
     let get_tag_prim =
       P.Eligible_for_cse.create_get_tag ~block:(Name.var param_var)
     in
@@ -103,6 +110,13 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
         let denv =
           DE.add_equation_on_variable denv is_int.param
             (T.is_int_for_scrutinee ~scrutinee:(Name.var param_var))
+        in
+        let denv =
+          let tenv = DE.typing_env denv in
+          DE.with_typing_env denv
+          @@ TE.add_env_extension tenv
+               (TEE.one_relation (Name.var is_int.param)
+                  (Is_int (Name.var param_var)))
         in
         let is_int_prim =
           P.Eligible_for_cse.create_is_int ~variant_only:true

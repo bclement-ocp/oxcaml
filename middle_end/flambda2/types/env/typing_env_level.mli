@@ -28,6 +28,7 @@ val create :
   defined_vars:Flambda_kind.t Variable.Map.t ->
   binding_times:Variable.Set.t Binding_time.Map.t ->
   equations:Type_grammar.t Name.Map.t ->
+  relations:Type_grammar.RelationSet.t Name.Map.t ->
   symbol_projections:Symbol_projection.t Variable.Map.t ->
   t
 
@@ -39,6 +40,8 @@ val defined_names : t -> Name.Set.t
 
 val equations : t -> Type_grammar.t Name.Map.t
 
+val relations : t -> Type_grammar.RelationSet.t Name.Map.t
+
 val symbol_projections : t -> Symbol_projection.t Variable.Map.t
 
 val add_symbol_projection : t -> Variable.t -> Symbol_projection.t -> t
@@ -46,6 +49,8 @@ val add_symbol_projection : t -> Variable.t -> Symbol_projection.t -> t
 val add_definition : t -> Variable.t -> Flambda_kind.t -> Binding_time.t -> t
 
 val add_or_replace_equation : t -> Name.t -> Type_grammar.t -> t
+
+val add_relation : t -> Name.t -> Type_grammar.relation -> t
 
 val concat : earlier:t -> later:t -> t
 

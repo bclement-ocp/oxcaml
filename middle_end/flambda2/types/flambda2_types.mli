@@ -71,9 +71,17 @@ module Typing_env_extension : sig
 
   val empty : t
 
+  val mem : Name.t -> t -> bool
+
   val one_equation : Name.t -> flambda_type -> t
 
+  val one_relation : Name.t -> Type_grammar.relation -> t
+
   val add_or_replace_equation : t -> Name.t -> flambda_type -> t
+
+  val add_relation : t -> Name.t -> Type_grammar.relation -> t
+
+  val disjoint_union : t -> t -> t
 
   val meet : typing_env -> t -> t -> t Or_bottom.t
 
@@ -796,6 +804,7 @@ val reify :
   var_is_defined_at_toplevel:(Variable.t -> bool) ->
   var_is_symbol_projection:(Variable.t -> bool) ->
   Typing_env.t ->
+  Name.t ->
   t ->
   reification_result
 

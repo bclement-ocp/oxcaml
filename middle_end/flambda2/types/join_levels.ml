@@ -14,13 +14,43 @@
 (*                                                                        *)
 (**************************************************************************)
 
+let do_debug = false
+
 module K = Flambda_kind
 module MTC = More_type_creators
 module TE = Typing_env
-module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module TG = Type_grammar
 module Join_env = TE.Join_env
+
+let print_rel ppf rel =
+  match rel with
+  | TG.Is_int name ->
+    Format.fprintf ppf "@[<hov 1>(is_int %a)@]" Name.print name
+  | TG.Get_tag name ->
+    Format.fprintf ppf "@[<hov 1>(get_tag %a)@]" Name.print name
+
+let print_rels ppf rels =
+  let rels = TG.RelationSet.elements rels in
+  match rels with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space print_rel ppf rels;
+    Format.pp_print_string ppf ")"
+
+let print_relations ppf relations =
+  let relations = Name.Map.bindings relations in
+  match relations with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space
+      (fun ppf (name, rels) ->
+        Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print_rels
+          rels)
+      ppf relations;
+    Format.pp_print_string ppf ")"
 
 let join_types ~env_at_fork envs_with_levels =
   (* Add all the variables defined by the branches as existentials to the
@@ -77,81 +107,223 @@ let join_types ~env_at_fork envs_with_levels =
           (TEL.equations level) initial_types)
       Name.Map.empty envs_with_levels
   in
+  if do_debug
+  then
+    Format.printf "@[<v>%sbase:@ %a@]@." (String.make 80 '=') TE.print base_env;
   (* Now fold over the levels doing the actual join operation on equations. *)
-  ListLabels.fold_left envs_with_levels ~init:initial_types
-    ~f:(fun joined_types (env_at_use, _, _, t) ->
-      let left_env =
-        (* CR vlaviron: This is very likely quadratic (number of uses times
-           number of variables in all uses). However it's hard to know how we
-           could do better. *)
-        TE.add_env_extension_maybe_bottom base_env
-          (TEE.from_map joined_types)
-          ~meet_type:(Meet_and_join.meet_type ())
-      in
-      let join_types name joined_ty use_ty =
-        let same_unit =
-          Compilation_unit.equal
-            (Name.compilation_unit name)
-            (Compilation_unit.get_current_exn ())
+  let joined_types, joined_relations =
+    ListLabels.fold_left envs_with_levels ~init:(initial_types, Name.Map.empty)
+      ~f:(fun (joined_types, joined_relations) (env_at_use, _, _, t) ->
+        let left_env =
+          (* CR vlaviron: This is very likely quadratic (number of uses times
+             number of variables in all uses). However it's hard to know how we
+             could do better. *)
+          TE.add_env_extension_maybe_bottom base_env
+            (TG.Env_extension.create ~equations:joined_types
+               ~relations:joined_relations)
+            ~meet_type:(Meet_and_join.meet_type ())
         in
-        if same_unit && not (TE.mem base_env name)
-        then
-          Misc.fatal_errorf "Name %a not defined in [base_env]:@ %a" Name.print
-            name TE.print base_env;
-        (* If [name] is that of a lifted constant symbol generated during one of
-           the levels, then ignore it. [Simplify_expr] will already have made
-           its type suitable for [base_env] and inserted it into that
-           environment.
+        let () =
+          if do_debug
+          then
+            Format.printf "@[<v>%sjoin:@ %a@]@." (String.make 80 '-') TEL.print
+              t
+        in
+        (* XXX: for the relations, we must normalize and simplify.
 
-           If [name] is a symbol that is not a lifted constant, then it was
-           defined before the fork and already has an equation in base_env.
-           While it is possible that its type could be refined by all of the
-           branches, it is unlikely. *)
-        if not (Name.is_var name)
-        then None
-        else
-          let joined_ty, use_ty =
-            match joined_ty, use_ty with
-            | None, Some _use_ty ->
-              assert false (* See the computation of [initial_types] *)
-            | Some joined_ty, None ->
-              (* There is no equation, at all (not even saying "unknown"), on
-                 the current level for [name]. There are two possible cases for
-                 that:
+           We have can1 -> rel1 in left_env and can2 -> rel2 in right_env
 
-                 - The environment at use knows of this variable, but this level
-                 has no equation on it. In this case, we need to retrieve the
-                 type from [env_at_use] and join with it.
+           If we have x -> y or x -> rel in any env we must track x, y?
 
-                 - The variable doesn't exist in this environment. This happens
-                 if the variable is defined in one of the other branches, and
-                 will be quantified existentially in the result. In this case,
-                 it's safe to join with Bottom. *)
-              let is_defined_at_use = TE.mem env_at_use name in
-              if is_defined_at_use
-              then
-                let use_ty =
-                  let expected_kind = Some (TG.kind joined_ty) in
-                  TE.find env_at_use name expected_kind
-                in
-                joined_ty, use_ty
-              else joined_ty, MTC.bottom_like joined_ty
-            | Some joined_ty, Some use_ty -> joined_ty, use_ty
-            | None, None -> assert false
+           Suppose we have can1 in the left env. What is the name of can1 in the
+           right env?
+
+           => If it does not exist, w/e. But *)
+        let join_types name joined_ty use_ty =
+          let same_unit =
+            Compilation_unit.equal
+              (Name.compilation_unit name)
+              (Compilation_unit.get_current_exn ())
           in
-          let join_env =
-            Join_env.create base_env ~left_env ~right_env:env_at_use
-          in
-          match
-            (Meet_and_join.join ()) ~bound_name:name join_env joined_ty use_ty
-          with
-          | Known joined_ty -> Some joined_ty
-          | Unknown -> None
-      in
-      Name.Map.merge join_types joined_types (TEL.equations t))
+          if same_unit && not (TE.mem base_env name)
+          then
+            Misc.fatal_errorf "Name %a not defined in [base_env]:@ %a"
+              Name.print name TE.print base_env;
+          (* If [name] is that of a lifted constant symbol generated during one
+             of the levels, then ignore it. [Simplify_expr] will already have
+             made its type suitable for [base_env] and inserted it into that
+             environment.
+
+             If [name] is a symbol that is not a lifted constant, then it was
+             defined before the fork and already has an equation in base_env.
+             While it is possible that its type could be refined by all of the
+             branches, it is unlikely. *)
+          if not (Name.is_var name)
+          then None
+          else
+            let joined_ty, use_ty =
+              match joined_ty, use_ty with
+              | None, Some _use_ty ->
+                assert false (* See the computation of [initial_types] *)
+              | Some joined_ty, None ->
+                (* There is no equation, at all (not even saying "unknown"), on
+                   the current level for [name]. There are two possible cases
+                   for that:
+
+                   - The environment at use knows of this variable, but this
+                   level has no equation on it. In this case, we need to
+                   retrieve the type from [env_at_use] and join with it.
+
+                   - The variable doesn't exist in this environment. This
+                   happens if the variable is defined in one of the other
+                   branches, and will be quantified existentially in the result.
+                   In this case, it's safe to join with Bottom. *)
+                let is_defined_at_use = TE.mem env_at_use name in
+                if is_defined_at_use
+                then
+                  let use_ty =
+                    let expected_kind = Some (TG.kind joined_ty) in
+                    TE.find env_at_use name expected_kind
+                  in
+                  joined_ty, use_ty
+                else joined_ty, MTC.bottom_like joined_ty
+              | Some joined_ty, Some use_ty -> joined_ty, use_ty
+              | None, None -> assert false
+            in
+            let join_env =
+              Join_env.create base_env ~left_env ~right_env:env_at_use
+            in
+            match
+              (Meet_and_join.join ()) ~bound_name:name join_env joined_ty use_ty
+            with
+            | Known joined_ty -> Some joined_ty
+            | Unknown -> None
+        in
+        let joined_types' =
+          Name.Map.merge join_types joined_types (TEL.equations t)
+        in
+        let joined_relations =
+          Name.Map.filter_map
+            (fun name rels ->
+              if do_debug then Format.printf "lookin' for: %a@." Name.print name;
+              if not (TE.mem env_at_use name)
+              then Some rels
+              else
+                match
+                  TE.get_canonical_simple_exn env_at_use (Simple.name name)
+                with
+                | exception Not_found -> Some rels
+                | simple_at_use ->
+                  if do_debug
+                  then
+                    Format.printf "at use is: %a@." Simple.print simple_at_use;
+                  let rels_at_use =
+                    TE.relations_of_simple env_at_use simple_at_use
+                  in
+                  let rels = TG.RelationSet.inter rels_at_use rels in
+                  if TG.RelationSet.is_empty rels then None else Some rels)
+            joined_relations
+        in
+        let relations = TEL.relations t in
+        let relations =
+          Name.Map.filter_map
+            (fun name rels ->
+              if do_debug
+              then Format.printf "looking for %a in left_env@." Name.print name;
+              let is_defined =
+                let ty = TE.find left_env name None in
+                not (TG.is_obviously_bottom ty)
+              in
+              if not is_defined
+              then (
+                if do_debug
+                then Format.printf "not defined! keeping: %a@." print_rels rels;
+                Some rels)
+              else
+                match
+                  TE.get_canonical_simple_exn left_env (Simple.name name)
+                with
+                | exception Not_found ->
+                  if do_debug
+                  then Format.printf "not here! keeping: %a@." print_rels rels;
+                  Some rels
+                | left_simple ->
+                  if do_debug
+                  then Format.printf "found: %a@." Simple.print left_simple;
+                  let rels =
+                    TG.RelationSet.filter_map
+                      (fun rel ->
+                        if do_debug
+                        then
+                          Format.printf "does %a apply to %a?@." print_rel rel
+                            Simple.print left_simple;
+                        match rel with
+                        | Is_int scrutinee -> (
+                          match
+                            Provers.prove_is_int left_env
+                              (TE.find left_env scrutinee (Some K.value))
+                          with
+                          | Proved b ->
+                            if b
+                            then (
+                              assert (TE.mem base_env scrutinee);
+                              if do_debug then Format.printf "yes!@.";
+                              Some rel)
+                            else (
+                              if do_debug then Format.printf "no!@.";
+                              None)
+                          | Unknown ->
+                            let scrutinee =
+                              TE.get_canonical_simple_exn left_env
+                                (Simple.name scrutinee)
+                            in
+                            Simple.pattern_match scrutinee
+                              ~name:(fun scrutinee ~coercion:_ ->
+                                if do_debug
+                                then
+                                  Format.printf "as %a@." Name.print scrutinee;
+                                assert (TE.mem base_env scrutinee);
+                                let rel' = TG.Is_int scrutinee in
+                                let left_rels =
+                                  TE.relations_of_simple left_env left_simple
+                                in
+                                if TG.RelationSet.mem rel' left_rels
+                                then (
+                                  if do_debug then Format.printf "it is here@.";
+                                  Some rel')
+                                else (
+                                  if do_debug
+                                  then
+                                    Format.printf "skipit (%a)@." print_rels
+                                      left_rels;
+                                  None))
+                              ~const:(fun _ -> assert false))
+                        | Get_tag _block -> None)
+                      rels
+                  in
+                  if TG.RelationSet.is_empty rels then None else Some rels)
+            relations
+        in
+        let join_relations _ joined_rels rels =
+          match joined_rels, rels with
+          | None, None -> assert false
+          | Some rels, None | None, Some rels -> Some rels
+          | Some joined_rels, Some rels ->
+            Some (TG.RelationSet.union joined_rels rels)
+        in
+        let joined_relations' =
+          Name.Map.merge join_relations joined_relations relations
+        in
+        (* ignore joined_relations'; let joined_relations' = Name.Map.empty
+           in *)
+        joined_types', joined_relations')
+  in
+  if do_debug
+  then Format.printf "@[<v>RELS:@ %a@]@." print_relations joined_relations;
+  joined_types, joined_relations
 
 let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
-    ~params =
+    ~joined_relations ~params =
   let allowed_and_new =
     (* Parameters are already in the resulting environment *)
     List.fold_left
@@ -204,6 +376,29 @@ let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
       (fun name _ty -> Name_occurrences.mem_name allowed name)
       joined_types
   in
+  let relations =
+    Name.Map.filter_map
+      (fun name rels ->
+        if not (Name_occurrences.mem_name allowed name)
+        then None
+        else
+          let rels =
+            TG.RelationSet.filter
+              (fun rel ->
+                let keep =
+                  match rel with
+                  | TG.Is_int name | TG.Get_tag name ->
+                    Name_occurrences.mem_name allowed name
+                in
+                if not keep
+                then
+                  if do_debug then Format.printf "REMOVING %a@." print_rel rel;
+                keep)
+              rels
+          in
+          if TG.RelationSet.is_empty rels then None else Some rels)
+      joined_relations
+  in
   let symbol_projections =
     List.fold_left
       (fun symbol_projections (_env_at_use, _id, _use_kind, t) ->
@@ -221,7 +416,13 @@ let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
           symbol_projections projs_this_level)
       Variable.Map.empty envs_with_levels
   in
-  TEL.create ~defined_vars ~binding_times ~equations ~symbol_projections
+  let tel =
+    TEL.create ~defined_vars ~binding_times ~equations ~relations
+      ~symbol_projections
+  in
+  if do_debug
+  then Format.printf "@[<v>%sfinal:@ %a@]@." (String.make 80 '-') TEL.print tel;
+  tel
 
 let check_join_inputs ~env_at_fork _envs_with_levels ~params
     ~extra_lifted_consts_in_use_envs =
@@ -254,7 +455,9 @@ let join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
   check_join_inputs ~env_at_fork envs_with_levels ~params
     ~extra_lifted_consts_in_use_envs;
   (* Calculate the joined types of all the names involved. *)
-  let joined_types = join_types ~env_at_fork envs_with_levels in
+  let joined_types, joined_relations =
+    join_types ~env_at_fork envs_with_levels
+  in
   (* Next calculate which equations (describing joined types) to propagate to
      the join point. (Recall that the environment at the fork point includes the
      parameters of the continuation being called at the join. We wish to ensure
@@ -301,10 +504,32 @@ let join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
         Name_occurrences.add_symbol allowed symbol Name_mode.in_types)
       extra_lifted_consts_in_use_envs allowed
   in
+  let allowed =
+    Name.Map.fold
+      (fun name rels allowed ->
+        if TE.mem env_at_fork name || Name.is_symbol name
+           || Name_occurrences.mem_name allowed name
+        then
+          Name_occurrences.add_name
+            (TG.RelationSet.fold
+               (fun rel allowed ->
+                 let name =
+                   match rel with TG.Is_int name | TG.Get_tag name -> name
+                 in
+                 if do_debug then Format.printf "allow: %a@." Name.print name;
+                 Name_occurrences.add_name allowed name Name_mode.in_types)
+               rels allowed)
+            name Name_mode.in_types
+        else (
+          if do_debug then Format.printf "mais que quoi %a@." Name.print name;
+          allowed))
+      joined_relations allowed
+  in
+  if do_debug then Format.printf "allow: %a@." Name_occurrences.print allowed;
   (* Having calculated which equations to propagate, the resulting level can now
      be constructed. *)
   ( construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
-      ~params,
+      ~joined_relations ~params,
     Name_occurrences.fold_names allowed ~init:Name.Set.empty
       ~f:(fun names name -> Name.Set.add name names) )
 
@@ -334,5 +559,6 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
     TE.add_env_extension_from_level definition_typing_env level
       ~meet_type:(Meet_and_join.meet_type ())
   in
+  if do_debug then Format.printf "@[<v>true final@ %a@]@." TE.print result_env;
   TE.compute_joined_aliases result_env alias_candidates
     (List.map (fun (env_at_use, _, _, _) -> env_at_use) after_cuts)

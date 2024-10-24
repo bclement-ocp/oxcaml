@@ -208,7 +208,14 @@ and array_contents =
   | Immutable of { fields : t array }
   | Mutable
 
-and env_extension = { equations : t Name.Map.t } [@@unboxed]
+and equation =
+  | Type of t
+  | Rel of relation
+
+and env_extension =
+  { type_equations : t Name.Map.t;
+    rel_equations : RelationSet.t Name.Map.t
+  }
 
 type flambda_type = t
 
@@ -230,6 +237,37 @@ let get_alias_opt t =
 
 let row_like_is_bottom ~known ~(other : _ Or_bottom.t) ~is_empty_map_known =
   is_empty_map_known known && match other with Bottom -> true | Ok _ -> false
+
+let fold_env_extension f { type_equations; rel_equations } acc =
+  let acc =
+    Name.Map.fold (fun name ty acc -> f name (Type ty) acc) type_equations acc
+  in
+  Name.Map.fold
+    (fun name rels acc ->
+      RelationSet.fold (fun rel acc -> f name (Rel rel) acc) rels acc)
+    rel_equations acc
+
+let add_env_extension name eqn env_extension =
+  match eqn with
+  | Type ty ->
+    { env_extension with
+      type_equations = Name.Map.add name ty env_extension.type_equations
+    }
+  | Rel rel ->
+    let rel_equations =
+      Name.Map.update name
+        (function
+          | None -> Some (RelationSet.singleton rel)
+          | Some rels -> Some (RelationSet.add rel rels))
+        env_extension.rel_equations
+    in
+    { env_extension with rel_equations }
+
+let empty_env_extension =
+  { type_equations = Name.Map.empty; rel_equations = Name.Map.empty }
+
+let is_empty_env_extension { type_equations; rel_equations } =
+  Name.Map.is_empty type_equations && Name.Map.is_empty rel_equations
 
 let rec free_names0 ~follow_value_slots t =
   let[@inline] type_descr_free_names ~free_names_head ty =
@@ -451,14 +489,23 @@ and free_names_function_type ~follow_value_slots
       (free_names0 ~follow_value_slots rec_info)
       code_id Name_mode.normal
 
-and free_names_env_extension ~follow_value_slots { equations } =
-  Name.Map.fold
-    (fun name t acc ->
+and free_names_env_extension ~follow_value_slots env_extension =
+  fold_env_extension
+    (fun name eqn acc ->
       let acc =
-        Name_occurrences.union acc (free_names0 ~follow_value_slots t)
+        Name_occurrences.union acc (free_names_equation ~follow_value_slots eqn)
       in
       Name_occurrences.add_name acc name Name_mode.in_types)
-    equations Name_occurrences.empty
+    env_extension Name_occurrences.empty
+
+and free_names_equation ~follow_value_slots eqn =
+  match eqn with
+  | Type t -> free_names0 ~follow_value_slots t
+  | Rel rel -> (
+    match rel with
+    | Is_int name | Get_tag name ->
+      (* Not technically in types... *)
+      Name_occurrences.singleton_name name Name_mode.in_types)
 
 let free_names_except_through_value_slots t =
   free_names0 ~follow_value_slots:false t
@@ -777,18 +824,41 @@ and apply_renaming_function_type ({ code_id; rec_info } as function_type)
   then function_type
   else { code_id = code_id'; rec_info = rec_info' }
 
-and apply_renaming_env_extension ({ equations } as env_extension) renaming =
+and apply_renaming_env_extension
+    ({ type_equations; rel_equations } as env_extension) renaming =
   let changed = ref false in
-  let equations' =
+  let type_equations' =
     Name.Map.fold
       (fun name ty acc ->
         let ty' = apply_renaming ty renaming in
         let name' = Renaming.apply_name renaming name in
         if not (ty == ty' && name == name') then changed := true;
         Name.Map.add name' ty' acc)
-      equations Name.Map.empty
+      type_equations Name.Map.empty
   in
-  if !changed then { equations = equations' } else env_extension
+  let rel_equations' =
+    Name.Map.fold
+      (fun name rels acc ->
+        let rels' =
+          RelationSet.map (fun rel -> apply_renaming_relation rel renaming) rels
+        in
+        let name' = Renaming.apply_name renaming name in
+        if not (rels == rels' && name == name') then changed := true;
+        Name.Map.add name' rels' acc)
+      rel_equations Name.Map.empty
+  in
+  if !changed
+  then { type_equations = type_equations'; rel_equations = rel_equations' }
+  else env_extension
+
+and apply_renaming_relation rel renaming =
+  match rel with
+  | Is_int name ->
+    let name' = Renaming.apply_name renaming name in
+    if name' == name then rel else Is_int name'
+  | Get_tag name ->
+    let name' = Renaming.apply_name renaming name in
+    if name' == name then rel else Get_tag name'
 
 let rec print ppf t =
   match t with
@@ -968,7 +1038,7 @@ and print_row_like :
     else Format.fprintf ppf "%t_|_%t" colour Flambda_colours.pop
   else
     let pp_env_extension ppf env_extension =
-      if not (Name.Map.is_empty env_extension.equations)
+      if not (is_empty_env_extension env_extension)
       then Format.fprintf ppf "@ %a" print_env_extension env_extension
     in
     let print ppf { maps_to; index; env_extension } =
@@ -1051,7 +1121,7 @@ and print_function_type ppf { code_id; rec_info } =
      %a)@])@]"
     Code_id.print code_id print rec_info
 
-and print_env_extension ppf { equations } =
+and print_env_extension ppf { type_equations; rel_equations } =
   let print_equations ppf equations =
     let equations = Name.Map.bindings equations in
     match equations with
@@ -1059,13 +1129,48 @@ and print_env_extension ppf { equations } =
     | _ :: _ ->
       Format.pp_print_string ppf "(";
       Format.pp_print_list ~pp_sep:Format.pp_print_space
-        (fun ppf (name, t) ->
-          Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print t)
+        (fun ppf (name, ty) ->
+          Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print ty)
         ppf equations;
       Format.pp_print_string ppf ")"
   in
-  Format.fprintf ppf "@[<hov 1>(equations@ @[<v 1>%a@])@]" print_equations
-    equations
+  let print_rel ppf rel =
+    match rel with
+    | Is_int name -> Format.fprintf ppf "@[<hov 1>(is_int %a)@]" Name.print name
+    | Get_tag name ->
+      Format.fprintf ppf "@[<hov 1>(get_tag %a)@]" Name.print name
+  in
+  let print_rels ppf rels =
+    let rels = RelationSet.elements rels in
+    match rels with
+    | [] -> Format.pp_print_string ppf "()"
+    | _ :: _ ->
+      Format.pp_print_string ppf "(";
+      Format.pp_print_list ~pp_sep:Format.pp_print_space print_rel ppf rels;
+      Format.pp_print_string ppf ")"
+  in
+  let print_relations ppf relations =
+    let relations = Name.Map.bindings relations in
+    match relations with
+    | [] -> Format.pp_print_string ppf "()"
+    | _ :: _ ->
+      Format.pp_print_string ppf "(";
+      Format.pp_print_list ~pp_sep:Format.pp_print_space
+        (fun ppf (name, rels) ->
+          Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print_rels
+            rels)
+        ppf relations;
+      Format.pp_print_string ppf ")"
+  in
+  Format.fprintf ppf
+    "@[<hov 1>(extension@ @[<hov 1>(equations@ @[<v 1>%a@])@]@ @[<hov \
+     1>(relations@ @[<v 1>%a@])@]@]"
+    print_equations type_equations print_relations rel_equations
+
+and print_equation ppf eqn =
+  match eqn with
+  | Type ty -> Format.fprintf ppf "= %a" print ty
+  | Rel _ -> () (* TODO *)
 
 let rec ids_for_export t =
   match t with
@@ -1244,11 +1349,21 @@ and ids_for_export_function_type { code_id; rec_info } =
     (Ids_for_export.singleton_code_id code_id)
     (ids_for_export rec_info)
 
-and ids_for_export_env_extension { equations } =
-  Name.Map.fold
-    (fun name t ids ->
-      Ids_for_export.add_name (Ids_for_export.union ids (ids_for_export t)) name)
-    equations Ids_for_export.empty
+and ids_for_export_env_extension env_extension =
+  fold_env_extension
+    (fun name eqn ids ->
+      Ids_for_export.add_name
+        (Ids_for_export.union ids (ids_for_export_equation eqn))
+        name)
+    env_extension Ids_for_export.empty
+
+and ids_for_export_equation eqn =
+  match eqn with
+  | Type ty -> ids_for_export ty
+  | Rel rel -> (
+    match rel with
+    | Is_int name | Get_tag name ->
+      Ids_for_export.add_name Ids_for_export.empty name)
 
 (* We need to be very careful here. A non-trivial coercion expects to be dealing
    with some very specific type. As of this writing, the only non-trivial
@@ -1580,16 +1695,20 @@ and apply_coercion_function_type
       let rec_info = Rec_info (TD.create to_) in
       Ok (Or_unknown_or_bottom.Ok { code_id; rec_info }))
 
-and apply_coercion_env_extension { equations } coercion : _ Or_bottom.t =
-  let<+ equations =
-    Name.Map.fold
-      (fun name t result ->
-        let<* result = result in
-        let<+ t = apply_coercion t coercion in
-        Name.Map.add name t result)
-      equations (Or_bottom.Ok Name.Map.empty)
-  in
-  { equations }
+and apply_coercion_env_extension env_extension coercion : _ Or_bottom.t =
+  fold_env_extension
+    (fun name eqn result ->
+      let<* result = result in
+      let<+ eqn = apply_coercion_equation eqn coercion in
+      add_env_extension name eqn result)
+    env_extension (Or_bottom.Ok empty_env_extension)
+
+and apply_coercion_equation eqn coercion =
+  match eqn with
+  | Type ty ->
+    let<+ ty = apply_coercion ty coercion in
+    Type ty
+  | Rel _ -> Or_bottom.Ok eqn
 
 let apply_coercion t coercion =
   match apply_coercion t coercion with
@@ -1597,6 +1716,13 @@ let apply_coercion t coercion =
   | Bottom ->
     Misc.fatal_errorf "Cannot apply coercion %a@ to type %a" Coercion.print
       coercion print t
+
+let apply_coercion_equation eqn coercion =
+  match apply_coercion_equation eqn coercion with
+  | Ok eqn -> eqn
+  | Bottom ->
+    Misc.fatal_errorf "Cannot apply coercion %a@ to equation %a" Coercion.print
+      coercion print_equation eqn
 
 let rec remove_unused_value_slots_and_shortcut_aliases t ~used_value_slots
     ~canonicalise =
@@ -2014,7 +2140,7 @@ and remove_unused_value_slots_and_shortcut_aliases_function_type
   then function_type
   else { code_id; rec_info = rec_info' }
 
-and remove_unused_value_slots_and_shortcut_aliases_env_extension { equations }
+and remove_unused_value_slots_and_shortcut_aliases_env_extension env_extension
     ~used_value_slots ~canonicalise =
   (* CR vlaviron: Two things can be improved here. First, we could try to
      preserve sharing. Currently we lose sharing as soon as the extension isn't
@@ -2025,25 +2151,38 @@ and remove_unused_value_slots_and_shortcut_aliases_env_extension { equations }
      improvement would be to make this function return [Bottom] when an
      inconsistency is discovered, and use this to remove incompatible cases in
      the type that contains the extension. *)
-  let equations =
-    Name.Map.fold
-      (fun name ty acc ->
-        let ty' =
-          remove_unused_value_slots_and_shortcut_aliases ty ~used_value_slots
-            ~canonicalise
-        in
-        let lhs = canonicalise (Simple.name name) in
-        Simple.pattern_match lhs
-          ~name:(fun name' ~coercion ->
+  fold_env_extension
+    (fun name eqn acc ->
+      let eqn' =
+        remove_unused_value_slots_and_shortcut_aliases_equation eqn
+          ~used_value_slots ~canonicalise
+      in
+      let lhs = canonicalise (Simple.name name) in
+      Simple.pattern_match lhs
+        ~name:(fun name' ~coercion ->
+          match eqn' with
+          | Rel _ ->
+            (* TODO: canonicalise... *)
+            add_env_extension name' eqn' acc
+          | Type ty' -> (
             match get_alias_opt ty' with
             | Some rhs when Simple.equal lhs rhs -> acc
             | Some _ | None ->
-              let ty' = apply_coercion ty' (Coercion.inverse coercion) in
-              Name.Map.add name' ty' acc)
-          ~const:(fun _c -> acc (* CR vlaviron: check bottom and propagate *)))
-      equations Name.Map.empty
-  in
-  { equations }
+              let eqn' =
+                apply_coercion_equation eqn' (Coercion.inverse coercion)
+              in
+              add_env_extension name' eqn' acc))
+        ~const:(fun _c -> acc (* CR vlaviron: check bottom and propagate *)))
+    env_extension empty_env_extension
+
+and remove_unused_value_slots_and_shortcut_aliases_equation eqn
+    ~used_value_slots ~canonicalise =
+  match eqn with
+  | Type ty ->
+    Type
+      (remove_unused_value_slots_and_shortcut_aliases ty ~used_value_slots
+         ~canonicalise)
+  | Rel rel -> Rel rel
 
 let rec project_variables_out ~to_project ~expand t =
   match t with
@@ -2481,15 +2620,19 @@ and project_function_type ~to_project ~expand
   then function_type
   else { code_id; rec_info = rec_info' }
 
-and project_env_extension ~to_project ~expand ({ equations } as env_extension) =
+and project_env_extension ~to_project ~expand env_extension =
   let changed = ref false in
-  let equations' =
-    Name.Map.fold
-      (fun name ty acc ->
+  let env_extension' =
+    fold_env_extension
+      (fun name eqn acc ->
         let keep_equation () =
-          let ty' = project_variables_out ~to_project ~expand ty in
-          if ty != ty' then changed := true;
-          Name.Map.add name ty' acc
+          match project_equation ~to_project ~expand eqn with
+          | Some eqn' ->
+            if eqn != eqn' then changed := true;
+            add_env_extension name eqn' acc
+          | None ->
+            changed := true;
+            acc
         in
         Name.pattern_match name
           ~symbol:(fun _ -> keep_equation ())
@@ -2499,9 +2642,22 @@ and project_env_extension ~to_project ~expand ({ equations } as env_extension) =
               changed := true;
               acc)
             else keep_equation ()))
-      equations Name.Map.empty
+      env_extension empty_env_extension
   in
-  if !changed then { equations = equations' } else env_extension
+  if !changed then env_extension' else env_extension
+
+and project_equation ~to_project ~expand eqn =
+  match eqn with
+  | Type ty ->
+    let ty' = project_variables_out ~to_project ~expand ty in
+    Some (if ty != ty' then Type ty' else eqn)
+  | Rel rel -> (
+    match rel with
+    | Is_int name | Get_tag name ->
+      Name.pattern_match name
+        ~symbol:(fun _ -> Some eqn)
+        ~var:(fun var ->
+          if Variable.Set.mem var to_project then None else Some eqn))
 
 let kind t =
   match t with
@@ -2663,7 +2819,7 @@ module Row_like_for_blocks = struct
           (Or_unknown.Known
              { maps_to;
                index = { domain = Known index; shape };
-               env_extension = { equations = Name.Map.empty }
+               env_extension = empty_env_extension
              });
       other_tags = Bottom;
       alloc_mode
@@ -2675,7 +2831,7 @@ module Row_like_for_blocks = struct
           (Or_unknown.Known
              { maps_to;
                index = { domain = At_least index; shape };
-               env_extension = { equations = Name.Map.empty }
+               env_extension = empty_env_extension
              });
       other_tags = Bottom;
       alloc_mode
@@ -2687,7 +2843,7 @@ module Row_like_for_blocks = struct
         Ok
           { maps_to;
             index = { domain = At_least index; shape };
-            env_extension = { equations = Name.Map.empty }
+            env_extension = empty_env_extension
           };
       alloc_mode
     }
@@ -2763,7 +2919,7 @@ module Row_like_for_blocks = struct
         ~f:(fun shape ->
           { maps_to;
             index = { domain = At_least Targetint_31_63.zero; shape };
-            env_extension = { equations = Name.Map.empty }
+            env_extension = empty_env_extension
           })
         shape
     in
@@ -2779,7 +2935,7 @@ module Row_like_for_blocks = struct
           Or_unknown.Known
             { maps_to;
               index = { domain = Known size; shape };
-              env_extension = { equations = Name.Map.empty }
+              env_extension = empty_env_extension
             })
         shape_and_field_tys_by_tag
     in
@@ -2861,7 +3017,7 @@ module Row_like_for_closures = struct
       Function_slot.Map.singleton function_slot
         { index = { domain = Known contents; shape = () };
           maps_to = closures_entry;
-          env_extension = { equations = Name.Map.empty }
+          env_extension = empty_env_extension
         }
     in
     { known_closures; other_closures = Bottom }
@@ -2873,7 +3029,7 @@ module Row_like_for_closures = struct
       Function_slot.Map.singleton function_slot
         { index = { domain = At_least contents; shape = () };
           maps_to = closures_entry;
-          env_extension = { equations = Name.Map.empty }
+          env_extension = empty_env_extension
         }
     in
     { known_closures; other_closures = Bottom }
@@ -2943,9 +3099,22 @@ end
 module Env_extension = struct
   type t = env_extension
 
-  let empty = { equations = Name.Map.empty }
+  let empty = empty_env_extension
 
-  let create ~equations = { equations }
+  let create ~equations ~relations =
+    { type_equations = equations; rel_equations = relations }
+
+  let fold ~equation env_extension acc =
+    fold_env_extension equation env_extension acc
+
+  let map ~type_ { type_equations; rel_equations } =
+    let type_equations = Name.Map.map (fun ty -> type_ ty) type_equations in
+    { type_equations; rel_equations (* TODO *) }
+
+  let add_equation = add_env_extension
+
+  let add_type_equation name ty env_extension =
+    add_env_extension name (Type ty) env_extension
 
   let ids_for_export = ids_for_export_env_extension
 
@@ -2954,8 +3123,6 @@ module Env_extension = struct
   let free_names = free_names_env_extension ~follow_value_slots:true
 
   let print = print_env_extension
-
-  let to_map t = t.equations
 end
 
 let is_obviously_bottom t =

@@ -29,7 +29,7 @@ module Block_size : sig
   val inter : t -> t -> t
 end
 
-type relation = private
+type relation =
   | Is_int of Name.t
   | Get_tag of Name.t
 
@@ -153,7 +153,14 @@ and array_contents =
   | Immutable of { fields : t array }
   | Mutable
 
-and env_extension = private { equations : t Name.Map.t } [@@unboxed]
+and equation =
+  | Type of t
+  | Rel of relation
+
+and env_extension = private
+  { type_equations : t Name.Map.t;
+    rel_equations : RelationSet.t Name.Map.t
+  }
 
 type flambda_type = t
 
@@ -539,15 +546,22 @@ module Env_extension : sig
 
   val empty : t
 
-  val create : equations:flambda_type Name.Map.t -> t
+  val create :
+    equations:flambda_type Name.Map.t -> relations:RelationSet.t Name.Map.t -> t
+
+  val fold : equation:(Name.t -> equation -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val map : type_:(flambda_type -> flambda_type) -> t -> t
+
+  val add_equation : Name.t -> equation -> t -> t
+
+  val add_type_equation : Name.t -> flambda_type -> t -> t
 
   include Contains_ids.S with type t := t
 
   include Contains_names.S with type t := t
 
   val print : Format.formatter -> t -> unit
-
-  val to_map : t -> flambda_type Name.Map.t
 end
 
 module Descr : sig

@@ -18,7 +18,8 @@ type t =
   { names_to_types :
       (Type_grammar.t * Binding_time.With_name_mode.t) Name.Map.t;
     aliases : Aliases.t;
-    symbol_projections : Symbol_projection.t Variable.Map.t
+    symbol_projections : Symbol_projection.t Variable.Map.t;
+    relations : Type_grammar.RelationSet.t Name.Map.t
   }
 
 let print_kind_and_mode ~min_binding_time ppf (ty, binding_time_and_mode) =
@@ -40,12 +41,15 @@ let print_name_modes ~restrict_to ~min_binding_time ppf t =
 let empty =
   { names_to_types = Name.Map.empty;
     aliases = Aliases.empty;
-    symbol_projections = Variable.Map.empty
+    symbol_projections = Variable.Map.empty;
+    relations = Name.Map.empty
   }
 
 let names_to_types t = t.names_to_types
 
 let aliases t = t.aliases
+
+let relations t = t.relations
 
 let symbol_projections t = t.symbol_projections
 
@@ -58,7 +62,8 @@ let add_or_replace_binding t (name : Name.t) ty binding_time name_mode =
   in
   { names_to_types;
     aliases = t.aliases;
-    symbol_projections = t.symbol_projections
+    symbol_projections = t.symbol_projections;
+    relations = t.relations
   }
 
 let replace_variable_binding t var ty =
@@ -69,7 +74,8 @@ let replace_variable_binding t var ty =
   in
   { names_to_types;
     aliases = t.aliases;
-    symbol_projections = t.symbol_projections
+    symbol_projections = t.symbol_projections;
+    relations = t.relations
   }
 
 let with_aliases t ~aliases = { t with aliases }
@@ -77,6 +83,16 @@ let with_aliases t ~aliases = { t with aliases }
 let add_symbol_projection t var proj =
   let symbol_projections = Variable.Map.add var proj t.symbol_projections in
   { t with symbol_projections }
+
+let add_relation t name rel =
+  let relations =
+    Name.Map.update name
+      (function
+        | None -> Some (Type_grammar.RelationSet.singleton rel)
+        | Some rels -> Some (Type_grammar.RelationSet.add rel rels))
+      t.relations
+  in
+  { t with relations }
 
 let find_symbol_projection t var =
   match Variable.Map.find var t.symbol_projections with
@@ -109,9 +125,12 @@ let clean_for_export t ~reachable_names =
       t.names_to_types
   in
   let aliases = Aliases.empty in
-  { t with names_to_types; aliases }
+  (* TODO: Is this right? Probably. *)
+  let relations = Name.Map.empty in
+  { t with names_to_types; aliases; relations }
 
-let apply_renaming { names_to_types; aliases; symbol_projections } renaming =
+let apply_renaming { names_to_types; aliases; symbol_projections; relations }
+    renaming =
   let names_to_types =
     Name.Map.fold
       (fun name (ty, binding_time_and_mode) acc ->
@@ -122,6 +141,20 @@ let apply_renaming { names_to_types; aliases; symbol_projections } renaming =
       names_to_types Name.Map.empty
   in
   let aliases = Aliases.apply_renaming aliases renaming in
+  let relations =
+    Name.Map.fold
+      (fun name rels acc ->
+        let rels' =
+          Type_grammar.RelationSet.map
+            (function
+              | Is_int name -> Is_int (Renaming.apply_name renaming name)
+              | Get_tag name -> Get_tag (Renaming.apply_name renaming name))
+            rels
+        in
+        let name' = Renaming.apply_name renaming name in
+        Name.Map.add name' rels' acc)
+      relations Name.Map.empty
+  in
   let symbol_projections =
     Variable.Map.fold
       (fun var proj acc ->
@@ -131,7 +164,7 @@ let apply_renaming { names_to_types; aliases; symbol_projections } renaming =
           acc)
       symbol_projections Variable.Map.empty
   in
-  { names_to_types; aliases; symbol_projections }
+  { names_to_types; aliases; relations; symbol_projections }
 
 let merge t1 t2 =
   let names_to_types =
@@ -150,7 +183,8 @@ let merge t1 t2 =
             Symbol_projection.print proj2)
       t1.symbol_projections t2.symbol_projections
   in
-  { names_to_types; aliases; symbol_projections }
+  let relations = Name.Map.empty in
+  { names_to_types; aliases; relations; symbol_projections }
 
 let canonicalise t simple =
   Simple.pattern_match simple
@@ -161,7 +195,8 @@ let canonicalise t simple =
         coercion)
 
 let remove_unused_value_slots_and_shortcut_aliases
-    ({ names_to_types; aliases; symbol_projections } as t) ~used_value_slots =
+    ({ names_to_types; aliases; symbol_projections; relations } as t)
+    ~used_value_slots =
   let canonicalise = canonicalise t in
   let names_to_types =
     Name.Map.map_sharing
@@ -173,10 +208,30 @@ let remove_unused_value_slots_and_shortcut_aliases
         if ty == ty' then info else ty', binding_time_and_mode)
       names_to_types
   in
-  { names_to_types; aliases; symbol_projections }
+  let relations =
+    let rename_and_add name wrap relations =
+      let canonical = canonicalise (Simple.name name) in
+      Simple.pattern_match canonical
+        ~name:(fun name ~coercion:_ ->
+          Type_grammar.RelationSet.add (wrap name) relations)
+        ~const:(fun _ -> relations)
+    in
+    Name.Map.map_sharing
+      (fun rels ->
+        Type_grammar.RelationSet.fold
+          (fun rel relations ->
+            match rel with
+            | Is_int name ->
+              rename_and_add name (fun name -> Is_int name) relations
+            | Get_tag name ->
+              rename_and_add name (fun name -> Get_tag name) relations)
+          rels Type_grammar.RelationSet.empty)
+      relations
+  in
+  { names_to_types; aliases; relations; symbol_projections }
 
 let free_function_slots_and_value_slots
-    { names_to_types; aliases = _; symbol_projections } =
+    { names_to_types; aliases = _; relations = _; symbol_projections } =
   let from_projections =
     Variable.Map.fold
       (fun _var proj free_names ->

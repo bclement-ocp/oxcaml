@@ -155,57 +155,74 @@ let prove_get_tag_generic env t : Tag.Set.t generic_proof =
 
 let prove_get_tag env t = as_property (prove_get_tag_generic env t)
 
-let prove_naked_immediates_generic env t : Targetint_31_63.Set.t generic_proof =
+let refine_naked_immediates_with_relations env relations p =
+  (* If we have no known set but some relations, try one step of reduction to
+     get a better result *)
+  let refine_proof_with_set proof is : _ generic_proof =
+    let set_to_proof is : _ generic_proof =
+      if Targetint_31_63.Set.is_empty is then Invalid else Proved is
+    in
+    match proof with
+    | Invalid -> Invalid
+    | Unknown -> set_to_proof is
+    | Proved prev -> set_to_proof (Targetint_31_63.Set.inter prev is)
+  in
+  let refine_with_is_int (proof : _ generic_proof) name =
+    let is_int_set =
+      let scrutinee_ty = TE.find env name (Some Flambda_kind.value) in
+      match prove_is_int_generic ~variant_only:true env scrutinee_ty with
+      | Proved true -> Targetint_31_63.Set.singleton Targetint_31_63.bool_true
+      | Proved false -> Targetint_31_63.Set.singleton Targetint_31_63.bool_false
+      | Unknown ->
+        Targetint_31_63.Set.of_list
+          [Targetint_31_63.bool_false; Targetint_31_63.bool_true]
+      | Invalid -> Targetint_31_63.Set.empty
+    in
+    refine_proof_with_set proof is_int_set
+  in
+  let refine_with_get_tag (proof : _ generic_proof) name =
+    let block_ty = TE.find env name (Some Flambda_kind.value) in
+    match prove_get_tag_generic env block_ty with
+    | Proved tags ->
+      let tag_set =
+        Tag.Set.fold
+          (fun tag is ->
+            Targetint_31_63.Set.add (Tag.to_targetint_31_63 tag) is)
+          tags Targetint_31_63.Set.empty
+      in
+      refine_proof_with_set proof tag_set
+    | Unknown -> proof
+    | Invalid -> Invalid
+  in
+  let refine (rel : TG.relation) proof =
+    match rel with
+    | Is_int name -> refine_with_is_int proof name
+    | Get_tag name -> refine_with_get_tag proof name
+  in
+  TG.RelationSet.fold refine relations p
+
+let prove_naked_immediates_generic env ?name t :
+    Targetint_31_63.Set.t generic_proof =
+  let relations =
+    (* If we are given an explicit name, use it to recover relations. Otherwise,
+       try to infer it from an alias type. *)
+    match name with
+    | Some name -> TE.relations_of_simple env (Simple.name name)
+    | None -> (
+      match TG.get_alias_exn t with
+      | simple -> TE.relations_of_simple env simple
+      | exception Not_found -> TG.RelationSet.empty)
+  in
   match expand_head env t with
   | Naked_immediate (Ok { immediates = Known is; relations = _ }) ->
     (* No attempt at reduction *)
-    if Targetint_31_63.Set.is_empty is then Invalid else Proved is
-  | Naked_immediate (Ok { immediates = Unknown; relations }) ->
+    if Targetint_31_63.Set.is_empty is
+    then Invalid
+    else refine_naked_immediates_with_relations env relations (Proved is)
+  | Naked_immediate (Ok { immediates = Unknown; relations = _ }) ->
     (* If we have no known set but some relations, try one step of reduction to
        get a better result *)
-    let refine_proof_with_set proof is : _ generic_proof =
-      let set_to_proof is : _ generic_proof =
-        if Targetint_31_63.Set.is_empty is then Invalid else Proved is
-      in
-      match proof with
-      | Invalid -> Invalid
-      | Unknown -> set_to_proof is
-      | Proved prev -> set_to_proof (Targetint_31_63.Set.inter prev is)
-    in
-    let refine_with_is_int (proof : _ generic_proof) name =
-      let is_int_set =
-        let scrutinee_ty = TE.find env name (Some Flambda_kind.value) in
-        match prove_is_int_generic ~variant_only:true env scrutinee_ty with
-        | Proved true -> Targetint_31_63.Set.singleton Targetint_31_63.bool_true
-        | Proved false ->
-          Targetint_31_63.Set.singleton Targetint_31_63.bool_false
-        | Unknown ->
-          Targetint_31_63.Set.of_list
-            [Targetint_31_63.bool_false; Targetint_31_63.bool_true]
-        | Invalid -> Targetint_31_63.Set.empty
-      in
-      refine_proof_with_set proof is_int_set
-    in
-    let refine_with_get_tag (proof : _ generic_proof) name =
-      let block_ty = TE.find env name (Some Flambda_kind.value) in
-      match prove_get_tag_generic env block_ty with
-      | Proved tags ->
-        let tag_set =
-          Tag.Set.fold
-            (fun tag is ->
-              Targetint_31_63.Set.add (Tag.to_targetint_31_63 tag) is)
-            tags Targetint_31_63.Set.empty
-        in
-        refine_proof_with_set proof tag_set
-      | Unknown -> proof
-      | Invalid -> Invalid
-    in
-    let refine (rel : TG.relation) proof =
-      match rel with
-      | Is_int name -> refine_with_is_int proof name
-      | Get_tag name -> refine_with_get_tag proof name
-    in
-    TG.RelationSet.fold refine relations (Unknown : _ generic_proof)
+    refine_naked_immediates_with_relations env relations Unknown
   | Naked_immediate Unknown -> Unknown
   | Naked_immediate Bottom -> Invalid
   | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
@@ -215,8 +232,8 @@ let prove_naked_immediates_generic env t : Targetint_31_63.Set.t generic_proof =
 let meet_naked_immediates env t =
   as_meet_shortcut (prove_naked_immediates_generic env t)
 
-let prove_naked_immediates env t =
-  as_property (prove_naked_immediates_generic env t)
+let prove_naked_immediates env name t : _ proof_of_property =
+  as_property (prove_naked_immediates_generic env ~name t)
 
 let prove_equals_tagged_immediates env t : _ proof_of_property =
   match expand_head env t with
@@ -1113,20 +1130,30 @@ let prove_physical_equality env t1 t2 =
 
                This is what allows us to combine correctly with the property on
                blocks to return a precise enough result. *)
+            let check_aliases_or_unknown () =
+              (* Note: this is valid because immediates are physically equal iff
+                 they are structurally equal. *)
+              match
+                ( TE.get_alias_then_canonical_simple_exn env imms1,
+                  TE.get_alias_then_canonical_simple_exn env imms2 )
+              with
+              | s1, s2 when Simple.equal s1 s2 -> Proved true
+              | _ | (exception Not_found) -> Unknown
+            in
             match
               ( prove_naked_immediates_generic env imms1,
                 prove_naked_immediates_generic env imms2 )
             with
             | Invalid, Invalid -> Invalid
             | Invalid, _ | _, Invalid -> Proved false
-            | Unknown, _ | _, Unknown -> Unknown
+            | Unknown, _ | _, Unknown -> check_aliases_or_unknown ()
             | Proved imms1, Proved imms2 -> (
               let module S = Targetint_31_63.Set in
               if S.is_empty (S.inter imms1 imms2)
               then Proved false
               else
                 match S.get_singleton imms1, S.get_singleton imms2 with
-                | None, _ | _, None -> Unknown
+                | None, _ | _, None -> check_aliases_or_unknown ()
                 | Some imm1, Some imm2 ->
                   (* We've ruled out the empty intersection case, so the numbers
                      have to be equal *)

@@ -214,6 +214,8 @@ val aliases_of_simple :
 
 val aliases_of_simple_allowable_in_types : t -> Simple.t -> Aliases.Alias_set.t
 
+val relations_of_simple : t -> Simple.t -> Type_grammar.RelationSet.t
+
 val add_to_code_age_relation :
   t -> new_code_id:Code_id.t -> old_code_id:Code_id.t option -> t
 

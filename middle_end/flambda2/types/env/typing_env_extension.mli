@@ -18,7 +18,8 @@ type t = Type_grammar.Env_extension.t
 
 val print : Format.formatter -> t -> unit
 
-val fold : equation:(Name.t -> Type_grammar.t -> 'a -> 'a) -> t -> 'a -> 'a
+val fold :
+  equation:(Name.t -> Type_grammar.equation -> 'a -> 'a) -> t -> 'a -> 'a
 
 val invariant : t -> unit
 
@@ -26,15 +27,24 @@ val empty : t
 
 val is_empty : t -> bool
 
-val from_map : Type_grammar.t Name.Map.t -> t
+val mem : Name.t -> t -> bool
 
-val to_map : t -> Type_grammar.t Name.Map.t
+val from_maps :
+  equations:Type_grammar.t Name.Map.t ->
+  relations:Type_grammar.RelationSet.t Name.Map.t ->
+  t
 
 val one_equation : Name.t -> Type_grammar.t -> t
 
+val one_relation : Name.t -> Type_grammar.relation -> t
+
 val add_or_replace_equation : t -> Name.t -> Type_grammar.t -> t
 
+val add_relation : t -> Name.t -> Type_grammar.relation -> t
+
 val replace_equation : t -> Name.t -> Type_grammar.t -> t
+
+val disjoint_union : t -> t -> t
 
 include Contains_ids.S with type t := t
 
@@ -43,14 +53,14 @@ include Contains_names.S with type t := t
 module With_extra_variables : sig
   type t =
     { existential_vars : Flambda_kind.t Variable.Map.t;
-      equations : Type_grammar.t Name.Map.t
+      env_extension : Type_grammar.env_extension
     }
 
   val print : Format.formatter -> t -> unit
 
   val fold :
     variable:(Variable.t -> Flambda_kind.t -> 'a -> 'a) ->
-    equation:(Name.t -> Type_grammar.t -> 'a -> 'a) ->
+    equation:(Name.t -> Type_grammar.equation -> 'a -> 'a) ->
     t ->
     'a ->
     'a

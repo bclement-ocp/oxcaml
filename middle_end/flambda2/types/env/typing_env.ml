@@ -139,6 +139,35 @@ let is_bottom t = t.is_bottom
 let aliases t =
   Cached_level.aliases (One_level.just_after_level t.current_level)
 
+let print_rel ppf rel =
+  match rel with
+  | TG.Is_int name ->
+    Format.fprintf ppf "@[<hov 1>(is_int %a)@]" Name.print name
+  | TG.Get_tag name ->
+    Format.fprintf ppf "@[<hov 1>(get_tag %a)@]" Name.print name
+
+let print_rels ppf rels =
+  let rels = TG.RelationSet.elements rels in
+  match rels with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space print_rel ppf rels;
+    Format.pp_print_string ppf ")"
+
+let print_relations ppf relations =
+  let relations = Name.Map.bindings relations in
+  match relations with
+  | [] -> Format.pp_print_string ppf "()"
+  | _ :: _ ->
+    Format.pp_print_string ppf "(";
+    Format.pp_print_list ~pp_sep:Format.pp_print_space
+      (fun ppf (name, rels) ->
+        Format.fprintf ppf "@[<hov 1>%a@ :@ %a@]" Name.print name print_rels
+          rels)
+      ppf relations;
+    Format.pp_print_string ppf ")"
+
 (* CR-someday mshinwell: Should print name occurrence kinds *)
 let [@ocamlformat "disable"] print ppf
       ({ resolver = _; binding_time_resolver = _;get_imported_names = _;
@@ -164,6 +193,7 @@ let [@ocamlformat "disable"] print ppf
          @[<hov 1>(code_age_relation@ %a)@]@ \
          @[<hov 1>(levels@ %a)@]@ \
          @[<hov 1>(aliases@ %a)@]\
+         @[<hov 1>(relations@ %a)@]\
        )@]"
       Symbol.Set.print defined_symbols
       Code_age_relation.print code_age_relation
@@ -171,6 +201,7 @@ let [@ocamlformat "disable"] print ppf
          (One_level.print ~min_binding_time))
       levels
       Aliases.print (aliases t)
+      print_relations (Cached_level.relations (One_level.just_after_level t.current_level))
 
 let [@ocamlformat "disable"] print_serializable ppf
     { defined_symbols_without_equations; code_age_relation; just_after_level } =
@@ -180,12 +211,14 @@ let [@ocamlformat "disable"] print_serializable ppf
         @[<hov 1>(code_age_relation@ %a)@]@ \
         @[<hov 1>(type_equations@ %a)@]@ \
         @[<hov 1>(aliases@ %a)@]\
+        @[<hov 1>(relations@ %a)@]\
         )@]"
     (Format.pp_print_list ~pp_sep:Format.pp_print_space Symbol.print) defined_symbols_without_equations
     Code_age_relation.print code_age_relation
     (Name.Map.print (fun ppf (ty, _bt_and_mode) -> TG.print ppf ty))
     (Cached_level.names_to_types just_after_level)
     Aliases.print (Cached_level.aliases just_after_level)
+    print_relations (Cached_level.relations just_after_level)
 
 module Meet_or_join_env_base : sig
   type t
@@ -863,9 +896,32 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
         with
         | Ok { canonical_element; alias_of_demoted_element; t = aliases } ->
           let t = with_aliases t ~aliases in
+          let t =
+            Simple.pattern_match alias_of_demoted_element
+              ~name:(fun name ~coercion:_ ->
+                Simple.pattern_match canonical_element
+                  ~name:(fun canonical ~coercion:_ ->
+                    let rels =
+                      match
+                        Name.Map.find name (Cached_level.relations (cached t))
+                      with
+                      | exception Not_found -> TG.RelationSet.empty
+                      | rels -> rels
+                    in
+                    (* TODO: move info from name → canonical_element. *)
+                    (* TODO: if canonical element is known might lead to rev prop. *)
+                    (* TODO: Relation.demote_to_canonical should do this *)
+                    TG.RelationSet.fold
+                      (fun rel t ->
+                        add_relation ~raise_on_bottom t canonical rel ~meet_type)
+                      rels t)
+                  ~const:(fun _ -> t))
+              ~const:(fun _ -> t)
+          in
           (* We need to change the demoted alias's type to point to the new
              canonical element. *)
           let ty = TG.alias_type_of kind canonical_element in
+          (* TODO: We need to substitute in relations. *)
           Some (alias_of_demoted_element, t, ty)
         | Bottom -> if raise_on_bottom then raise Bottom_equation else None)
   in
@@ -938,11 +994,61 @@ and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
     t
   | t -> t
 
+and add_relation0 t name rel =
+  (* Actually add the relation, which is guaranteed to be between canonical
+     names. *)
+  let level = TEL.add_relation (One_level.level t.current_level) name rel in
+  let just_after_level =
+    Cached_level.add_relation
+      (One_level.just_after_level t.current_level)
+      name rel
+  in
+  let current_level =
+    One_level.create (current_scope t) level ~just_after_level
+  in
+  with_current_level t ~current_level
+
+and add_relation1 ~raise_on_bottom t simple rel ~meet_type =
+  Simple.pattern_match simple
+    ~name:(fun name ~coercion:_ -> add_relation0 t name rel)
+    ~const:(fun cte ->
+      match Reg_width_const.is_naked_immediate cte with
+      | Some i -> (
+        match MTC.shape_of_relation (Targetint_31_63.Set.singleton i) rel with
+        | Or_unknown_or_bottom.Ok (name, ty) ->
+          add_equation ~raise_on_bottom t name ty ~meet_type
+        | Or_unknown_or_bottom.Unknown -> t
+        | Or_unknown_or_bottom.Bottom ->
+          if raise_on_bottom then raise Bottom_equation else t)
+      | None -> Misc.fatal_error "Wrong kind")
+
+and add_relation ~raise_on_bottom t name rel ~meet_type =
+  let aliases = aliases t in
+  let find_canonical name =
+    Aliases.get_canonical_ignoring_name_mode aliases name
+  in
+  add_relation1 ~raise_on_bottom ~meet_type t (find_canonical name) rel
+(* match rel with | TG.Is_int other_name -> Simple.pattern_match (find_canonical
+   other_name) ~name:(fun other_name ~coercion:_ -> add_relation1
+   ~raise_on_bottom ~meet_type t (find_canonical name) (TG.Is_int other_name))
+   ~const:(fun cte -> match Reg_width_const.descr cte with | Tagged_immediate _
+   -> (* Is_int of a tagged immediate is true *) add_equation ~raise_on_bottom
+   ~meet_type t name (TG.this_naked_immediate Targetint_31_63.one) |
+   Naked_immediate _ | Naked_float32 _ | Naked_float _ | Naked_int32 _ |
+   Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ -> Misc.fatal_error "Kind
+   error") | TG.Get_tag other_name -> Simple.pattern_match (find_canonical
+   other_name) ~name:(fun other_name ~coercion:_ -> add_relation1
+   ~raise_on_bottom ~meet_type t (find_canonical name) (TG.Get_tag other_name))
+   ~const:(fun _ -> (* if it is a constant it is not a block *) if
+   raise_on_bottom then raise Bottom_equation else t)*)
+
 and add_env_extension ~raise_on_bottom t
     (env_extension : Typing_env_extension.t) ~meet_type =
   Typing_env_extension.fold
-    ~equation:(fun name ty t ->
-      add_equation ~raise_on_bottom t name ty ~meet_type)
+    ~equation:(fun name eqn t ->
+      match eqn with
+      | Type ty -> add_equation ~raise_on_bottom t name ty ~meet_type
+      | Rel rel -> add_relation ~raise_on_bottom t name rel ~meet_type)
     env_extension t
 
 and add_env_extension_with_extra_variables t
@@ -950,8 +1056,11 @@ and add_env_extension_with_extra_variables t
   Typing_env_extension.With_extra_variables.fold
     ~variable:(fun var kind t ->
       add_variable_definition t var kind Name_mode.in_types)
-    ~equation:(fun name ty t ->
-      try add_equation ~raise_on_bottom:true t name ty ~meet_type
+    ~equation:(fun name eqn t ->
+      try
+        match eqn with
+        | Type ty -> add_equation ~raise_on_bottom:true t name ty ~meet_type
+        | Rel rel -> add_relation ~raise_on_bottom:true t name rel ~meet_type
       with Bottom_equation -> make_bottom t)
     env_extension t
 
@@ -967,6 +1076,17 @@ let add_env_extension_from_level t level ~meet_type : t =
         try add_equation ~raise_on_bottom:true t name ty ~meet_type
         with Bottom_equation -> make_bottom t)
       (TEL.equations level) t
+  in
+  let t =
+    Name.Map.fold
+      (fun name rels t ->
+        try
+          TG.RelationSet.fold
+            (fun rel t ->
+              add_relation ~raise_on_bottom:true t name rel ~meet_type)
+            rels t
+        with Bottom_equation -> (* TODO *) assert false)
+      (TEL.relations level) t
   in
   Variable.Map.fold
     (fun var proj t -> add_symbol_projection t var proj)
@@ -1159,6 +1279,20 @@ let aliases_of_simple t ~min_name_mode simple =
 
 let aliases_of_simple_allowable_in_types t simple =
   aliases_of_simple t ~min_name_mode:Name_mode.in_types simple
+
+let relations_of_simple t simple =
+  match get_canonical_simple_exn ~min_name_mode:Name_mode.in_types t simple with
+  | exception Not_found ->
+    (* This can happen if [simple] is of mode [Phantom], in which case we are
+       not interested in propagating relations. *)
+    TG.RelationSet.empty
+  | simple ->
+    let name name ~coercion:_ =
+      match Name.Map.find name (Cached_level.relations (cached t)) with
+      | exception Not_found -> TG.RelationSet.empty
+      | rels -> rels
+    in
+    Simple.pattern_match simple ~const:(fun _ -> TG.RelationSet.empty) ~name
 
 let compute_joined_aliases base_env alias_candidates envs_at_uses =
   let aliases_at_first_use, aliases_at_other_uses =
