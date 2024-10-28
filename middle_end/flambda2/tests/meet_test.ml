@@ -99,7 +99,12 @@ let meet_variants_don't_lose_aliases () =
   let va = Variable.create "a" in
   let vb = Variable.create "b" in
   let v_variant = Variable.create "variant" in
+  let v_tag = Variable.create "tag" in
   let env = defines env [vx; vy; va; vb; v_variant] in
+  let env =
+    let v' = Bound_var.create v_tag Name_mode.normal in
+    TE.add_definition env (Bound_name.create_var v') K.naked_immediate
+  in
   let const_ctors = T.bottom K.naked_immediate in
   let ty1 =
     let non_const_ctors =
@@ -132,15 +137,23 @@ let meet_variants_don't_lose_aliases () =
       T.print ty2 T.print meet_ty TEE.print env_extension;
     (* Env extension should be empty *)
     let env = TE.add_equation env (Name.var v_variant) meet_ty in
-    let t_get_tag = T.get_tag_for_block ~block:(Name.var v_variant) in
-    let t_tag_1 = T.this_naked_immediate Targetint_31_63.one in
-    match T.meet env t_get_tag t_tag_1 with
+    let env_extension_get_tag =
+      TEE.one_relation (Name.var v_tag)
+        (T.get_tag_for_block ~block:(Name.var v_variant))
+    in
+    let env_extension_1 =
+      TEE.one_equation (Name.var v_tag)
+        (T.this_naked_immediate Targetint_31_63.one)
+    in
+    match T.meet_env_extension env env_extension_get_tag env_extension_1 with
     | Bottom -> assert false
-    | Ok (tag_meet_ty, tag_meet_env_extension) ->
-      Format.eprintf "t_get_tag: %a@.t_tag: %a@." T.print t_get_tag T.print
-        t_tag_1;
-      Format.eprintf "@[<hov 2>meet:@ %a@]@.@[<hov 2>env_extension:@ %a@]@."
-        T.print tag_meet_ty TEE.print tag_meet_env_extension)
+    | Ok tag_meet_env_extension ->
+      let meet_env = TE.add_env_extension env tag_meet_env_extension in
+      Format.eprintf "env_extension_get_tag: %a@.env_extension_1: %a@."
+        TEE.print env_extension_get_tag TEE.print env_extension_1;
+      Format.eprintf
+        "@[<hov 2>meet:@ %a@]@.@[<hov 2>tag_meet_env_extension:@ %a@]@."
+        TE.print meet_env TEE.print tag_meet_env_extension)
 
 let test_meet_two_blocks () =
   let define env v =

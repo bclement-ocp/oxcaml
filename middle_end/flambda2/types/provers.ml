@@ -214,16 +214,13 @@ let prove_naked_immediates_generic env ?name t :
       | exception Not_found -> TG.RelationSet.empty)
   in
   match expand_head env t with
-  | Naked_immediate (Ok { immediates = Known is; relations = _ }) ->
-    (* No attempt at reduction *)
+  | Naked_immediate (Ok is) ->
+    let is = (is :> Targetint_31_63.Set.t) in
     if Targetint_31_63.Set.is_empty is
     then Invalid
     else refine_naked_immediates_with_relations env relations (Proved is)
-  | Naked_immediate (Ok { immediates = Unknown; relations = _ }) ->
-    (* If we have no known set but some relations, try one step of reduction to
-       get a better result *)
+  | Naked_immediate Unknown ->
     refine_naked_immediates_with_relations env relations Unknown
-  | Naked_immediate Unknown -> Unknown
   | Naked_immediate Bottom -> Invalid
   | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
   | Naked_nativeint _ | Naked_vec128 _ | Rec_info _ | Region _ ->

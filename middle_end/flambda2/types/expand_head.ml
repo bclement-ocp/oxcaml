@@ -351,8 +351,7 @@ let expand_head_of_alias_type env kind
     ~const:(fun const ->
       match Reg_width_const.descr const with
       | Naked_immediate i ->
-        ET.create_naked_immediate
-          (TG.Head_of_kind_naked_immediate.create_naked_immediate i)
+        ET.create_naked_immediate (TG.Head_of_kind_naked_immediate.create i)
       | Tagged_immediate i ->
         ET.create_value (TG.Head_of_kind_value.create_tagged_immediate i)
       | Naked_float32 f ->

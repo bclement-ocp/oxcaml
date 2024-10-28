@@ -146,8 +146,10 @@ module With_extra_variables = struct
     | TG.Rel rel ->
       TG.Rel
         (match rel with
-        | Is_int name -> Is_int (Renaming.apply_name renaming name)
-        | Get_tag name -> Get_tag (Renaming.apply_name renaming name))
+        | Is_int name ->
+          TG.is_int_for_scrutinee ~scrutinee:(Renaming.apply_name renaming name)
+        | Get_tag name ->
+          TG.get_tag_for_block ~block:(Renaming.apply_name renaming name))
 
   let apply_renaming { existential_vars; env_extension } renaming =
     let existential_vars =

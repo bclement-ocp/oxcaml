@@ -85,16 +85,6 @@ let set_meet (type a b) (module S : Container_types_intf.Set with type t = a)
     let s = S.inter s1 s2 in
     if S.is_empty s then Bottom else Ok (New_result (of_set s), env)
 
-(* This function is used for sets of constraints, where a meet between two sets
-   translates to the union of the sets *)
-let reverse_set_meet (type a) (module S : Set.S with type t = a) env (s1 : a)
-    (s2 : a) : a meet_result =
-  match S.subset s1 s2, S.subset s2 s1 with
-  | true, true -> Ok (Both_inputs, env)
-  | true, false -> Ok (Right_input, env)
-  | false, true -> Ok (Left_input, env)
-  | false, false -> Ok (New_result (S.union s1 s2), env)
-
 type ('key, 'data, 'mapping) fold2 =
   { fold2 :
       'acc.
@@ -780,57 +770,13 @@ and meet_variant env ~(blocks1 : TG.Row_like_for_blocks.t Or_unknown.t)
   pairwise_disjunction_meet ~join_env_extension ~meet_type blocks_meet
     immediates_meet env blocks1 blocks2 imms1 imms2
 
-and meet_head_of_kind_naked_immediate env (t1 : TG.head_of_kind_naked_immediate)
-    (t2 : TG.head_of_kind_naked_immediate) :
-    TG.head_of_kind_naked_immediate meet_result =
-  let module I = Targetint_31_63 in
-  (* First compute the result type *)
-  let meet_immediates =
-    meet_unknown
-      (set_meet (module I.Set) ~of_set:Fun.id)
-      ~contents_is_bottom:I.Set.is_empty
-  in
-  let meet_relations = reverse_set_meet (module TG.RelationSet) in
-  let result =
-    combine_results2 env ~meet_a:meet_immediates ~meet_b:meet_relations
-      ~left_a:t1.immediates ~right_a:t2.immediates ~left_b:t1.relations
-      ~right_b:t2.relations ~rebuild:(fun immediates relations ->
-        TG.Head_of_kind_naked_immediate.create ~immediates ~relations)
-  in
-  (* Now, use the relations to do some reduction *)
-  match result with
-  | Bottom -> result
-  | Ok (new_value, _env) -> (
-    (* Note: the env is not discarded, [result] itself is returned directly or
-       passed to the fold function *)
-    match extract_value new_value t1 t2 with
-    | { immediates = Unknown; relations = _ } ->
-      (* No reduction to do *)
-      result
-    | { immediates = Known is; relations } ->
-      (* Update the result by reduction, following the relations *)
-      let reduce relation (result : _ meet_result) : _ meet_result =
-        match result with
-        | Bottom -> Bottom
-        | Ok (r, env) -> (
-          match MTC.shape_of_relation is relation with
-          | Bottom -> Bottom
-          | Unknown -> result
-          | Ok (name, shape) -> (
-            match meet env (TE.find env name (Some K.value)) shape with
-            | Bottom -> Bottom
-            | Ok (ty, env) ->
-              let env =
-                match ty with
-                | New_result ty ->
-                  TE.add_equation env name ty ~meet_type:(New meet_type)
-                | Right_input ->
-                  TE.add_equation env name shape ~meet_type:(New meet_type)
-                | Left_input | Both_inputs -> env
-              in
-              Ok (r, env)))
-      in
-      TG.RelationSet.fold reduce relations result)
+and meet_head_of_kind_naked_immediate env t1 t2 =
+  set_meet
+    (module Targetint_31_63.Set)
+    env
+    (t1 : TG.head_of_kind_naked_immediate :> Targetint_31_63.Set.t)
+    (t2 : TG.head_of_kind_naked_immediate :> Targetint_31_63.Set.t)
+    ~of_set:TG.Head_of_kind_naked_immediate.create_non_empty_set
 
 and meet_head_of_kind_naked_float32 env t1 t2 =
   set_meet
@@ -1603,21 +1549,8 @@ and join_variant env ~(blocks1 : TG.Row_like_for_blocks.t Or_unknown.t)
   | Known _, Unknown | Unknown, Known _ | Known _, Known _ ->
     Known (blocks, imms)
 
-and join_head_of_kind_naked_immediate _env
-    (head1 : TG.Head_of_kind_naked_immediate.t)
-    (head2 : TG.Head_of_kind_naked_immediate.t) :
-    TG.Head_of_kind_naked_immediate.t Or_unknown.t =
-  let module I = Targetint_31_63 in
-  let immediates : _ Or_unknown.t =
-    match head1.immediates, head2.immediates with
-    | Unknown, _ | _, Unknown -> Unknown
-    | Known is1, Known is2 -> Known (I.Set.union is1 is2)
-  in
-  let relations = TG.RelationSet.inter head1.relations head2.relations in
-  match immediates with
-  | Unknown when TG.RelationSet.is_empty relations -> Unknown
-  | Known _ | Unknown ->
-    Known (TG.Head_of_kind_naked_immediate.create ~immediates ~relations)
+and join_head_of_kind_naked_immediate _env t1 t2 : _ Or_unknown.t =
+  Known (TG.Head_of_kind_naked_immediate.union t1 t2)
 
 and join_head_of_kind_naked_float32 _env t1 t2 : _ Or_unknown.t =
   Known (TG.Head_of_kind_naked_float32.union t1 t2)
@@ -1998,13 +1931,6 @@ and join_env_extension env (ext1 : TEE.t) (ext2 : TEE.t) : TEE.t =
         match rel1_opt, rel2_opt with
         | None, _ | _, None -> None
         | Some rel1, Some rel2 ->
-          (* Note: this might introduce duplicate relations relative to aliases
-             (if we have both `x = Is_int a` and `y = Is_int b` while knowing
-             that `x`, `y` and `a`, `b` are aliases.
-
-             Currently we keep things as is because we don't try too hard to
-             recover equations when joining, but we could normalize here with
-             more aggresive joining. *)
           let rel = TG.RelationSet.inter rel1 rel2 in
           if TG.RelationSet.is_empty rel then None else Some rel)
       ext1.TG.rel_equations ext2.TG.rel_equations

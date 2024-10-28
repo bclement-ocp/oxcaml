@@ -147,8 +147,12 @@ let apply_renaming { names_to_types; aliases; symbol_projections; relations }
         let rels' =
           Type_grammar.RelationSet.map
             (function
-              | Is_int name -> Is_int (Renaming.apply_name renaming name)
-              | Get_tag name -> Get_tag (Renaming.apply_name renaming name))
+              | Is_int name ->
+                Type_grammar.is_int_for_scrutinee
+                  ~scrutinee:(Renaming.apply_name renaming name)
+              | Get_tag name ->
+                Type_grammar.get_tag_for_block
+                  ~block:(Renaming.apply_name renaming name))
             rels
         in
         let name' = Renaming.apply_name renaming name in
@@ -222,9 +226,13 @@ let remove_unused_value_slots_and_shortcut_aliases
           (fun rel relations ->
             match rel with
             | Is_int name ->
-              rename_and_add name (fun name -> Is_int name) relations
+              rename_and_add name
+                (fun scrutinee -> Type_grammar.is_int_for_scrutinee ~scrutinee)
+                relations
             | Get_tag name ->
-              rename_and_add name (fun name -> Get_tag name) relations)
+              rename_and_add name
+                (fun block -> Type_grammar.get_tag_for_block ~block)
+                relations)
           rels Type_grammar.RelationSet.empty)
       relations
   in

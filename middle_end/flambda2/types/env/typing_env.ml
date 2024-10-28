@@ -864,6 +864,45 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
          element as known by the relevant alias tracker (the actual canonical,
          ignoring any name modes). *)
       let canonical = find_canonical name in
+      (* XXX: backwards propagation of relations here!. *)
+      let t =
+        Simple.pattern_match
+          ~name:(fun name ~coercion:_ ->
+            match TG.descr ty with
+            | Naked_immediate (Ok (No_alias is)) -> (
+              let relations = Cached_level.relations (cached t) in
+              match Name.Map.find name relations with
+              | exception Not_found -> t
+              | rels ->
+                TG.RelationSet.fold
+                  (fun rel t ->
+                    match
+                      MTC.shape_of_relation (is :> Targetint_31_63.Set.t) rel
+                    with
+                    | Unknown -> t
+                    | Bottom ->
+                      if raise_on_bottom
+                      then raise Bottom_equation
+                      else
+                        (* It is possible that [name] should become [Bottom]
+                           here, but I'm not sure that is correct, so let's be
+                           conservative.
+
+                           Actually the related name should probably become
+                           [Bottom] instead. *)
+                        t
+                    | Ok (scrutinee, ty) ->
+                      add_equation ~raise_on_bottom ~meet_type t scrutinee ty)
+                  rels t)
+            | Naked_immediate (Ok (Equals _)) -> assert false
+            | Naked_immediate (Unknown | Bottom)
+            | Value _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
+            | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Rec_info _
+            | Region _ ->
+              t)
+          ~const:(fun _ -> t)
+          canonical
+      in
       Some (canonical, t, ty)
     | alias_rhs -> (
       (* Forget where [name] and [alias_rhs] came from---our job is now to
@@ -899,23 +938,21 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
           let t =
             Simple.pattern_match alias_of_demoted_element
               ~name:(fun name ~coercion:_ ->
-                Simple.pattern_match canonical_element
-                  ~name:(fun canonical ~coercion:_ ->
-                    let rels =
-                      match
-                        Name.Map.find name (Cached_level.relations (cached t))
-                      with
-                      | exception Not_found -> TG.RelationSet.empty
-                      | rels -> rels
-                    in
-                    (* TODO: move info from name → canonical_element. *)
-                    (* TODO: if canonical element is known might lead to rev prop. *)
-                    (* TODO: Relation.demote_to_canonical should do this *)
-                    TG.RelationSet.fold
-                      (fun rel t ->
-                        add_relation ~raise_on_bottom t canonical rel ~meet_type)
-                      rels t)
-                  ~const:(fun _ -> t))
+                let rels =
+                  match
+                    Name.Map.find name (Cached_level.relations (cached t))
+                  with
+                  | exception Not_found -> TG.RelationSet.empty
+                  | rels -> rels
+                in
+                (* If the canonical element is a known value, this might lead to
+                   backwards propagation, which is taken care of by
+                   [add_relation]. *)
+                TG.RelationSet.fold
+                  (fun rel t ->
+                    add_relation1 ~raise_on_bottom t canonical_element rel
+                      ~meet_type)
+                  rels t)
               ~const:(fun _ -> t)
           in
           (* We need to change the demoted alias's type to point to the new

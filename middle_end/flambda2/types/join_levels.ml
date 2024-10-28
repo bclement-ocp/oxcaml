@@ -283,7 +283,7 @@ let join_types ~env_at_fork envs_with_levels =
                                 then
                                   Format.printf "as %a@." Name.print scrutinee;
                                 assert (TE.mem base_env scrutinee);
-                                let rel' = TG.Is_int scrutinee in
+                                let rel' = TG.is_int_for_scrutinee ~scrutinee in
                                 let left_rels =
                                   TE.relations_of_simple left_env left_simple
                                 in
@@ -298,7 +298,9 @@ let join_types ~env_at_fork envs_with_levels =
                                       left_rels;
                                   None))
                               ~const:(fun _ -> assert false))
-                        | Get_tag _block -> None)
+                        | Get_tag block ->
+                          let _rel = TG.get_tag_for_block ~block in
+                          None)
                       rels
                   in
                   if TG.RelationSet.is_empty rels then None else Some rels)
@@ -377,26 +379,8 @@ let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
       joined_types
   in
   let relations =
-    Name.Map.filter_map
-      (fun name rels ->
-        if not (Name_occurrences.mem_name allowed name)
-        then None
-        else
-          let rels =
-            TG.RelationSet.filter
-              (fun rel ->
-                let keep =
-                  match rel with
-                  | TG.Is_int name | TG.Get_tag name ->
-                    Name_occurrences.mem_name allowed name
-                in
-                if not keep
-                then
-                  if do_debug then Format.printf "REMOVING %a@." print_rel rel;
-                keep)
-              rels
-          in
-          if TG.RelationSet.is_empty rels then None else Some rels)
+    Name.Map.filter
+      (fun name _ -> Name_occurrences.mem_name allowed name)
       joined_relations
   in
   let symbol_projections =
@@ -470,30 +454,43 @@ let join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
      sides of the propagated equations are also themselves propagated. The
      definition of any such propagated name (i.e. one that does not occur in the
      environment at the fork point) will be made existential. *)
-  let free_names_transitive typ =
+  let rec free_names_transitive_of_type0 typ ~result =
     (* We need to compute the free names of joined_types, but we can't use a
        typing environment. *)
-    let rec free_names_transitive0 typ ~result =
-      let free_names = TG.free_names typ in
-      let to_traverse = Name_occurrences.diff free_names ~without:result in
-      Name_occurrences.fold_names to_traverse ~init:result
-        ~f:(fun result name ->
-          let result =
-            Name_occurrences.add_name result name Name_mode.in_types
-          in
-          match Name.Map.find name joined_types with
-          | exception Not_found -> result
-          | typ -> free_names_transitive0 typ ~result)
+    let free_names = TG.free_names typ in
+    let to_traverse = Name_occurrences.diff free_names ~without:result in
+    Name_occurrences.fold_names to_traverse ~init:result ~f:(fun result name ->
+        free_names_transitive_of_name0 name ~result)
+  and free_names_transitive_of_name0 name ~result =
+    let result = Name_occurrences.add_name result name Name_mode.in_types in
+    let result =
+      match Name.Map.find name joined_relations with
+      | exception Not_found -> result
+      | rels ->
+        TG.RelationSet.fold
+          (fun rel result ->
+            (* XXX: free_names_of_relation *)
+            let name =
+              match rel with TG.Is_int name | TG.Get_tag name -> name
+            in
+            free_names_transitive_of_name0 name ~result)
+          rels result
     in
-    free_names_transitive0 typ ~result:Name_occurrences.empty
+    match Name.Map.find name joined_types with
+    | exception Not_found -> result
+    | typ -> free_names_transitive_of_type0 typ ~result
+  in
+  let free_names_transitive_of_name name =
+    free_names_transitive_of_name0 name ~result:Name_occurrences.empty
   in
   let allowed =
     Name.Map.fold
-      (fun name ty allowed ->
+      (fun name _ allowed ->
         if TE.mem env_at_fork name || Name.is_symbol name
         then
           Name_occurrences.add_name
-            (Name_occurrences.union allowed (free_names_transitive ty))
+            (Name_occurrences.union allowed
+               (free_names_transitive_of_name name))
             name Name_mode.in_types
         else allowed)
       joined_types allowed
@@ -506,23 +503,14 @@ let join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
   in
   let allowed =
     Name.Map.fold
-      (fun name rels allowed ->
+      (fun name _ allowed ->
         if TE.mem env_at_fork name || Name.is_symbol name
-           || Name_occurrences.mem_name allowed name
         then
           Name_occurrences.add_name
-            (TG.RelationSet.fold
-               (fun rel allowed ->
-                 let name =
-                   match rel with TG.Is_int name | TG.Get_tag name -> name
-                 in
-                 if do_debug then Format.printf "allow: %a@." Name.print name;
-                 Name_occurrences.add_name allowed name Name_mode.in_types)
-               rels allowed)
+            (Name_occurrences.union allowed
+               (free_names_transitive_of_name name))
             name Name_mode.in_types
-        else (
-          if do_debug then Format.printf "mais que quoi %a@." Name.print name;
-          allowed))
+        else allowed)
       joined_relations allowed
   in
   if do_debug then Format.printf "allow: %a@." Name_occurrences.print allowed;

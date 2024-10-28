@@ -42,6 +42,10 @@ type relation =
   | Is_int of Name.t
   | Get_tag of Name.t
 
+let is_int_for_scrutinee ~scrutinee = Is_int scrutinee
+
+let get_tag_for_block ~block = Get_tag block
+
 module RelationSet = Set.Make (struct
   type t = relation
 
@@ -117,10 +121,7 @@ and head_of_kind_value =
    for each case and store precise extensions; the first version would be faster
    if we don't actually use the extensions, while the second version would be
    particularly useful if we switch several times on the same scrutinee. *)
-and head_of_kind_naked_immediate =
-  { immediates : Targetint_31_63.Set.t Or_unknown.t;
-    relations : RelationSet.t
-  }
+and head_of_kind_naked_immediate = Targetint_31_63.Set.t
 
 and head_of_kind_naked_float32 = Float32.Set.t
 
@@ -344,13 +345,7 @@ and free_names_head_of_kind_value0 ~follow_value_slots head =
       (free_names0 ~follow_value_slots length)
       fields
 
-and free_names_head_of_kind_naked_immediate { immediates = _; relations } =
-  RelationSet.fold
-    (fun relation free_names ->
-      match relation with
-      | Is_int name | Get_tag name ->
-        Name_occurrences.add_name free_names name Name_mode.in_types)
-    relations Name_occurrences.empty
+and free_names_head_of_kind_naked_immediate _ = Name_occurrences.empty
 
 and free_names_head_of_kind_naked_float32 _ = Name_occurrences.empty
 
@@ -666,25 +661,7 @@ and apply_renaming_head_of_kind_value head renaming =
           alloc_mode
         }
 
-and apply_renaming_head_of_kind_naked_immediate
-    ({ immediates; relations } as head) renaming =
-  (* No Set.map_sharing, so use a reference *)
-  let changed = ref false in
-  let relations' =
-    RelationSet.map
-      (fun rel ->
-        match rel with
-        | Is_int name ->
-          let name' = Renaming.apply_name renaming name in
-          if Name.equal name name' then () else changed := true;
-          Is_int name'
-        | Get_tag name ->
-          let name' = Renaming.apply_name renaming name in
-          if Name.equal name name' then () else changed := true;
-          Get_tag name')
-      relations
-  in
-  if !changed then { immediates; relations = relations' } else head
+and apply_renaming_head_of_kind_naked_immediate head _ = head
 
 and apply_renaming_head_of_kind_naked_float32 head _ = head
 
@@ -965,27 +942,8 @@ and print_head_of_kind_value ppf head =
       (Format.pp_print_list ~pp_sep:Format.pp_print_space print)
       (Array.to_list fields)
 
-and print_head_of_kind_naked_immediate ppf { immediates; relations } =
-  Format.fprintf ppf "@[<hov 1>(";
-  (match immediates with
-  | Unknown ->
-    let colour = Flambda_colours.top_or_bottom_type in
-    if Flambda_features.unicode ()
-    then Format.fprintf ppf "%t@<1>\u{22a4}%t" colour Flambda_colours.pop
-    else Format.fprintf ppf "%tT%t" colour Flambda_colours.pop
-  | Known is -> Targetint_31_63.Set.print ppf is);
-  (match RelationSet.elements relations with
-  | [] -> ()
-  | relations ->
-    Format.fprintf ppf " [";
-    let pp_sep ppf () = Format.fprintf ppf "@,; " in
-    let pp_relation ppf = function
-      | Is_int name -> Format.fprintf ppf "Is_int %a" Name.print name
-      | Get_tag name -> Format.fprintf ppf "Get_tag %a" Name.print name
-    in
-    Format.pp_print_list ~pp_sep pp_relation ppf relations;
-    Format.fprintf ppf "]");
-  Format.fprintf ppf ")@]"
+and print_head_of_kind_naked_immediate ppf head =
+  Format.fprintf ppf "@[<hov 1>(%a)@]" Targetint_31_63.Set.print head
 
 and print_head_of_kind_naked_float32 ppf head =
   Format.fprintf ppf "@[(Naked_float32@ (%a))@]" Float32.Set.print head
@@ -1236,12 +1194,7 @@ and ids_for_export_head_of_kind_value head =
       (fun ids field -> Ids_for_export.union ids (ids_for_export field))
       (ids_for_export length) fields
 
-and ids_for_export_head_of_kind_naked_immediate { immediates = _; relations } =
-  RelationSet.fold
-    (fun relation ids ->
-      match relation with
-      | Is_int name | Get_tag name -> Ids_for_export.add_name ids name)
-    relations Ids_for_export.empty
+and ids_for_export_head_of_kind_naked_immediate _ = Ids_for_export.empty
 
 and ids_for_export_head_of_kind_naked_float32 _ = Ids_for_export.empty
 
@@ -1917,23 +1870,8 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value head
         }
 
 and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_naked_immediate
-    { immediates; relations } ~used_value_slots:_ ~canonicalise =
-  let rename_and_add name wrap relations =
-    let canonical = canonicalise (Simple.name name) in
-    Simple.pattern_match canonical
-      ~name:(fun name ~coercion:_ -> RelationSet.add (wrap name) relations)
-      ~const:(fun _ -> relations)
-  in
-  let relations =
-    RelationSet.fold
-      (fun rel relations ->
-        match rel with
-        | Is_int name -> rename_and_add name (fun name -> Is_int name) relations
-        | Get_tag name ->
-          rename_and_add name (fun name -> Get_tag name) relations)
-      relations RelationSet.empty
-  in
-  { immediates; relations }
+    head ~used_value_slots:_ ~canonicalise:_ =
+  head
 
 and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_naked_float32
     head ~used_value_slots:_ ~canonicalise:_ =
@@ -2452,20 +2390,7 @@ and project_head_of_kind_value ~to_project ~expand head =
           alloc_mode
         }
 
-and project_head_of_kind_naked_immediate ~to_project ~expand:_
-    ({ immediates; relations } as head) =
-  let relations' =
-    RelationSet.filter
-      (function
-        | Is_int name | Get_tag name ->
-          Name.pattern_match name
-            ~symbol:(fun _ -> true)
-            ~var:(fun var -> not (Variable.Set.mem var to_project)))
-      relations
-  in
-  if RelationSet.cardinal relations' = RelationSet.cardinal relations
-  then head
-  else { immediates; relations = relations' }
+and project_head_of_kind_naked_immediate ~to_project:_ ~expand:_ head = head
 
 and project_head_of_kind_naked_float32 ~to_project:_ ~expand:_ head = head
 
@@ -3231,9 +3156,7 @@ let these_naked_immediates is =
   | _ ->
     if Targetint_31_63.Set.is_empty is
     then bottom_naked_immediate
-    else
-      Naked_immediate
-        (TD.create { immediates = Known is; relations = RelationSet.empty })
+    else Naked_immediate (TD.create is)
 
 let these_naked_float32s fs =
   match Float32.Set.get_singleton fs with
@@ -3348,15 +3271,6 @@ let tag_immediate t : t =
 let tagged_immediate_alias_to ~naked_immediate : t =
   tag_immediate
     (Naked_immediate (TD.create_equals (Simple.var naked_immediate)))
-
-let naked_immediate_relational rel =
-  Naked_immediate
-    (TD.create { immediates = Unknown; relations = RelationSet.singleton rel })
-
-let is_int_for_scrutinee ~scrutinee : t =
-  naked_immediate_relational (Is_int scrutinee)
-
-let get_tag_for_block ~block : t = naked_immediate_relational (Get_tag block)
 
 let boxed_float32_alias_to ~naked_float32 =
   box_float32 (Naked_float32 (TD.create_equals (Simple.var naked_float32)))
@@ -3524,35 +3438,6 @@ module type Head_of_kind_naked_number_intf = sig
   val inter : t -> t -> t Or_bottom.t
 end
 
-module Head_of_kind_naked_immediate = struct
-  type t = head_of_kind_naked_immediate
-
-  let create ~immediates ~relations = { immediates; relations }
-
-  let create_naked_immediate imm =
-    { immediates = Known (Targetint_31_63.Set.singleton imm);
-      relations = RelationSet.empty
-    }
-
-  let create_naked_immediates imms : _ Or_bottom.t =
-    if Targetint_31_63.Set.is_empty imms
-    then Bottom
-    else Ok { immediates = Known imms; relations = RelationSet.empty }
-
-  let create_naked_immediates_non_empty imms =
-    if Targetint_31_63.Set.is_empty imms
-    then
-      Misc.fatal_error
-        "Head_of_kind_naked_immediates.create_naked_immediates_non_empty";
-    { immediates = Known imms; relations = RelationSet.empty }
-
-  let create_is_int name =
-    { immediates = Unknown; relations = RelationSet.singleton (Is_int name) }
-
-  let create_get_tag name =
-    { immediates = Unknown; relations = RelationSet.singleton (Get_tag name) }
-end
-
 module Make_head_of_kind_naked_number (N : Container_types.S) = struct
   type t = N.Set.t
 
@@ -3577,6 +3462,8 @@ module Make_head_of_kind_naked_number (N : Container_types.S) = struct
     if N.Set.is_empty t then Bottom else Ok t
 end
 
+module Head_of_kind_naked_immediate =
+  Make_head_of_kind_naked_number (Targetint_31_63)
 module Head_of_kind_naked_float32 = Make_head_of_kind_naked_number (Float32)
 module Head_of_kind_naked_float = Make_head_of_kind_naked_number (Float)
 module Head_of_kind_naked_int32 = Make_head_of_kind_naked_number (Int32)
@@ -3633,11 +3520,8 @@ let rec recover_some_aliases t =
                 t' ()))))
   | Naked_immediate ty -> (
     match TD.descr ty with
-    | Unknown | Bottom
-    | Ok (Equals _)
-    | Ok (No_alias { immediates = Unknown; relations = _ }) ->
-      t
-    | Ok (No_alias { immediates = Known is; relations = _ }) -> (
+    | Unknown | Bottom | Ok (Equals _) -> t
+    | Ok (No_alias is) -> (
       match Targetint_31_63.Set.get_singleton is with
       | Some i -> this_naked_immediate i
       | None -> t))

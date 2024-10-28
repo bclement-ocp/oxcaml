@@ -4,6 +4,10 @@ open Import
 (* CR lmaurer: Make this an argument. *)
 let exit_normally_on_failure = true
 
+let () =
+  Flambda_backend_flags.Flambda2.meet_algorithm
+    := Flambda_backend_flags.Set Flambda_backend_flags.Basic
+
 let get_module_info = Flambda2.get_module_info
 
 let check_invariants program =

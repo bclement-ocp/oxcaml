@@ -267,20 +267,13 @@ let join_one_cse_equation ~cse_at_each_use prim bound_to_map
         | Unary (Is_int { variant_only = true }, scrutinee) ->
           Simple.pattern_match scrutinee
             ~name:(fun scrutinee ~coercion:_ ->
-              let extra_equations =
-                TEE.add_relation extra_equations (Name.var var)
-                  (Is_int scrutinee)
-              in
-              TEE.add_or_replace_equation extra_equations (Name.var var)
+              TEE.add_relation extra_equations (Name.var var)
                 (T.is_int_for_scrutinee ~scrutinee))
             ~const:(fun _ -> extra_equations)
         | Unary (Get_tag, block) ->
           Simple.pattern_match block
             ~name:(fun block ~coercion:_ ->
-              let extra_equations =
-                TEE.add_relation extra_equations (Name.var var) (Get_tag block)
-              in
-              TEE.add_or_replace_equation extra_equations (Name.var var)
+              TEE.add_relation extra_equations (Name.var var)
                 (T.get_tag_for_block ~block))
             ~const:(fun _ -> extra_equations)
         | _ -> extra_equations

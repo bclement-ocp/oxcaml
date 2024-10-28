@@ -530,48 +530,9 @@ and meet_variant env ~(blocks1 : TG.Row_like_for_blocks.t Or_unknown.t)
     in
     Ok (blocks, immediates, env_extension)
 
-and meet_head_of_kind_naked_immediate env (t1 : TG.head_of_kind_naked_immediate)
-    (t2 : TG.head_of_kind_naked_immediate) :
-    (TG.head_of_kind_naked_immediate * TEE.t) Or_bottom.t =
-  let module I = Targetint_31_63 in
-  let immediates : _ Or_unknown.t =
-    match t1.immediates, t2.immediates with
-    | Known is1, Known is2 ->
-      let is = I.Set.inter is1 is2 in
-      Known is
-    | Known is, Unknown | Unknown, Known is -> Known is
-    | Unknown, Unknown -> Unknown
-  in
-  let relations = TG.RelationSet.union t1.relations t2.relations in
-  match immediates with
-  | Unknown ->
-    Ok (TG.Head_of_kind_naked_immediate.create ~immediates ~relations, TEE.empty)
-  | Known is when I.Set.is_empty is -> Bottom
-  | Known is ->
-    let initial_result : _ Or_bottom.t =
-      Ok
-        ( TG.Head_of_kind_naked_immediate.create ~immediates ~relations,
-          TEE.empty )
-    in
-    let reduce relation (result : _ Or_bottom.t) : _ Or_bottom.t =
-      match result with
-      | Bottom -> Bottom
-      | Ok (head, env_extension) -> (
-        match MTC.shape_of_relation is relation with
-        | Bottom -> Bottom
-        | Unknown -> result
-        | Ok (name, shape) ->
-          let ty = TE.find (Meet_env.env env) name (Some Flambda_kind.value) in
-          let<* ty, new_extension = meet env ty shape in
-          let new_extension =
-            TEE.add_or_replace_equation new_extension name ty
-          in
-          let<+ env_extension =
-            meet_env_extension env env_extension new_extension
-          in
-          head, env_extension)
-    in
-    TG.RelationSet.fold reduce relations initial_result
+and meet_head_of_kind_naked_immediate _env t1 t2 : _ Or_bottom.t =
+  let<+ head = TG.Head_of_kind_naked_immediate.inter t1 t2 in
+  head, TEE.empty
 
 and meet_head_of_kind_naked_float32 _env t1 t2 : _ Or_bottom.t =
   let<+ head = TG.Head_of_kind_naked_float32.inter t1 t2 in
@@ -1036,6 +997,25 @@ and meet_env_extension0 env (ext1 : TEE.t) (ext2 : TEE.t) extra_extensions :
                   && Coercion.is_id
                        (Coercion.compose_exn coercion1to2 ~then_:coercion2to3))))
   in
+  let relations =
+    (* Note: this might introduce duplicate relations relative to aliases (if we
+       have both `x = Is_int a` and `y = Is_int b` while knowing that `x`, `y`
+       and `a`, `b` are aliases.
+
+       Currently we keep things as is because we don't try too hard to recover
+       equations when joining, but we could normalize here with more aggresive
+       joining. *)
+    Name.Map.union
+      (fun _ rel1 rel2 -> Some (TG.RelationSet.union rel1 rel2))
+      ext2.TG.rel_equations ext1.TG.rel_equations
+  in
+  (* XXX: relations must be used to refine everyone.
+
+     => when iterating on ext2, propagate the relations on names of ext2. [even
+     if it is only a relation in ext2?]
+
+     If there are names only on ext1 for equations but with a relation in ext2,
+     we might miss it, so also refine there. *)
   let equations, extra_extensions =
     Name.Map.fold
       (fun name ty (eqs, extra_extensions) ->
@@ -1060,18 +1040,6 @@ and meet_env_extension0 env (ext1 : TEE.t) (ext2 : TEE.t) extra_extensions :
             eqs, extra_extensions))
       ext2.TG.type_equations
       (ext1.TG.type_equations, extra_extensions)
-  in
-  let relations =
-    (* Note: this might introduce duplicate relations relative to aliases (if we
-       have both `x = Is_int a` and `y = Is_int b` while knowing that `x`, `y`
-       and `a`, `b` are aliases.
-
-       Currently we keep things as is because we don't try too hard to recover
-       equations when joining, but we could normalize here with more aggresive
-       joining. *)
-    Name.Map.union
-      (fun _ rel1 rel2 -> Some (TG.RelationSet.union rel1 rel2))
-      ext2.TG.rel_equations ext1.TG.rel_equations
   in
   let ext = TEE.from_maps ~equations ~relations in
   match extra_extensions with
@@ -1367,21 +1335,8 @@ and join_variant env ~(blocks1 : TG.Row_like_for_blocks.t Or_unknown.t)
   | Known _, Unknown | Unknown, Known _ | Known _, Known _ ->
     Known (blocks, imms)
 
-and join_head_of_kind_naked_immediate _env
-    (head1 : TG.Head_of_kind_naked_immediate.t)
-    (head2 : TG.Head_of_kind_naked_immediate.t) :
-    TG.Head_of_kind_naked_immediate.t Or_unknown.t =
-  let module I = Targetint_31_63 in
-  let immediates : _ Or_unknown.t =
-    match head1.immediates, head2.immediates with
-    | Unknown, _ | _, Unknown -> Unknown
-    | Known is1, Known is2 -> Known (I.Set.union is1 is2)
-  in
-  let relations = TG.RelationSet.inter head1.relations head2.relations in
-  match immediates with
-  | Unknown when TG.RelationSet.is_empty relations -> Unknown
-  | Known _ | Unknown ->
-    Known (TG.Head_of_kind_naked_immediate.create ~immediates ~relations)
+and join_head_of_kind_naked_immediate _env t1 t2 : _ Or_unknown.t =
+  Known (TG.Head_of_kind_naked_immediate.union t1 t2)
 
 and join_head_of_kind_naked_float32 _env t1 t2 : _ Or_unknown.t =
   Known (TG.Head_of_kind_naked_float32.union t1 t2)
