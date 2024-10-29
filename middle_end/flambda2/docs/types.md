@@ -350,6 +350,47 @@ equation associated to them. We also keep a full representation of the
 equivalence classes, as this means the alias equations do not need to be
 systematically updated to point to the canonical element when it changes.
 
+### New implementation of relational domains
+
+The new implementation of relational domains is separated from the main
+non-relational domains. This allows having both relational and non-relational
+information on the same value, and opens the way to writing more specialized
+relational domains in the future (e.g. octogons).
+
+```ocaml
+(* Program *)
+let y = match x with None -> 1 | Some () -> 0
+(* State of the program here *)
+```
+
+```
+Previous implementation
+Env: y -> {0; 1}
+     x -> {0; [| tag0, size1 -> field0: {0} |]}
+     Pisint -> (= Is_int x)
+```
+
+```
+New implementation
+Env: y -> {0; 1}
+     x -> {#0; [| tag0, size1 -> field0: {0} |]}
+     Pisint -> {0; 1}
+Rel: Pisint -> {Is_int x}
+```
+
+Relations are stored as a separate kind of equations in environment extensions
+and in the levels, but are stored as a specialized type of domain similar to
+the aliases domain. The specialized domains only sees aliases that are
+canonical for the current environment. This makes reduction a bit more
+complicated (reducing in the non-relational domain must triggers a reduction in
+the relational domain), but provides more flexibility in controlling where the
+reduction occurs.
+
+The separation between (relational) equations in the extensions and specialized
+domains in the cached levels allows to provide a generic interface for cheap
+joins by canonicalizing equations and checking whether equations are (easily)
+provable in the appropriate environment.
+
 ### Flambda types
 
 From the previous section, it appears that in many contexts we manipulate
