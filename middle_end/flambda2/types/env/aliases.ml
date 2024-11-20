@@ -266,6 +266,31 @@ module Alias_set = struct
         in
         { const; names })
 
+  let add simple ({ const; names } as alias_set) =
+    Simple.pattern_match simple
+      ~const:(fun new_const ->
+        match const with
+        | Some existing_const ->
+          assert (Reg_width_const.equal new_const existing_const);
+          alias_set
+        | None -> { const = Some new_const; names })
+      ~name:(fun name ~coercion ->
+        let names =
+          Name.Map.update name
+            (function None -> Some coercion | Some _ as entry -> entry)
+            names
+        in
+        { const; names })
+
+  let fold f { const; names } acc =
+    let acc =
+      match const with Some const -> f (Simple.const const) acc | None -> acc
+    in
+    Name.Map.fold
+      (fun name coercion acc ->
+        f (Simple.apply_coercion_exn (Simple.name name) coercion) acc)
+      names acc
+
   let singleton simple =
     Simple.pattern_match simple
       ~const:(fun const -> { const = Some const; names = Name.Map.empty })
@@ -342,6 +367,31 @@ module Alias_set = struct
         | Some (var, coercion) ->
           Some (Simple.with_coercion (Simple.name var) coercion)
         | None -> None))
+
+  let fold_equations f { const; names } acc =
+    match const with
+    | Some const ->
+      let simple = Simple.const const in
+      Name.Map.fold
+        (fun name coercion acc ->
+          (* const <-- coercion name *)
+          f name
+            (Simple.apply_coercion_exn simple (Coercion.inverse coercion))
+            acc)
+        names acc
+    | None -> (
+      match find_best { const; names } with
+      | Some simple ->
+        Name.Map.fold
+          (fun name coercion acc ->
+            let canonical =
+              Simple.apply_coercion_exn simple (Coercion.inverse coercion)
+            in
+            if Simple.equal canonical (Simple.name name)
+            then acc
+            else f name canonical acc)
+          names acc
+      | None -> acc)
 end
 
 type t =

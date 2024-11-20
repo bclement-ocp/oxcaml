@@ -118,6 +118,8 @@ module Alias_set : sig
 
   val choose_opt : t -> Simple.t option
 
+  val add : Simple.t -> t -> t
+
   (* CR lmaurer: Could conceivably also do a join on the coercions. *)
 
   (** Find the aliases that occur in both sets. If a name occurs on both sides
@@ -125,6 +127,10 @@ module Alias_set : sig
   val inter : t -> t -> t
 
   val filter : t -> f:(Simple.t -> bool) -> t
+
+  val fold : (Simple.t -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val fold_equations : (Name.t -> Simple.t -> 'a -> 'a) -> t -> 'a -> 'a
 
   (** Return the best alias in the set, where constants are better than symbols,
       which are better than variables, and ties are broken (arbitrarily) by
