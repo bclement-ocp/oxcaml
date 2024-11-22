@@ -22,6 +22,11 @@ module TEL = Typing_env_level
 module TG = Type_grammar
 module Join_env = TE.Join_env
 
+let mem_name env name = TE.mem ~min_name_mode:Name_mode.in_types env name
+
+let mem_simple env simple =
+  TE.mem_simple ~min_name_mode:Name_mode.in_types env simple
+
 let get_canonical_simple_exn env simple =
   TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types env simple
 
@@ -56,59 +61,72 @@ let get_alias_then_canonical_simple_exn env ty =
    We return alias sets that live in the target environment (they only contain
    simples that are canonical in the target environment) and no longer depend on
    their original environment. *)
-let recover_delta_aliases ~target_env env equations =
+let recover_delta_aliases ~env_at_fork env equations =
   let demoted_elements_for_canonicals =
     Name.Map.fold
       (fun name ty demoted_elements_for_canonicals ->
-        match get_alias_then_canonical_simple_exn env ty with
-        | canonical ->
-          let bare_canonical = Simple.without_coercion canonical in
-          let coercion_from_bare_canonical = Simple.coercion canonical in
-          let coercion_to_bare_canonical =
-            Coercion.inverse coercion_from_bare_canonical
-          in
-          let canonical_at_fork = Simple.name name in
-          (if Flambda_features.check_light_invariants ()
-          then
-            let real_canonical_at_fork =
-              get_canonical_simple_exn target_env canonical_at_fork
+        (* If [name] is not defined in the [env_at_fork], skip it. We will
+           create a new variable to represent it later, if it is reachable from
+           the joined types. *)
+        if not (mem_name env_at_fork name)
+        then (
+          (* this is an existential variable, it can not have been demoted to a
+             non-existential variable *)
+          (match get_alias_then_canonical_simple_exn env ty with
+          | canonical ->
+            Simple.pattern_match canonical
+              ~name:(fun name ~coercion:_ ->
+                assert (not (mem_name env_at_fork name)))
+              ~const:(fun _ -> ())
+          | exception Not_found -> ());
+          demoted_elements_for_canonicals)
+        else
+          match get_alias_then_canonical_simple_exn env ty with
+          | canonical ->
+            (* [name] was demoted to [canonical] *)
+            let bare_canonical = Simple.without_coercion canonical in
+            let coercion_from_bare_canonical = Simple.coercion canonical in
+            let coercion_to_bare_canonical =
+              Coercion.inverse coercion_from_bare_canonical
             in
-            if not (Simple.equal canonical_at_fork real_canonical_at_fork)
-            then
-              Misc.fatal_errorf
-                "Alias equation@ %a = %a@ found on demoted element (was \
-                 already demoted to: %a)"
-                Name.print name TG.print ty Simple.print real_canonical_at_fork);
-          let canonical_at_fork =
-            Simple.apply_coercion_exn canonical_at_fork
-              coercion_to_bare_canonical
-          in
-          (* This would mean that we have recorded an equation [x: (= y)] where
-             the current canonical for [y] is equal to [x], which is not
-             possible since [x] was demoted. *)
-          assert (not (Simple.equal bare_canonical canonical_at_fork));
-          Simple.Map.update bare_canonical
-            (function
-              | None -> Some (Aliases.Alias_set.singleton canonical_at_fork)
-              | Some alias_set ->
-                Some (Aliases.Alias_set.add canonical_at_fork alias_set))
-            demoted_elements_for_canonicals
-        | exception Not_found ->
-          (* not an alias *) demoted_elements_for_canonicals)
+            let demoted_to_bare_canonical =
+              Simple.apply_coercion_exn (Simple.name name)
+                coercion_to_bare_canonical
+            in
+            (* This would mean that we have recorded an equation [x: (= y)]
+               where the current canonical for [y] is equal to [x], which is not
+               possible since [x] was demoted. *)
+            assert (not (Simple.equal bare_canonical demoted_to_bare_canonical));
+            Simple.Map.update bare_canonical
+              (function
+                | None ->
+                  Some (Aliases.Alias_set.singleton demoted_to_bare_canonical)
+                | Some alias_set ->
+                  Some
+                    (Aliases.Alias_set.add demoted_to_bare_canonical alias_set))
+              demoted_elements_for_canonicals
+          | exception Not_found ->
+            (* not an alias *) demoted_elements_for_canonicals)
       equations Simple.Map.empty
   in
-  (* We no longer care about the current canonicals. *)
+  (* We no longer care about the current canonicals, but if they were defined in
+     the [env_at_fork], we need to consider them as aliases. *)
   Simple.Map.fold
     (fun canonical alias_set delta_aliases ->
-      Aliases.Alias_set.add canonical alias_set :: delta_aliases)
+      let alias_set =
+        if mem_simple env_at_fork canonical
+        then Aliases.Alias_set.add canonical alias_set
+        else alias_set
+      in
+      alias_set :: delta_aliases)
     demoted_elements_for_canonicals []
 
-let join_aliases base_env env_with_levels =
+let join_aliases ~env_at_fork env_with_levels =
   match env_with_levels with
-  | [] -> base_env, Name.Map.empty
+  | [] -> env_at_fork, []
   | (env_at_first_use, _, _, level_at_first_use) :: other_envs_with_levels ->
     let delta_aliases =
-      recover_delta_aliases ~target_env:base_env env_at_first_use
+      recover_delta_aliases ~env_at_fork env_at_first_use
         (TEL.equations level_at_first_use)
     in
     let joined_aliases =
@@ -122,12 +140,7 @@ let join_aliases base_env env_with_levels =
                 Aliases.Alias_set.fold
                   (fun alias canonical_delta_alias_set_at_other_use ->
                     let canonical_alias_at_other_use =
-                      Simple.pattern_match alias
-                        ~name:(fun name ~coercion:_ ->
-                          if TE.mem env_at_other_use name
-                          then get_canonical_simple_exn env_at_other_use alias
-                          else alias)
-                        ~const:(fun _ -> alias)
+                      get_canonical_simple_exn env_at_other_use alias
                     in
                     Simple.Map.update canonical_alias_at_other_use
                       (function
@@ -147,15 +160,6 @@ let join_aliases base_env env_with_levels =
             [] delta_aliases)
         delta_aliases other_envs_with_levels
     in
-    (* We want to make sure that the map we return never uses canonical elements
-       as keys, but we don't know which elements will be canonical until we have
-       added all the equations.
-
-       Instead of trying to be smart, we simply add all the equations, then cut
-       the resulting environment. Since we only add alias types, the cut
-       extension will not have any extension on canonical elements. *)
-    let original_scope = TE.current_scope base_env in
-    let base_env = TE.increment_scope base_env in
     let base_env =
       List.fold_left
         (fun base_env alias_set ->
@@ -166,217 +170,24 @@ let join_aliases base_env env_with_levels =
               TE.add_equation base_env name alias_ty
                 ~meet_type:(Meet_and_join.meet_type ()))
             alias_set base_env)
-        base_env joined_aliases
+        env_at_fork joined_aliases
     in
-    ( base_env,
-      TEE.to_map (TE.cut_as_extension base_env ~cut_after:original_scope) )
+    base_env, joined_aliases
 
 let join_types ~env_at_fork envs_with_levels =
-  (* Add all the variables defined by the branches as existentials to the
-     [env_at_fork].
-
-     Any such variable will be given type [Bottom] on a branch where it was not
-     originally present.
-
-     In addition, this also aggregates the code age relations of the
-     branches. *)
+  (* Recover shared aliases *)
+  let base_env, joined_aliases = join_aliases ~env_at_fork envs_with_levels in
+  (* Aggregate the code age relations of the branches. *)
   let base_env =
     List.fold_left
-      (fun base_env (env_at_use, _, _, level) ->
-        let base_env =
-          Variable.Map.fold
-            (fun var kind base_env ->
-              if TE.mem base_env (Name.var var)
-              then base_env
-              else
-                TE.add_definition base_env
-                  (Bound_name.create_var
-                     (Bound_var.create var Name_mode.in_types))
-                  kind)
-            (TEL.defined_variables_with_kinds level)
-            base_env
-        in
+      (fun base_env (env_at_use, _, _, _) ->
         let code_age_relation =
           Code_age_relation.union
             (TE.code_age_relation base_env)
             (TE.code_age_relation env_at_use)
         in
         TE.with_code_age_relation base_env code_age_relation)
-      env_at_fork envs_with_levels
-  in
-  let base_env, joined_aliases = join_aliases base_env envs_with_levels in
-  (* Translate all equations, moving them to canonical representatives in the
-     shared environment. *)
-  let equations_in_base_env =
-    List.map
-      (fun (env_at_use, _, _, level) ->
-        let get_canonical_simple_at_use simple =
-          (* We want to know how to refer in [base_env] to the canonical of
-             [simple] in [env_at_use].
-
-             This should simply be the canonical of [simple] in [env_at_use],
-             but there is a twist: since [base_env] and [env_at_use] do not
-             necessarily select the same canonical elements for a given
-             equivalence class, the canonical of [simple] in [env_at_use] is not
-             necessarily the canonical of its class in [base_env]. *)
-          get_canonical_simple_exn base_env
-            (get_canonical_simple_exn env_at_use simple)
-        in
-        let equations = TEL.equations level in
-        let cclasses, canonical_equations =
-          Name.Map.fold
-            (fun name ty (cclasses, canonical_equations) ->
-              match TG.get_alias_exn ty with
-              | exception Not_found ->
-                (* Not an alias type: record it on the current canonical *)
-                let canonical_at_use =
-                  get_canonical_simple_at_use (Simple.name name)
-                in
-                ( cclasses,
-                  Simple.pattern_match canonical_at_use
-                    ~name:(fun bare_canonical_name ~coercion ->
-                      let type_for_bare_canonical =
-                        TG.apply_coercion ty (Coercion.inverse coercion)
-                      in
-                      Name.Map.update bare_canonical_name
-                        (function
-                          | None -> Some type_for_bare_canonical
-                          | Some existing_ty ->
-                            Format.printf
-                              "recording %a on %a but already have %a" TG.print
-                              type_for_bare_canonical Name.print
-                              bare_canonical_name TG.print existing_ty;
-                            assert false)
-                        canonical_equations)
-                    ~const:(fun _ -> canonical_equations) )
-              | alias ->
-                (* There are two cases: either the alias is valid at base (i.e.
-                   holds in all joined environments), or it is specific to this
-                   use. *)
-                let base_canonical_simple =
-                  get_canonical_simple_exn base_env (Simple.name name)
-                in
-                let base_canonical_alias =
-                  get_canonical_simple_exn base_env alias
-                in
-                if Simple.equal base_canonical_alias base_canonical_simple
-                then
-                  (* The alias is true in all joined environments; it has
-                     already been computed from the [joined_aliases].
-
-                     We will recover an equivalent equation by cutting the
-                     [base_env]. *)
-                  cclasses, canonical_equations
-                else
-                  (* The equality is true in the current environment, but not in
-                     the base env.
-
-                     Record that the canonical values in the base env are part
-                     of the same equivalence class in the current environment.
-
-                     We do not add any equation to the [canonical_equations];
-                     instead, we record that [base_canonical_simple] and
-                     [base_canonical_alias] are in the same equivalence class.
-
-                     In the next step, we will use this information to duplicate
-                     the equation on the canonical at use onto the whole
-                     class. *)
-                  let canonical_simple_at_use =
-                    get_canonical_simple_at_use base_canonical_simple
-                  in
-                  (if Flambda_features.check_light_invariants ()
-                  then
-                    let canonical_alias_at_use =
-                      get_canonical_simple_at_use base_canonical_alias
-                    in
-                    assert (
-                      Simple.equal canonical_simple_at_use
-                        canonical_alias_at_use));
-                  let bare_canonical_simple_at_use =
-                    Simple.without_coercion canonical_simple_at_use
-                  in
-                  let coercion_to_canonical_simple_at_use =
-                    Simple.coercion canonical_simple_at_use
-                  in
-                  let coercion_from_canonical_simple_at_use =
-                    Coercion.inverse coercion_to_canonical_simple_at_use
-                  in
-                  let cclasses =
-                    Simple.Map.update bare_canonical_simple_at_use
-                      (fun alias_set_opt ->
-                        let alias_set =
-                          match alias_set_opt with
-                          | None -> Aliases.Alias_set.empty
-                          | Some alias_set -> alias_set
-                        in
-                        let alias_set =
-                          Aliases.Alias_set.add
-                            (Simple.apply_coercion_exn base_canonical_simple
-                               coercion_from_canonical_simple_at_use)
-                            alias_set
-                        in
-                        let alias_set =
-                          Aliases.Alias_set.add
-                            (Simple.apply_coercion_exn base_canonical_alias
-                               coercion_from_canonical_simple_at_use)
-                            alias_set
-                        in
-                        Some alias_set)
-                      cclasses
-                  in
-                  cclasses, canonical_equations)
-            equations
-            (Simple.Map.empty, Name.Map.empty)
-        in
-        (* If we have an equation [x: ty] in the current environment and [x] is
-           equal to [y] in all joined environments, also record equations for
-           [y: ty].
-
-           Note that this does not increase the number of equations: to reach
-           this situation, we must have removed an alias equation in the
-           previous step. *)
-        let canonical_equations =
-          Simple.Map.fold
-            (fun canonical_at_use alias_set canonical_equations ->
-              let ty_opt =
-                Simple.pattern_match canonical_at_use
-                  ~name:(fun name ~coercion ->
-                    match Name.Map.find name canonical_equations with
-                    | exception Not_found -> None
-                    | ty -> Some (TG.apply_coercion ty coercion))
-                  ~const:(fun const -> Some (MTC.type_for_const const))
-              in
-              match ty_opt with
-              | Some ty ->
-                Aliases.Alias_set.fold
-                  (fun simple canonical_equations ->
-                    if Simple.equal simple canonical_at_use
-                    then canonical_equations
-                    else
-                      Simple.pattern_match simple
-                        ~name:(fun name ~coercion ->
-                          Name.Map.add name
-                            (TG.apply_coercion ty (Coercion.inverse coercion))
-                            canonical_equations)
-                        ~const:(fun _ ->
-                          (* Any constant is necessarily canonical. *)
-                          assert false))
-                  alias_set canonical_equations
-              | None ->
-                Format.eprintf "nothing learned at this level for class: %a@."
-                  Aliases.Alias_set.print alias_set;
-                canonical_equations)
-            cclasses canonical_equations
-        in
-        Format.eprintf
-          "@[<v>@[<v 2>I have split:@ @[<v>%a@]@]@ @[<v 2>Canonicals:@ \
-           @[<v>%a@]@ @[<v 2>Classes:@ @[<v>%a@]@]@]@]@."
-          (Name.Map.print TG.print) equations (Name.Map.print TG.print)
-          canonical_equations
-          (Simple.Map.print Aliases.Alias_set.print)
-          cclasses;
-        env_at_use, canonical_equations)
-      envs_with_levels
+      base_env envs_with_levels
   in
   (* Find the actual domain of the join of the levels
 
