@@ -23,7 +23,6 @@ module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module Vec128 = Vector_types.Vec128.Bit_pattern
 
-
 type 'a meet_return_value = 'a TE.meet_return_value =
   | Left_input
   | Right_input
@@ -514,49 +513,36 @@ let rec meet env (t1 : TG.t) (t2 : TG.t) : TG.t meet_result =
       Expand_head.expand_head0 env t1
         ~known_canonical_simple_at_in_types_mode:simple1
     in
-    let expanded2 =
-      Expand_head.expand_head0 env t2
-        ~known_canonical_simple_at_in_types_mode:simple2
-    in
     match simple2 with
     | None ->
+      let expanded2 =
+        Expand_head.expand_head0 env t2
+          ~known_canonical_simple_at_in_types_mode:simple2
+      in
       map_result ~f:ET.to_type (meet_expanded_head env expanded1 expanded2)
     | Some simple2 -> (
       (* Here we are meeting a non-alias type on the left with an alias on the
          right. In all cases, the return type is the alias, so we will always
-         return [Right_input]; the interesting part will be the environment. *)
+         return [Right_input]; the interesting part will be the environment.
+
+         [add_equation] will meet [expanded1] with the existing type of
+         [simple2]. *)
       let env : unit meet_result =
-        match meet_expanded_head env expanded1 expanded2 with
-        | Ok (Left_input, env) ->
-          add_equation simple2 (ET.to_type expanded1) env ~meet_type
-        | Ok ((Right_input | Both_inputs), env) -> Ok (New_result (), env)
-        | Ok (New_result expanded, env) ->
-          add_equation simple2 (ET.to_type expanded) env ~meet_type
-        | Bottom r -> Bottom r
+        add_equation simple2 (ET.to_type expanded1) env ~meet_type
       in
       match env with
       | Ok (_, env) -> Ok (Right_input, env)
       | Bottom r -> Bottom r))
-  | Some simple1 as simple1_opt -> (
+  | Some simple1 -> (
     match simple2 with
     | None -> (
-      let expanded1 =
-        Expand_head.expand_head0 env t1
-          ~known_canonical_simple_at_in_types_mode:simple1_opt
-      in
       let expanded2 =
         Expand_head.expand_head0 env t2
           ~known_canonical_simple_at_in_types_mode:simple2
       in
       (* We always return [Left_input] (see comment above) *)
       let env : unit meet_result =
-        match meet_expanded_head env expanded1 expanded2 with
-        | Ok (Right_input, env) ->
-          add_equation simple1 (ET.to_type expanded2) env ~meet_type
-        | Ok ((Left_input | Both_inputs), env) -> Ok (New_result (), env)
-        | Ok (New_result expanded, env) ->
-          add_equation simple1 (ET.to_type expanded) env ~meet_type
-        | Bottom r -> Bottom r
+        add_equation simple1 (ET.to_type expanded2) env ~meet_type
       in
       match env with
       | Ok (_, env) -> Ok (Left_input, env)
