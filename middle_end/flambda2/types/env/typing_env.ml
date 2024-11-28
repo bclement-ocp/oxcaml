@@ -404,11 +404,6 @@ end = struct
     (* TODO: record the var as needing join (unless both are bottom). *)
     (* XXX: simples that have a single (existing) name in the central env should
        be replaced with that name? *)
-    Format.eprintf "now joining: %a and %a@."
-      (Or_bottom.print Simple.print)
-      simple1
-      (Or_bottom.print Simple.print)
-      simple2;
     let ty_ou : TG.t Or_unknown.t =
       match simple1, simple2 with
       | Bottom, Bottom -> Known (MTC.bottom kind)
@@ -452,14 +447,10 @@ end = struct
         then Known (TG.alias_type_of kind simple1)
         else
           match Simple_pair_table.find t.already_joining (simple1, simple2) with
-          | joined_simple ->
-            Format.eprintf "already joining!@.";
-            Known (TG.alias_type_of kind joined_simple)
+          | joined_simple -> Known (TG.alias_type_of kind joined_simple)
           | exception Not_found ->
             if t.depth >= Flambda_features.join_depth ()
-            then (
-              Format.eprintf "skip depth@.";
-              Unknown)
+            then Unknown
             else
               let name =
                 if Simple.equal simple1 simple2
@@ -486,7 +477,6 @@ end = struct
                     in
                     Name.var (Variable.create raw_name)
               in
-              Format.eprintf "Recording at next depth: %a@." Name.print name;
               Simple_pair_table.add t.already_joining (simple1, simple2)
                 (Simple.name name);
               Name_table.add t.in_join_env_only name ();
