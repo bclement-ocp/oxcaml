@@ -283,9 +283,12 @@ let join_types ~env_at_fork envs_with_levels =
           | exception Not_found ->
             let to_join, join_env = Join_env.at_next_depth join_env in
             if Name.Map.is_empty to_join
-            then joined_types
+            then (
+              Format.eprintf "exhausted.@.";
+              joined_types)
             else loop join_env to_join joined_types
           | name, (left_ty, right_ty) -> (
+            Format.eprintf "process: %a@." Name.print name;
             let to_join = Name.Map.remove name to_join in
             if Flambda_features.debug_flambda2 ()
             then

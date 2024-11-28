@@ -404,6 +404,11 @@ end = struct
     (* TODO: record the var as needing join (unless both are bottom). *)
     (* XXX: simples that have a single (existing) name in the central env should
        be replaced with that name? *)
+    Format.eprintf "now joining: %a and %a@."
+      (Or_bottom.print Simple.print)
+      simple1
+      (Or_bottom.print Simple.print)
+      simple2;
     let ty_ou : TG.t Or_unknown.t =
       match simple1, simple2 with
       | Bottom, Bottom -> Known (MTC.bottom kind)
@@ -413,40 +418,48 @@ end = struct
           ~name:(fun name2 ~coercion:_ ->
             if Name_table.mem t.in_right_env_only name2
             then Or_unknown.Known (TG.alias_type_of kind simple2)
-            else if t.depth >= Flambda_features.join_depth ()
-            then Or_unknown.Unknown
-            else (
-              Name_table.add t.in_right_env_only name2 ();
-              t.join_at_next_depth
-                <- Name.Map.add name2
-                     (MTC.bottom kind, TG.alias_type_of kind (Simple.name name2))
-                     t.join_at_next_depth;
-              Or_unknown.Known (TG.alias_type_of kind simple2)))
+            else
+              let () = Name_table.replace t.in_right_env_only name2 () in
+              if t.depth >= Flambda_features.join_depth ()
+              then Or_unknown.Unknown
+              else (
+                t.join_at_next_depth
+                  <- Name.Map.add name2
+                       ( MTC.bottom kind,
+                         TG.alias_type_of kind (Simple.name name2) )
+                       t.join_at_next_depth;
+                Or_unknown.Known (TG.alias_type_of kind simple2)))
       | Ok simple1, Bottom ->
         Simple.pattern_match simple1
           ~const:(fun _ -> Or_unknown.Known (TG.alias_type_of kind simple1))
           ~name:(fun name1 ~coercion:_ ->
             if Name_table.mem t.in_left_env_only name1
             then Or_unknown.Known (TG.alias_type_of kind simple1)
-            else if t.depth >= Flambda_features.join_depth ()
-            then Or_unknown.Unknown
-            else (
-              Name_table.add t.in_left_env_only name1 ();
-              t.join_at_next_depth
-                <- Name.Map.add name1
-                     (TG.alias_type_of kind simple1, MTC.bottom kind)
-                     t.join_at_next_depth;
-              Or_unknown.Known (TG.alias_type_of kind simple1)))
+            else
+              let () = Name_table.replace t.in_right_env_only name1 () in
+              if t.depth >= Flambda_features.join_depth ()
+              then Or_unknown.Unknown
+              else (
+                Name_table.add t.in_left_env_only name1 ();
+                t.join_at_next_depth
+                  <- Name.Map.add name1
+                       (TG.alias_type_of kind simple1, MTC.bottom kind)
+                       t.join_at_next_depth;
+                Or_unknown.Known (TG.alias_type_of kind simple1)))
       | Ok simple1, Ok simple2 -> (
         if Simple.is_const simple1 && Simple.is_const simple2
            && Simple.equal simple1 simple2
         then Known (TG.alias_type_of kind simple1)
         else
           match Simple_pair_table.find t.already_joining (simple1, simple2) with
-          | joined_simple -> Known (TG.alias_type_of kind joined_simple)
+          | joined_simple ->
+            Format.eprintf "already joining!@.";
+            Known (TG.alias_type_of kind joined_simple)
           | exception Not_found ->
             if t.depth >= Flambda_features.join_depth ()
-            then Unknown
+            then (
+              Format.eprintf "skip depth@.";
+              Unknown)
             else
               let name =
                 if Simple.equal simple1 simple2
@@ -473,6 +486,7 @@ end = struct
                     in
                     Name.var (Variable.create raw_name)
               in
+              Format.eprintf "Recording at next depth: %a@." Name.print name;
               Simple_pair_table.add t.already_joining (simple1, simple2)
                 (Simple.name name);
               Name_table.add t.in_join_env_only name ();

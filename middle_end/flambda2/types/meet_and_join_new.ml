@@ -1623,7 +1623,14 @@ and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) : ET.t =
      environments, so we can safely return any input as the result
 
      TODO(bclement): We can't anymore. Copy from the appropriate env. *)
-  | Ok _, Bottom -> expanded1
+  | Ok _, Bottom ->
+    let free_names = TG.free_names (ET.to_type expanded1) in
+    let right_env = Join_env.left_join_env env in
+    Name_occurrences.fold_names free_names ~init:() ~f:(fun () name ->
+        let kind = TG.kind (TE.find right_env name None) in
+        ignore
+        @@ Join_env.now_joining_simple env kind (Ok (Simple.name name)) Bottom);
+    expanded2
   | Bottom, Ok _ ->
     let free_names = TG.free_names (ET.to_type expanded2) in
     let right_env = Join_env.right_join_env env in
@@ -2210,7 +2217,7 @@ and join_int_indexed_product env shape (fields1 : TG.Product.Int_indexed.t)
       for index = 0 to length - 1 do
         if fields1.(index) != fields2.(index) then raise Exit
       done;
-      true
+      false
     with Exit -> false
   in
   let fields =
@@ -2223,12 +2230,10 @@ and join_int_indexed_product env shape (fields1 : TG.Product.Int_indexed.t)
         fields2)
     else
       Array.init length (fun index ->
-          if fields1.(index) == fields2.(index)
-          then fields1.(index)
-          else
-            match mark_for_join env fields1.(index) fields2.(index) with
-            | Unknown -> MTC.unknown_from_shape shape index
-            | Known ty -> ty)
+          (* if fields1.(index) == fields2.(index) then fields1.(index) else *)
+          match mark_for_join env fields1.(index) fields2.(index) with
+          | Unknown -> MTC.unknown_from_shape shape index
+          | Known ty -> ty)
   in
   TG.Product.Int_indexed.create_from_array fields
 
