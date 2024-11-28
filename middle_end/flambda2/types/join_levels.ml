@@ -62,64 +62,45 @@ let get_alias_then_canonical_simple_exn env ty =
    simples that are canonical in the target environment) and no longer depend on
    their original environment. *)
 let recover_delta_aliases ~env_at_fork env equations =
-  let demoted_elements_for_canonicals =
-    Name.Map.fold
-      (fun name ty demoted_elements_for_canonicals ->
-        (* If [name] is not defined in the [env_at_fork], skip it. We will
-           create a new variable to represent it later, if it is reachable from
-           the joined types. *)
-        if not (mem_name env_at_fork name)
-        then (
-          (* this is an existential variable, it can not have been demoted to a
-             non-existential variable *)
-          (match get_alias_then_canonical_simple_exn env ty with
-          | canonical ->
-            Simple.pattern_match canonical
-              ~name:(fun name ~coercion:_ ->
-                assert (not (mem_name env_at_fork name)))
-              ~const:(fun _ -> ())
-          | exception Not_found -> ());
-          demoted_elements_for_canonicals)
-        else
-          match get_alias_then_canonical_simple_exn env ty with
-          | canonical ->
-            (* [name] was demoted to [canonical] *)
-            let bare_canonical = Simple.without_coercion canonical in
-            let coercion_from_bare_canonical = Simple.coercion canonical in
-            let coercion_to_bare_canonical =
-              Coercion.inverse coercion_from_bare_canonical
-            in
-            let demoted_to_bare_canonical =
-              Simple.apply_coercion_exn (Simple.name name)
-                coercion_to_bare_canonical
-            in
-            (* This would mean that we have recorded an equation [x: (= y)]
-               where the current canonical for [y] is equal to [x], which is not
-               possible since [x] was demoted. *)
-            assert (not (Simple.equal bare_canonical demoted_to_bare_canonical));
-            Simple.Map.update bare_canonical
-              (function
-                | None ->
-                  Some (Aliases.Alias_set.singleton demoted_to_bare_canonical)
-                | Some alias_set ->
-                  Some
-                    (Aliases.Alias_set.add demoted_to_bare_canonical alias_set))
-              demoted_elements_for_canonicals
-          | exception Not_found ->
-            (* not an alias *) demoted_elements_for_canonicals)
-      equations Simple.Map.empty
-  in
-  (* We no longer care about the current canonicals, but if they were defined in
-     the [env_at_fork], we need to consider them as aliases. *)
-  Simple.Map.fold
-    (fun canonical alias_set delta_aliases ->
-      let alias_set =
-        if mem_simple env_at_fork canonical
-        then Aliases.Alias_set.add canonical alias_set
-        else alias_set
-      in
-      alias_set :: delta_aliases)
-    demoted_elements_for_canonicals []
+  Name.Map.fold
+    (fun name ty demoted_elements_for_canonicals ->
+      (* If [name] is not defined in the [env_at_fork], skip it. We will create
+         a new variable to represent it later, if it is reachable from the
+         joined types. *)
+      if not (mem_name env_at_fork name)
+      then demoted_elements_for_canonicals
+      else
+        match get_alias_then_canonical_simple_exn env ty with
+        | canonical ->
+          (* [name] was demoted to [canonical] *)
+          let bare_canonical = Simple.without_coercion canonical in
+          let coercion_from_bare_canonical = Simple.coercion canonical in
+          let coercion_to_bare_canonical =
+            Coercion.inverse coercion_from_bare_canonical
+          in
+          let demoted_to_bare_canonical =
+            Simple.apply_coercion_exn (Simple.name name)
+              coercion_to_bare_canonical
+          in
+          (* This would mean that we have recorded an equation [x: (= y)] where
+             the current canonical for [y] is equal to [x], which is not
+             possible since [x] was demoted. *)
+          assert (not (Simple.equal bare_canonical demoted_to_bare_canonical));
+          Simple.Map.update bare_canonical
+            (function
+              | None ->
+                let alias_set =
+                  Aliases.Alias_set.singleton demoted_to_bare_canonical
+                in
+                if mem_simple env_at_fork bare_canonical
+                then Some (Aliases.Alias_set.add bare_canonical alias_set)
+                else Some alias_set
+              | Some alias_set ->
+                Some (Aliases.Alias_set.add demoted_to_bare_canonical alias_set))
+            demoted_elements_for_canonicals
+        | exception Not_found ->
+          (* not an alias *) demoted_elements_for_canonicals)
+    equations Simple.Map.empty
 
 let join_aliases ~env_at_fork env_with_levels =
   match env_with_levels with
@@ -128,6 +109,11 @@ let join_aliases ~env_at_fork env_with_levels =
     let delta_aliases =
       recover_delta_aliases ~env_at_fork env_at_first_use
         (TEL.equations level_at_first_use)
+    in
+    let delta_aliases =
+      Simple.Map.fold
+        (fun _ alias_set delta_aliases -> alias_set :: delta_aliases)
+        delta_aliases []
     in
     let joined_aliases =
       List.fold_left
@@ -176,40 +162,111 @@ let join_aliases ~env_at_fork env_with_levels =
 
 let join_types ~env_at_fork envs_with_levels =
   (* Recover shared aliases *)
-  let base_env, joined_aliases = join_aliases ~env_at_fork envs_with_levels in
+  let fork_scope = TE.current_scope env_at_fork in
+  let env_at_fork = TE.increment_scope env_at_fork in
+  let base_env, _joined_aliases = join_aliases ~env_at_fork envs_with_levels in
   (* Aggregate the code age relations of the branches. *)
-  let base_env =
-    List.fold_left
-      (fun base_env (env_at_use, _, _, _) ->
+  let base_env, envs_with_equations =
+    List.fold_left_map
+      (fun base_env (env_at_use, _, _, level) ->
+        let equations = TEL.equations level in
+        let delta_aliases =
+          recover_delta_aliases ~env_at_fork:base_env env_at_use equations
+        in
+        let equations =
+          Name.Map.fold
+            (fun name ty equations ->
+              match TG.get_alias_exn ty with
+              | _ ->
+                (* We have already computed the shared aliases; we can drop them
+                   from the types. *)
+                equations
+              | exception Not_found -> (
+                (* Need to move the type to the canonicals! *)
+                let canonical_at_use =
+                  TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
+                    env_at_use (Simple.name name)
+                in
+                let bare_canonical_at_use =
+                  Simple.without_coercion canonical_at_use
+                in
+                let coercion_to_canonical_at_use =
+                  Simple.coercion canonical_at_use
+                in
+                match Simple.Map.find bare_canonical_at_use delta_aliases with
+                | exception Not_found ->
+                  if TE.mem ~min_name_mode:Name_mode.in_types base_env name
+                  then Name.Map.add name ty equations
+                  else equations
+                | canonicals_at_fork ->
+                  let ty_for_canonicals_at_fork =
+                    TG.apply_coercion ty
+                      (Coercion.inverse coercion_to_canonical_at_use)
+                  in
+                  Aliases.Alias_set.fold
+                    (fun canonical_at_fork equations ->
+                      Simple.pattern_match canonical_at_fork
+                        ~name:
+                          (fun canonical_name_at_fork
+                               ~coercion:coercion_to_canonical_at_fork ->
+                          let ty_for_canonical_name_at_fork =
+                            TG.apply_coercion ty_for_canonicals_at_fork
+                              (Coercion.inverse coercion_to_canonical_at_fork)
+                          in
+                          Name.Map.add canonical_name_at_fork
+                            ty_for_canonical_name_at_fork equations)
+                        ~const:(fun _ -> equations))
+                    canonicals_at_fork equations))
+            equations Name.Map.empty
+        in
+        let _ = TE.add_env_extension_with_extra_variables in
         let code_age_relation =
           Code_age_relation.union
             (TE.code_age_relation base_env)
             (TE.code_age_relation env_at_use)
         in
-        TE.with_code_age_relation base_env code_age_relation)
+        ( TE.with_code_age_relation base_env code_age_relation,
+          (env_at_use, equations) ))
       base_env envs_with_levels
   in
-  (* Find the actual domain of the join of the levels
-
-     We compute an extension that is the join of the extensions corresponding to
-     all the levels. To avoid the difficulty with computing the domain lazily
-     during the join, we pre-compute the domain and initialise our accumulator
-     with bottom types for all variables involved. *)
-  let initial_types =
-    List.fold_left
-      (fun initial_types (_, equations) ->
-        Name.Map.fold
-          (fun name ty initial_types ->
-            if Name.is_var name
-            then Name.Map.add name (MTC.bottom_like ty) initial_types
-            else initial_types)
-          equations initial_types)
-      Name.Map.empty equations_in_base_env
+  (* *)
+  let shared_names =
+    match envs_with_equations with
+    | [] -> assert false
+    | (_, first_extension) :: envs_with_equations ->
+      List.fold_left
+        (fun shared_names (_, extension) ->
+          Name.Set.inter shared_names (Name.Map.keys extension))
+        (Name.Map.keys first_extension)
+        envs_with_equations
   in
-  let joined_types =
+  let initial_types =
+    Name.Set.fold
+      (fun name initial_types ->
+        if TE.mem ~min_name_mode:Name_mode.in_types env_at_fork name
+        then
+          Name.Map.add name
+            (MTC.bottom_like (TE.find base_env name None))
+            initial_types
+        else initial_types)
+      shared_names Name.Map.empty
+  in
+  let joined_types, new_variables =
     (* Now fold over the levels doing the actual join operation on equations. *)
-    ListLabels.fold_left equations_in_base_env ~init:initial_types
-      ~f:(fun joined_types (env_at_use, canonical_equations) ->
+    ListLabels.fold_left envs_with_equations
+      ~init:(initial_types, Variable.Set.empty)
+      ~f:(fun (joined_types, _new_variables) (env_at_use, equations) ->
+        let base_env =
+          Name.Map.fold
+            (fun name ty base_env ->
+              if not (TE.mem ~min_name_mode:Name_mode.in_types base_env name)
+              then
+                TE.add_definition base_env
+                  (Bound_name.create name Name_mode.in_types)
+                  (TG.kind ty)
+              else base_env)
+            joined_types base_env
+        in
         let left_env =
           (* CR vlaviron: This is very likely quadratic (number of uses times
              number of variables in all uses). However it's hard to know how we
@@ -218,70 +275,94 @@ let join_types ~env_at_fork envs_with_levels =
             (TEE.from_map joined_types)
             ~meet_type:(Meet_and_join.meet_type ())
         in
-        let join_types name joined_ty use_ty =
-          let same_unit =
-            Compilation_unit.equal
-              (Name.compilation_unit name)
-              (Compilation_unit.get_current_exn ())
-          in
-          if same_unit && not (TE.mem base_env name)
-          then
-            Misc.fatal_errorf "Name %a not defined in [base_env]:@ %a"
-              Name.print name TE.print base_env;
-          (* If [name] is that of a lifted constant symbol generated during one
-             of the levels, then ignore it. [Simplify_expr] will already have
-             made its type suitable for [base_env] and inserted it into that
-             environment.
-
-             If [name] is a symbol that is not a lifted constant, then it was
-             defined before the fork and already has an equation in base_env.
-             While it is possible that its type could be refined by all of the
-             branches, it is unlikely. *)
-          if not (Name.is_var name)
-          then None
-          else
-            let joined_ty, use_ty =
-              match joined_ty, use_ty with
-              | None, Some _use_ty ->
-                assert false (* See the computation of [initial_types] *)
-              | Some joined_ty, None ->
-                (* There is no equation, at all (not even saying "unknown"), on
-                   the current level for [name]. There are two possible cases
-                   for that:
-
-                   - The environment at use knows of this variable, but this
-                   level has no equation on it. In this case, we need to
-                   retrieve the type from [env_at_use] and join with it.
-
-                   - The variable doesn't exist in this environment. This
-                   happens if the variable is defined in one of the other
-                   branches, and will be quantified existentially in the result.
-                   In this case, it's safe to join with Bottom. *)
-                let is_defined_at_use = TE.mem env_at_use name in
-                if is_defined_at_use
-                then
-                  let use_ty =
-                    let expected_kind = Some (TG.kind joined_ty) in
-                    TE.find env_at_use name expected_kind
-                  in
-                  joined_ty, use_ty
-                else joined_ty, MTC.bottom_like joined_ty
-              | Some joined_ty, Some use_ty -> joined_ty, use_ty
-              | None, None -> assert false
-            in
-            let join_env =
-              Join_env.create base_env ~left_env ~right_env:env_at_use
-            in
-            match
-              (Meet_and_join.join ()) ~bound_name:name join_env joined_ty use_ty
-            with
-            | Known joined_ty -> Some joined_ty
-            | Unknown -> None
+        let join_env =
+          Join_env.create base_env ~left_env ~right_env:env_at_use
         in
-        Name.Map.merge join_types joined_types canonical_equations)
+        let rec loop join_env to_join joined_types =
+          match Name.Map.choose to_join with
+          | exception Not_found ->
+            let to_join, join_env = Join_env.at_next_depth join_env in
+            if Name.Map.is_empty to_join
+            then joined_types
+            else loop join_env to_join joined_types
+          | name, (left_ty, right_ty) -> (
+            let to_join = Name.Map.remove name to_join in
+            if Flambda_features.debug_flambda2 ()
+            then
+              Format.eprintf "%a = join(%a, %a)@." Name.print name TG.print
+                left_ty TG.print right_ty;
+            match
+              (Meet_and_join.join ()) ~bound_name:name join_env left_ty right_ty
+            with
+            | Unknown ->
+              if Flambda_features.debug_flambda2 () then Format.eprintf "unk@.";
+              let joined_types =
+                Name.Map.add name (MTC.unknown (TG.kind left_ty)) joined_types
+              in
+              loop join_env to_join joined_types
+            | Known ty ->
+              if Flambda_features.debug_flambda2 ()
+              then Format.eprintf "= %a@." TG.print (TG.recover_some_aliases ty);
+              let joined_types =
+                Name.Map.add name (TG.recover_some_aliases ty) joined_types
+              in
+              loop join_env to_join joined_types)
+        in
+        let to_join =
+          Name.Map.inter
+            (fun _name joined_ty use_ty -> joined_ty, use_ty)
+            joined_types equations
+        in
+        let joined_types = loop join_env to_join Name.Map.empty in
+        let new_variables =
+          Join_env.fold_variables Variable.Set.add join_env Variable.Set.empty
+        in
+        joined_types, new_variables)
   in
-  (* Make sure we include the shared aliases in the joined extension. *)
-  Name.Map.disjoint_union joined_aliases joined_types
+  (let nlevels = List.length envs_with_levels in
+   if nlevels > 1
+   then
+     let () =
+       if Flambda_features.debug_flambda2 ()
+       then
+         Format.eprintf "Aliases: @[<v>%a@]@."
+           (Format.pp_print_list Aliases.Alias_set.print)
+           _joined_aliases
+     in
+     if Flambda_features.debug_flambda2 ()
+     then
+       Format.eprintf
+         "@[<v>Base env:@;\
+          <1 2>@[<v>%a@]@ Join %d levels:@;\
+          <1 2>@[<v>%a@]@ Outcome:@;\
+          <1 2>@[<v>%a@]@]@." TE.print env_at_fork nlevels
+         (Format.pp_print_list (fun ppf (_, _, _, level) -> TEL.print ppf level))
+         envs_with_levels TEE.print
+         (TEE.from_map joined_types));
+  let final_env =
+    Variable.Set.fold
+      (fun var final_env ->
+        if TE.mem ~min_name_mode:Name_mode.in_types final_env (Name.var var)
+        then final_env
+        else
+          let kind =
+            match Name.Map.find (Name.var var) joined_types with
+            | ty -> TG.kind ty
+            | exception Not_found -> assert false
+          in
+          TE.add_definition final_env
+            (Bound_name.create (Name.var var) Name_mode.in_types)
+            kind)
+      new_variables base_env
+  in
+  let final_env =
+    TE.add_env_extension final_env
+      (TEE.from_map joined_types)
+      ~meet_type:(Meet_and_join.meet_type ())
+  in
+  let final_level = TE.cut final_env ~cut_after:fork_scope in
+  (* Make sure we include the shared aliases in the joined extension! *)
+  joined_types, final_level
 
 let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
     ~params =
@@ -387,57 +468,61 @@ let join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
   check_join_inputs ~env_at_fork envs_with_levels ~params
     ~extra_lifted_consts_in_use_envs;
   (* Calculate the joined types of all the names involved. *)
-  let joined_types = join_types ~env_at_fork envs_with_levels in
-  (* Next calculate which equations (describing joined types) to propagate to
-     the join point. (Recall that the environment at the fork point includes the
-     parameters of the continuation being called at the join. We wish to ensure
-     that information in the types of these parameters is not lost.)
+  let joined_types, joined_level = join_types ~env_at_fork envs_with_levels in
+  if true
+  then joined_level
+  else
+    (* Next calculate which equations (describing joined types) to propagate to
+       the join point. (Recall that the environment at the fork point includes
+       the parameters of the continuation being called at the join. We wish to
+       ensure that information in the types of these parameters is not lost.)
 
-     - Equations on names defined in the environment at the fork point are
-     always propagated.
+       - Equations on names defined in the environment at the fork point are
+       always propagated.
 
-     - Definitions of, and equations on, names that occur free on the right-hand
-     sides of the propagated equations are also themselves propagated. The
-     definition of any such propagated name (i.e. one that does not occur in the
-     environment at the fork point) will be made existential. *)
-  let free_names_transitive typ =
-    (* We need to compute the free names of joined_types, but we can't use a
-       typing environment. *)
-    let rec free_names_transitive0 typ ~result =
-      let free_names = TG.free_names typ in
-      let to_traverse = Name_occurrences.diff free_names ~without:result in
-      Name_occurrences.fold_names to_traverse ~init:result
-        ~f:(fun result name ->
-          let result =
-            Name_occurrences.add_name result name Name_mode.in_types
-          in
-          match Name.Map.find name joined_types with
-          | exception Not_found -> result
-          | typ -> free_names_transitive0 typ ~result)
+       - Definitions of, and equations on, names that occur free on the
+       right-hand sides of the propagated equations are also themselves
+       propagated. The definition of any such propagated name (i.e. one that
+       does not occur in the environment at the fork point) will be made
+       existential. *)
+    let free_names_transitive typ =
+      (* We need to compute the free names of joined_types, but we can't use a
+         typing environment. *)
+      let rec free_names_transitive0 typ ~result =
+        let free_names = TG.free_names typ in
+        let to_traverse = Name_occurrences.diff free_names ~without:result in
+        Name_occurrences.fold_names to_traverse ~init:result
+          ~f:(fun result name ->
+            let result =
+              Name_occurrences.add_name result name Name_mode.in_types
+            in
+            match Name.Map.find name joined_types with
+            | exception Not_found -> result
+            | typ -> free_names_transitive0 typ ~result)
+      in
+      free_names_transitive0 typ ~result:Name_occurrences.empty
     in
-    free_names_transitive0 typ ~result:Name_occurrences.empty
-  in
-  let allowed =
-    Name.Map.fold
-      (fun name ty allowed ->
-        if TE.mem env_at_fork name || Name.is_symbol name
-        then
-          Name_occurrences.add_name
-            (Name_occurrences.union allowed (free_names_transitive ty))
-            name Name_mode.in_types
-        else allowed)
-      joined_types allowed
-  in
-  let allowed =
-    Symbol.Set.fold
-      (fun symbol allowed ->
-        Name_occurrences.add_symbol allowed symbol Name_mode.in_types)
-      extra_lifted_consts_in_use_envs allowed
-  in
-  (* Having calculated which equations to propagate, the resulting level can now
-     be constructed. *)
-  construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
-    ~params
+    let allowed =
+      Name.Map.fold
+        (fun name ty allowed ->
+          if TE.mem env_at_fork name || Name.is_symbol name
+          then
+            Name_occurrences.add_name
+              (Name_occurrences.union allowed (free_names_transitive ty))
+              name Name_mode.in_types
+          else allowed)
+        joined_types allowed
+    in
+    let allowed =
+      Symbol.Set.fold
+        (fun symbol allowed ->
+          Name_occurrences.add_symbol allowed symbol Name_mode.in_types)
+        extra_lifted_consts_in_use_envs allowed
+    in
+    (* Having calculated which equations to propagate, the resulting level can
+       now be constructed. *)
+    construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
+      ~params
 
 let n_way_join ~env_at_fork envs_with_levels ~params
     ~extra_lifted_consts_in_use_envs ~extra_allowed_names =

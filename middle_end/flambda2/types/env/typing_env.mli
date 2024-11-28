@@ -86,6 +86,19 @@ module Join_env : sig
 
   val right_join_env : t -> typing_env
 
+  val already_joining_simple :
+    t -> Flambda_kind.t -> Simple.t -> Simple.t -> Type_grammar.t Or_unknown.t
+
+  val now_joining_simple :
+    ?bound_name:Name.t ->
+    t ->
+    Flambda_kind.t ->
+    Simple.t Or_bottom.t ->
+    Simple.t Or_bottom.t ->
+    Type_grammar.t Or_unknown.t
+
+  val at_next_depth : t -> (Type_grammar.t * Type_grammar.t) Name.Map.t * t
+
   type now_joining_result = private
     | Continue of t
     | Stop
@@ -93,6 +106,8 @@ module Join_env : sig
   val now_joining : t -> Simple.t -> Simple.t -> now_joining_result
 
   val already_joining : t -> Simple.t -> Simple.t -> bool
+
+  val fold_variables : (Variable.t -> 'a -> 'a) -> t -> 'a -> 'a
 end
 
 type 'a meet_return_value =

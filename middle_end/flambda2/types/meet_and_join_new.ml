@@ -24,14 +24,6 @@ module TEE = Typing_env_extension
 module Vec128 = Vector_types.Vec128.Bit_pattern
 open Or_unknown.Let_syntax
 
-let all_aliases_of env simple_opt ~in_env =
-  match simple_opt with
-  | None -> Aliases.Alias_set.empty
-  | Some simple ->
-    let simples = TE.aliases_of_simple_allowable_in_types env simple in
-    Aliases.Alias_set.filter
-      ~f:(fun simple -> TE.mem_simple in_env simple)
-      simples
 
 type 'a meet_return_value = 'a TE.meet_return_value =
   | Left_input
@@ -1532,6 +1524,51 @@ and meet_type env t1 t2 : _ Or_bottom.t =
     | Ok (res, env) -> Ok (res, env)
     | Bottom _ -> Bottom
 
+and mark_for_join env t1 t2 : TG.t Or_unknown.t =
+  if not (K.equal (TG.kind t1) (TG.kind t2))
+  then
+    Misc.fatal_errorf "Kind mismatch upon join:@ %a@ versus@ %a" TG.print t1
+      TG.print t2;
+  let kind = TG.kind t1 in
+  let canonical_simple1 =
+    match
+      TE.get_alias_then_canonical_simple_exn
+        (Join_env.left_join_env env)
+        t1 ~min_name_mode:Name_mode.in_types
+    with
+    | exception Not_found -> None
+    | canonical_simple -> Some canonical_simple
+  in
+  let canonical_simple2 =
+    match
+      TE.get_alias_then_canonical_simple_exn
+        (Join_env.right_join_env env)
+        t2 ~min_name_mode:Name_mode.in_types
+    with
+    | exception Not_found -> None
+    | canonical_simple -> Some canonical_simple
+  in
+  match canonical_simple1, canonical_simple2 with
+  | None, None | Some _, None | None, Some _ -> Unknown
+  | Some canonical_simple1, Some canonical_simple2 -> (
+    let expanded1 =
+      Expand_head.expand_head0
+        (Join_env.left_join_env env)
+        t1 ~known_canonical_simple_at_in_types_mode:(Some canonical_simple1)
+    in
+    let expanded2 =
+      Expand_head.expand_head0
+        (Join_env.right_join_env env)
+        t2 ~known_canonical_simple_at_in_types_mode:(Some canonical_simple2)
+    in
+    let join_simple = Join_env.now_joining_simple env kind in
+    match ET.descr expanded1, ET.descr expanded2 with
+    | Unknown, _ | _, Unknown -> Unknown
+    | Bottom, Bottom -> Known (MTC.bottom kind)
+    | Bottom, Ok _ -> join_simple Bottom (Ok canonical_simple2)
+    | Ok _, Bottom -> join_simple (Ok canonical_simple1) Bottom
+    | Ok _, Ok _ -> join_simple (Ok canonical_simple1) (Ok canonical_simple2))
+
 and join ?bound_name env (t1 : TG.t) (t2 : TG.t) : TG.t Or_unknown.t =
   if not (K.equal (TG.kind t1) (TG.kind t2))
   then
@@ -1556,89 +1593,45 @@ and join ?bound_name env (t1 : TG.t) (t2 : TG.t) : TG.t Or_unknown.t =
     | exception Not_found -> None
     | canonical_simple -> Some canonical_simple
   in
-  let expanded1 =
-    Expand_head.expand_head0
-      (Join_env.left_join_env env)
-      t1 ~known_canonical_simple_at_in_types_mode:canonical_simple1
-  in
-  let expanded2 =
-    Expand_head.expand_head0
-      (Join_env.right_join_env env)
-      t2 ~known_canonical_simple_at_in_types_mode:canonical_simple2
-  in
-  let shared_aliases =
-    let shared_aliases =
-      match
-        ( canonical_simple1,
-          ET.descr expanded1,
-          canonical_simple2,
-          ET.descr expanded2 )
-      with
-      | None, _, None, _
-      | None, (Ok _ | Unknown), _, _
-      | _, _, None, (Ok _ | Unknown) ->
-        Aliases.Alias_set.empty
-      | Some simple1, _, _, Bottom -> Aliases.Alias_set.singleton simple1
-      | _, Bottom, Some simple2, _ -> Aliases.Alias_set.singleton simple2
-      | Some simple1, _, Some simple2, _ ->
-        if Simple.same simple1 simple2
-        then Aliases.Alias_set.singleton simple1
-        else
-          Aliases.Alias_set.inter
-            (all_aliases_of
-               (Join_env.left_join_env env)
-               canonical_simple1
-               ~in_env:(Join_env.target_join_env env))
-            (all_aliases_of
-               (Join_env.right_join_env env)
-               canonical_simple2
-               ~in_env:(Join_env.target_join_env env))
-    in
-    match bound_name with
-    | None -> shared_aliases
-    | Some bound_name ->
-      (* We only return one type for each name, so we have to decide whether to
-         return an alias or an expanded head. Usually we prefer aliases, because
-         we hope that the alias itself will have a concrete equation anyway, but
-         we must be careful to ensure that we don't return aliases to self
-         (obviously wrong) or, if two variables [x] and [y] alias each other,
-         redundant equations [x : (= y)] and [y : (= x)]. *)
-      Aliases.Alias_set.filter
-        ~f:(fun alias ->
-          TE.alias_is_bound_strictly_earlier
-            (Join_env.target_join_env env)
-            ~bound_name ~alias)
-        shared_aliases
-  in
-  let unknown () : _ Or_unknown.t =
-    (* CR vlaviron: Fix this to Unknown when Product can handle it *)
-    Known (MTC.unknown kind)
-  in
-  match Aliases.Alias_set.find_best shared_aliases with
-  | Some alias -> Known (TG.alias_type_of kind alias)
-  | None -> (
+  let already_known : TG.t Or_unknown.t =
     match canonical_simple1, canonical_simple2 with
-    | Some simple1, Some simple2
-      when Join_env.already_joining env simple1 simple2 ->
-      unknown ()
-    | Some _, Some _ | Some _, None | None, Some _ | None, None -> (
-      let join_heads env : _ Or_unknown.t =
-        Known (ET.to_type (join_expanded_head env kind expanded1 expanded2))
-      in
-      match canonical_simple1, canonical_simple2 with
-      | Some simple1, Some simple2 -> (
-        match Join_env.now_joining env simple1 simple2 with
-        | Continue env -> join_heads env
-        | Stop -> unknown ())
-      | Some _, None | None, Some _ | None, None -> join_heads env))
+    | Some canonical_simple1, Some canonical_simple2 ->
+      Join_env.now_joining_simple ?bound_name env kind (Ok canonical_simple1)
+        (Ok canonical_simple2)
+    | _, _ -> Unknown
+  in
+  match already_known with
+  | Known _ -> already_known
+  | Unknown ->
+    let expanded1 =
+      Expand_head.expand_head0
+        (Join_env.left_join_env env)
+        t1 ~known_canonical_simple_at_in_types_mode:canonical_simple1
+    in
+    let expanded2 =
+      Expand_head.expand_head0
+        (Join_env.right_join_env env)
+        t2 ~known_canonical_simple_at_in_types_mode:canonical_simple2
+    in
+    (* CR vlaviron: Fix this to return Unknown when Product can handle it *)
+    Known (ET.to_type (join_expanded_head env kind expanded1 expanded2))
 
 and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) : ET.t =
   match ET.descr expanded1, ET.descr expanded2 with
   | Bottom, Bottom -> ET.create_bottom kind
   (* The target environment defines all the names from the left and right
-     environments, so we can safely return any input as the result *)
+     environments, so we can safely return any input as the result
+
+     TODO(bclement): We can't anymore. Copy from the appropriate env. *)
   | Ok _, Bottom -> expanded1
-  | Bottom, Ok _ -> expanded2
+  | Bottom, Ok _ ->
+    let free_names = TG.free_names (ET.to_type expanded2) in
+    let right_env = Join_env.right_join_env env in
+    Name_occurrences.fold_names free_names ~init:() ~f:(fun () name ->
+        let kind = TG.kind (TE.find right_env name None) in
+        ignore
+        @@ Join_env.now_joining_simple env kind Bottom (Ok (Simple.name name)));
+    expanded2
   | Unknown, _ | _, Unknown -> ET.create_unknown kind
   | Ok descr1, Ok descr2 -> (
     let expanded_or_unknown =
@@ -1733,27 +1726,27 @@ and join_head_of_kind_value_non_null env
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     Known (TG.Head_of_kind_value_non_null.create_mutable_block alloc_mode)
   | Boxed_float32 (n1, alloc_mode1), Boxed_float32 (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_float32 n alloc_mode
   | Boxed_float (n1, alloc_mode1), Boxed_float (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_float n alloc_mode
   | Boxed_int32 (n1, alloc_mode1), Boxed_int32 (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_int32 n alloc_mode
   | Boxed_int64 (n1, alloc_mode1), Boxed_int64 (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_int64 n alloc_mode
   | Boxed_nativeint (n1, alloc_mode1), Boxed_nativeint (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_nativeint n alloc_mode
   | Boxed_vec128 (n1, alloc_mode1), Boxed_vec128 (n2, alloc_mode2) ->
-    let>+ n = join env n1 n2 in
+    let>+ n = mark_for_join env n1 n2 in
     let alloc_mode = join_alloc_mode alloc_mode1 alloc_mode2 in
     TG.Head_of_kind_value_non_null.create_boxed_vec128 n alloc_mode
   | ( Closures { by_function_slot = by_function_slot1; alloc_mode = alloc_mode1 },
@@ -1787,7 +1780,7 @@ and join_head_of_kind_value_non_null env
       join_array_contents env array_contents1 array_contents2
         ~joined_element_kind:element_kind
     in
-    let>+ length = join env length1 length2 in
+    let>+ length = mark_for_join env length1 length2 in
     TG.Head_of_kind_value_non_null.create_array_with_contents ~element_kind
       ~length contents alloc_mode
   | ( ( Variant _ | Mutable_block _ | Boxed_float _ | Boxed_float32 _
@@ -1816,7 +1809,7 @@ and join_array_contents env (array_contents1 : TG.array_contents Or_unknown.t)
             try
               let fields =
                 Array.init (Array.length fields1) (fun idx ->
-                    match join env fields1.(idx) fields2.(idx) with
+                    match mark_for_join env fields1.(idx) fields2.(idx) with
                     | Unknown -> raise Unknown_result
                     | Known ty -> ty)
               in
@@ -1833,7 +1826,7 @@ and join_variant env ~(blocks1 : TG.Row_like_for_blocks.t Or_unknown.t)
     * TG.variant_extensions)
     Or_unknown.t =
   let blocks = join_unknown join_row_like_for_blocks env blocks1 blocks2 in
-  let imms = join_unknown (join ?bound_name:None) env imms1 imms2 in
+  let imms = join_unknown mark_for_join env imms1 imms2 in
   let extensions : TG.variant_extensions =
     match extensions1, extensions2 with
     | No_extensions, Ext _ | Ext _, No_extensions | No_extensions, No_extensions
@@ -1870,13 +1863,13 @@ and join_head_of_kind_naked_immediate env
     | Bottom ->
       Misc.fatal_error "Did not expect [Bottom] from [create_naked_immediates]")
   | Is_int ty1, Is_int ty2 ->
-    let>+ ty = join env ty1 ty2 in
+    let>+ ty = mark_for_join env ty1 ty2 in
     TG.Head_of_kind_naked_immediate.create_is_int ty
   | Get_tag ty1, Get_tag ty2 ->
-    let>+ ty = join env ty1 ty2 in
+    let>+ ty = mark_for_join env ty1 ty2 in
     TG.Head_of_kind_naked_immediate.create_get_tag ty
   | Is_null ty1, Is_null ty2 ->
-    let>+ ty = join env ty1 ty2 in
+    let>+ ty = mark_for_join env ty1 ty2 in
     TG.Head_of_kind_naked_immediate.create_is_null ty
   (* From now on: Irregular cases *)
   (* CR vlaviron: There could be improvements based on reduction (trying to
@@ -2179,7 +2172,9 @@ and join_generic_product :
       match ty1_opt, ty2_opt with
       | None, _ | _, None -> None
       | Some ty1, Some ty2 -> (
-        match join env ty1 ty2 with Known ty -> Some ty | Unknown -> None))
+        match mark_for_join env ty1 ty2 with
+        | Known ty -> Some ty
+        | Unknown -> None))
     components_by_index1 components_by_index2
 
 and join_function_slot_indexed_product env
@@ -2231,7 +2226,7 @@ and join_int_indexed_product env shape (fields1 : TG.Product.Int_indexed.t)
           if fields1.(index) == fields2.(index)
           then fields1.(index)
           else
-            match join env fields1.(index) fields2.(index) with
+            match mark_for_join env fields1.(index) fields2.(index) with
             | Unknown -> MTC.unknown_from_shape shape index
             | Known ty -> ty)
   in
@@ -2263,7 +2258,7 @@ and join_function_type (env : Join_env.t)
     with
     | Unknown -> Unknown
     | Known code_id -> (
-      match join env rec_info1 rec_info2 with
+      match mark_for_join env rec_info1 rec_info2 with
       | Known rec_info -> Ok (TG.Function_type.create code_id ~rec_info)
       | Unknown -> Unknown))
 
@@ -2274,7 +2269,7 @@ and join_env_extension env (ext1 : TEE.t) (ext2 : TEE.t) : TEE.t =
         match ty1_opt, ty2_opt with
         | None, _ | _, None -> None
         | Some ty1, Some ty2 -> (
-          match join env ty1 ty2 with
+          match mark_for_join env ty1 ty2 with
           | Known ty ->
             if MTC.is_alias_of_name ty name
             then

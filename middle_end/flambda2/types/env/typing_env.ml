@@ -294,6 +294,21 @@ module Join_env : sig
 
   val right_join_env : t -> typing_env
 
+  val already_joining_simple :
+    t -> K.t -> Simple.t -> Simple.t -> TG.t Or_unknown.t
+
+  val fold_variables : (Variable.t -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val now_joining_simple :
+    ?bound_name:Name.t ->
+    t ->
+    K.t ->
+    Simple.t Or_bottom.t ->
+    Simple.t Or_bottom.t ->
+    TG.t Or_unknown.t
+
+  val at_next_depth : t -> (TG.t * TG.t) Name.Map.t * t
+
   type now_joining_result =
     | Continue of t
     | Stop
@@ -302,14 +317,32 @@ module Join_env : sig
 
   val already_joining : t -> Simple.t -> Simple.t -> bool
 end = struct
+  module Name_table = Hashtbl.Make (Name)
+  module Simple_pair_table = Hashtbl.Make (Simple.Pair)
+
   type t =
     { central_env : Meet_or_join_env_base.t;
       left_join_env : typing_env;
       right_join_env : typing_env;
+      mutable join_at_next_depth : (TG.t * TG.t) Name.Map.t;
+      already_joining : Simple.t Simple_pair_table.t;
+      in_left_env_only : unit Name_table.t;
+      in_right_env_only : unit Name_table.t;
+      in_join_env_only : unit Name_table.t;
       depth : int
     }
 
-  let print ppf { central_env; left_join_env; right_join_env; depth } =
+  let print ppf
+      { central_env;
+        left_join_env;
+        right_join_env;
+        depth;
+        join_at_next_depth = _;
+        already_joining = _;
+        in_left_env_only = _;
+        in_right_env_only = _;
+        in_join_env_only = _
+      } =
     let join_env name ppf env =
       Format.fprintf ppf "@ @[<hov 1>(%s@ %a)@]@" name print env
     in
@@ -324,7 +357,12 @@ end = struct
     { central_env = Meet_or_join_env_base.create central_env;
       left_join_env = left_env;
       right_join_env = right_env;
-      depth = 0
+      depth = 0;
+      join_at_next_depth = Name.Map.empty;
+      already_joining = Simple_pair_table.create 17;
+      in_left_env_only = Name_table.create 17;
+      in_right_env_only = Name_table.create 17;
+      in_join_env_only = Name_table.create 17
     }
 
   let target_join_env t = Meet_or_join_env_base.env t.central_env
@@ -351,6 +389,125 @@ end = struct
 
   let already_joining { central_env; _ } simple1 simple2 =
     Meet_or_join_env_base.already_meeting_or_joining central_env simple1 simple2
+
+  let at_next_depth t =
+    ( t.join_at_next_depth,
+      { t with depth = t.depth + 1; join_at_next_depth = Name.Map.empty } )
+
+  let already_joining_simple t kind simple1 simple2 : _ Or_unknown.t =
+    match Simple_pair_table.find t.already_joining (simple1, simple2) with
+    | simple -> Known (TG.alias_type_of kind simple)
+    | exception Not_found -> Unknown
+
+  let now_joining_simple ?bound_name t kind (simple1 : _ Or_bottom.t)
+      (simple2 : _ Or_bottom.t) : TG.t Or_unknown.t =
+    (* TODO: record the var as needing join (unless both are bottom). *)
+    (* XXX: simples that have a single (existing) name in the central env should
+       be replaced with that name? *)
+    let ty_ou : TG.t Or_unknown.t =
+      match simple1, simple2 with
+      | Bottom, Bottom -> Known (MTC.bottom kind)
+      | Bottom, Ok simple2 ->
+        Simple.pattern_match simple2
+          ~const:(fun _ -> Or_unknown.Known (TG.alias_type_of kind simple2))
+          ~name:(fun name2 ~coercion:_ ->
+            if Name_table.mem t.in_right_env_only name2
+            then Or_unknown.Known (TG.alias_type_of kind simple2)
+            else if t.depth >= Flambda_features.join_depth ()
+            then Or_unknown.Unknown
+            else (
+              Name_table.add t.in_right_env_only name2 ();
+              t.join_at_next_depth
+                <- Name.Map.add name2
+                     (MTC.bottom kind, TG.alias_type_of kind (Simple.name name2))
+                     t.join_at_next_depth;
+              Or_unknown.Known (TG.alias_type_of kind simple2)))
+      | Ok simple1, Bottom ->
+        Simple.pattern_match simple1
+          ~const:(fun _ -> Or_unknown.Known (TG.alias_type_of kind simple1))
+          ~name:(fun name1 ~coercion:_ ->
+            if Name_table.mem t.in_left_env_only name1
+            then Or_unknown.Known (TG.alias_type_of kind simple1)
+            else if t.depth >= Flambda_features.join_depth ()
+            then Or_unknown.Unknown
+            else (
+              Name_table.add t.in_left_env_only name1 ();
+              t.join_at_next_depth
+                <- Name.Map.add name1
+                     (TG.alias_type_of kind simple1, MTC.bottom kind)
+                     t.join_at_next_depth;
+              Or_unknown.Known (TG.alias_type_of kind simple1)))
+      | Ok simple1, Ok simple2 -> (
+        if Simple.is_const simple1 && Simple.is_const simple2
+           && Simple.equal simple1 simple2
+        then Known (TG.alias_type_of kind simple1)
+        else
+          match Simple_pair_table.find t.already_joining (simple1, simple2) with
+          | joined_simple -> Known (TG.alias_type_of kind joined_simple)
+          | exception Not_found ->
+            if t.depth >= Flambda_features.join_depth ()
+            then Unknown
+            else
+              let name =
+                if Simple.equal simple1 simple2
+                then
+                  match Simple.must_be_name simple1 with
+                  | Some (name, _) -> name
+                  | None -> assert false
+                else
+                  match bound_name with
+                  | Some bound_name -> bound_name
+                  | None ->
+                    let raw_name =
+                      match Simple.must_be_var simple1 with
+                      | None -> "ex"
+                      | Some (var1, _) -> (
+                        match Simple.must_be_var simple2 with
+                        | None -> "ex"
+                        | Some (var2, _) ->
+                          let raw_name1 = Variable.raw_name var1 in
+                          let raw_name2 = Variable.raw_name var2 in
+                          if String.equal raw_name1 raw_name2
+                          then raw_name1
+                          else "ex")
+                    in
+                    Name.var (Variable.create raw_name)
+              in
+              Simple_pair_table.add t.already_joining (simple1, simple2)
+                (Simple.name name);
+              Name_table.add t.in_join_env_only name ();
+              t.join_at_next_depth
+                <- Name.Map.add name
+                     ( TG.alias_type_of kind simple1,
+                       TG.alias_type_of kind simple2 )
+                     t.join_at_next_depth;
+              Known (TG.alias_type_of kind (Simple.name name)))
+    in
+    match bound_name, ty_ou with
+    | Some bound_name, Known ty ->
+      if MTC.is_alias_of_name ty bound_name then Unknown else Known ty
+    | None, _ | _, Unknown -> ty_ou
+
+  let fold_variables_of_name f name acc =
+    match Name.must_be_var_opt name with Some var -> f var acc | None -> acc
+
+  let fold_variables f t acc =
+    let acc =
+      Name_table.fold
+        (fun name () acc -> fold_variables_of_name f name acc)
+        t.in_left_env_only acc
+    in
+    let acc =
+      Name_table.fold
+        (fun name () acc -> fold_variables_of_name f name acc)
+        t.in_right_env_only acc
+    in
+    let acc =
+      Name_table.fold
+        (fun name () acc -> fold_variables_of_name f name acc)
+        t.in_join_env_only acc
+    in
+    acc
 end
 
 let names_to_types t =

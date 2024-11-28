@@ -120,3 +120,9 @@ module With_debuginfo : sig
 
   include Container_types.S with type t := t
 end
+
+module Pair : sig
+  type nonrec t = t * t
+
+  include Container_types.S with type t := t
+end

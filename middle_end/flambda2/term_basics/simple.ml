@@ -218,3 +218,9 @@ module With_debuginfo = struct
   let ids_for_export (simple, _dbg) =
     Ids_for_export.add_simple Ids_for_export.empty simple
 end
+
+module Pair = struct
+  include Container_types.Make_pair (Int_ids.Simple) (Int_ids.Simple)
+
+  type nonrec t = t * t
+end
