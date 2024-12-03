@@ -132,6 +132,8 @@ module Alias_set : sig
 
   val fold_equations : (Name.t -> Simple.t -> 'a -> 'a) -> t -> 'a -> 'a
 
+  val apply_coercion : t -> Coercion.t -> t
+
   (** Return the best alias in the set, where constants are better than symbols,
       which are better than variables, and ties are broken (arbitrarily) by
       [Simple.compare]. Returns [None] if the alias set is empty. *)

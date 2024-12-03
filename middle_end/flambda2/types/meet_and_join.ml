@@ -35,5 +35,5 @@ let meet_env_extension env t1 t2 =
 
 let[@inline] join () =
   if Flambda_features.use_better_meet ()
-  then Meet_and_join_new.join
+  then assert false
   else Meet_and_join_old.join

@@ -383,6 +383,8 @@ module Product : sig
     val width : t -> Targetint_31_63.t
 
     val components : t -> flambda_type list
+
+    include Contains_names.S with type t := t
   end
 end
 
@@ -394,6 +396,8 @@ module Function_type : sig
   val code_id : t -> Code_id.t
 
   val rec_info : t -> flambda_type
+
+  include Contains_names.S with type t := t
 end
 
 module Closures_entry : sig
@@ -409,6 +413,8 @@ module Closures_entry : sig
     t -> exact:bool -> Function_slot.t -> Function_type.t Or_unknown_or_bottom.t
 
   val value_slot_types : t -> flambda_type Value_slot.Map.t
+
+  include Contains_names.S with type t := t
 end
 
 module Row_like_index : sig
@@ -737,6 +743,8 @@ module Head_of_kind_value_non_null : sig
     array_contents Or_unknown.t ->
     Alloc_mode.For_types.t ->
     t
+
+  include Contains_names.S with type t := t
 end
 
 module Head_of_kind_naked_immediate : sig

@@ -20,7 +20,7 @@ module TE = Typing_env
 module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module TG = Type_grammar
-module Join_env = TE.Join_env
+module Join_env_old = TE.Join_env
 
 let mem_name env name = TE.mem ~min_name_mode:Name_mode.in_types env name
 
@@ -105,7 +105,7 @@ let recover_delta_aliases ~env_at_fork env equations =
 let join_aliases ~env_at_fork env_with_levels =
   match env_with_levels with
   | [] -> env_at_fork, []
-  | (env_at_first_use, _, _, level_at_first_use) :: other_envs_with_levels ->
+  | (env_at_first_use, level_at_first_use) :: other_envs_with_levels ->
     let delta_aliases =
       recover_delta_aliases ~env_at_fork env_at_first_use
         (TEL.equations level_at_first_use)
@@ -117,7 +117,7 @@ let join_aliases ~env_at_fork env_with_levels =
     in
     let joined_aliases =
       List.fold_left
-        (fun delta_aliases (env_at_other_use, _, _, _) ->
+        (fun delta_aliases (env_at_other_use, _) ->
           List.fold_left
             (fun new_classes delta_alias_set ->
               (* Partition each equivalence class according to the canonical
@@ -168,7 +168,7 @@ let join_types ~env_at_fork envs_with_levels =
   (* Aggregate the code age relations of the branches. *)
   let base_env, envs_with_equations =
     List.fold_left_map
-      (fun base_env (env_at_use, _, _, level) ->
+      (fun base_env (env_at_use, level) ->
         let equations = TEL.equations level in
         let delta_aliases =
           recover_delta_aliases ~env_at_fork:base_env env_at_use equations
@@ -276,12 +276,12 @@ let join_types ~env_at_fork envs_with_levels =
             ~meet_type:(Meet_and_join.meet_type ())
         in
         let join_env =
-          Join_env.create base_env ~left_env ~right_env:env_at_use
+          Join_env_old.create base_env ~left_env ~right_env:env_at_use
         in
         let rec loop join_env to_join joined_types =
           match Name.Map.choose to_join with
           | exception Not_found ->
-            let to_join, join_env = Join_env.at_next_depth join_env in
+            let to_join, join_env = Join_env_old.at_next_depth join_env in
             if Name.Map.is_empty to_join
             then joined_types
             else loop join_env to_join joined_types
@@ -309,13 +309,20 @@ let join_types ~env_at_fork envs_with_levels =
               loop join_env to_join joined_types)
         in
         let to_join =
-          Name.Map.inter
-            (fun _name joined_ty use_ty -> joined_ty, use_ty)
+          Name.Map.merge
+            (fun _name joined_ty use_ty ->
+              match joined_ty, use_ty with
+              | None, None -> assert false
+              | Some joined_ty, None ->
+                Some (joined_ty, MTC.unknown_like joined_ty)
+              | None, Some use_ty -> Some (MTC.unknown_like use_ty, use_ty)
+              | Some joined_ty, Some use_ty -> Some (joined_ty, use_ty))
             joined_types equations
         in
         let joined_types = loop join_env to_join Name.Map.empty in
         let new_variables =
-          Join_env.fold_variables Variable.Set.add join_env Variable.Set.empty
+          Join_env_old.fold_variables Variable.Set.add join_env
+            Variable.Set.empty
         in
         joined_types, new_variables)
   in
@@ -336,9 +343,22 @@ let join_types ~env_at_fork envs_with_levels =
           <1 2>@[<v>%a@]@ Join %d levels:@;\
           <1 2>@[<v>%a@]@ Outcome:@;\
           <1 2>@[<v>%a@]@]@." TE.print env_at_fork nlevels
-         (Format.pp_print_list (fun ppf (_, _, _, level) -> TEL.print ppf level))
+         (Format.pp_print_list (fun ppf (_, level) -> TEL.print ppf level))
          envs_with_levels TEE.print
          (TEE.from_map joined_types));
+  let new_variables =
+    Name.Map.fold
+      (fun name ty new_variables ->
+        let new_variables =
+          match Name.must_be_var_opt name with
+          | Some var -> Variable.Set.add var new_variables
+          | None -> new_variables
+        in
+        let names = TG.free_names ty in
+        Name_occurrences.fold_variables names ~init:new_variables
+          ~f:(fun vs v -> Variable.Set.add v vs))
+      joined_types new_variables
+  in
   let final_env =
     Variable.Set.fold
       (fun var final_env ->
@@ -348,7 +368,9 @@ let join_types ~env_at_fork envs_with_levels =
           let kind =
             match Name.Map.find (Name.var var) joined_types with
             | ty -> TG.kind ty
-            | exception Not_found -> assert false
+            | exception Not_found ->
+              Misc.fatal_errorf "Could not find variable: %a@." Variable.print
+                var
           in
           TE.add_definition final_env
             (Bound_name.create (Name.var var) Name_mode.in_types)
@@ -379,7 +401,7 @@ let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
   in
   let defined_vars, binding_times =
     List.fold_left
-      (fun (defined_vars, binding_times) (_env_at_use, _id, _use_kind, t) ->
+      (fun (defined_vars, binding_times) (_env_at_use, t) ->
         let defined_vars_this_level =
           Variable.Map.filter
             (fun var _ -> variable_is_in_new_level var)
@@ -420,7 +442,7 @@ let construct_joined_level envs_with_levels ~env_at_fork ~allowed ~joined_types
   in
   let symbol_projections =
     List.fold_left
-      (fun symbol_projections (_env_at_use, _id, _use_kind, t) ->
+      (fun symbol_projections (_env_at_use, t) ->
         let projs_this_level =
           Variable.Map.filter
             (fun var _ ->
@@ -532,19 +554,25 @@ let n_way_join ~env_at_fork envs_with_levels ~params
     join ~env_at_fork envs_with_levels ~params ~extra_lifted_consts_in_use_envs
       ~extra_allowed_names
 
-let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-    ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
-  let after_cuts =
+let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params:_ ~cut_after
+    ~extra_lifted_consts_in_use_envs:_ ~extra_allowed_names:_ =
+  let central_env = definition_typing_env in
+  let joined_envs =
     List.map
-      (fun (t, use_id, use_kind) ->
+      (fun (t, _use_id, _use_kind) ->
         let level = TE.cut t ~cut_after in
-        t, use_id, use_kind, level)
+        t, level)
       ts_and_use_ids
   in
-  let params = Bound_parameters.to_list params in
-  let level =
-    n_way_join ~env_at_fork:definition_typing_env after_cuts ~params
-      ~extra_lifted_consts_in_use_envs ~extra_allowed_names
-  in
-  TE.add_env_extension_from_level definition_typing_env level
+  (* let _ = *)
+  Join_env.Superjoin.dodoblahdo
     ~meet_type:(Meet_and_join.meet_type ())
+    ~join_ty:(Meet_and_join_new.join ?bound_name:None)
+    central_env joined_envs
+(* in let params = Bound_parameters.to_list params in let level = n_way_join
+   ~env_at_fork:definition_typing_env after_cuts ~params
+   ~extra_lifted_consts_in_use_envs ~extra_allowed_names in
+   TE.add_env_extension_from_level definition_typing_env level
+   ~meet_type:(Meet_and_join.meet_type ()) *)
+
+let () = ignore n_way_join

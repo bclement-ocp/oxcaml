@@ -338,6 +338,13 @@ module Alias_set = struct
     let names = Map_to_canonical.inter names1 names2 in
     { const; names }
 
+  let apply_coercion ({ const; names } as t) coercion =
+    if Coercion.is_id coercion
+    then t
+    else
+      let names = compose_map_values_exn names ~then_:coercion in
+      { const; names }
+
   let filter { const; names } ~f =
     let const =
       match const with

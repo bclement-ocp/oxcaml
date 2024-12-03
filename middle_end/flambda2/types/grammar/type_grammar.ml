@@ -2698,6 +2698,11 @@ module Function_type = struct
   let code_id t = t.code_id
 
   let rec_info t = t.rec_info
+
+  let apply_renaming = apply_renaming_function_type
+
+  let free_names func_type =
+    free_names_function_type ~follow_value_slots:true (Ok func_type)
 end
 
 module Closures_entry = struct
@@ -2713,6 +2718,10 @@ module Closures_entry = struct
 
   let value_slot_types { value_slot_types; _ } =
     value_slot_types.value_slot_components_by_index
+
+  let free_names = free_names_closures_entry ~follow_value_slots:true
+
+  let apply_renaming = apply_renaming_closures_entry
 end
 
 module Product = struct
@@ -2767,6 +2776,10 @@ module Product = struct
     let width t = Targetint_31_63.of_int (Array.length t)
 
     let components t = Array.to_list t
+
+    let apply_renaming = apply_renaming_int_indexed_product
+
+    let free_names = free_names_int_indexed_product ~follow_value_slots:true
   end
 end
 
@@ -3538,6 +3551,11 @@ module Head_of_kind_value_non_null = struct
 
   let create_array_with_contents ~element_kind ~length contents alloc_mode =
     Array { element_kind; length; contents; alloc_mode }
+
+  let apply_renaming = apply_renaming_head_of_kind_value_non_null
+
+  let free_names =
+    free_names_head_of_kind_value_non_null ~follow_value_slots:true
 end
 
 module type Head_of_kind_naked_number_intf = sig

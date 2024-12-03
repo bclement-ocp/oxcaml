@@ -24,10 +24,10 @@ val meet :
 (** Least upper bound of two types. *)
 val join :
   ?bound_name:Name.t ->
-  Typing_env.Join_env.t ->
+  Join_env.Binary.t ->
   Type_grammar.t ->
   Type_grammar.t ->
-  Type_grammar.t Or_unknown.t
+  Type_grammar.t Or_unknown.t * Join_env.Binary.t
 
 val meet_shape :
   Typing_env.t ->
