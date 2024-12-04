@@ -1095,6 +1095,21 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
     Simple.pattern_match bare_lhs ~name ~const:(fun _ -> t)
 
 and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
+  let missing =
+    Name_occurrences.fold_names (TG.free_names ty) ~init:Name.Set.empty
+      ~f:(fun missing name ->
+        if (not (Name.is_symbol name))
+           && not (mem ~min_name_mode:Name_mode.in_types t name)
+        then Name.Set.add name missing
+        else missing)
+  in
+  (if not (Name.Set.is_empty missing)
+  then
+    let s =
+      Format.asprintf "Missing: %a@ (from:@ %a)" Name.Set.print missing TG.print
+        ty
+    in
+    Misc.fatal_error s);
   let ty = TG.recover_some_aliases ty in
   match add_equation1 ~raise_on_bottom t name ty ~meet_type with
   | exception Binding_time_resolver_failure ->

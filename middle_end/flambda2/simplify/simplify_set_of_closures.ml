@@ -642,6 +642,12 @@ let simplify_set_of_closures0 outer_dacc context set_of_closures
   in
   let dacc =
     DA.map_denv dacc ~f:(fun denv ->
+        let denv =
+          List.fold_left
+            (fun denv (bound_name, _) ->
+              DE.define_name_if_undefined denv bound_name K.value)
+            denv closure_types_by_bound_name
+        in
         List.fold_left
           (fun denv (bound_name, closure_type) ->
             (* In the lifting case the symbols could be defined already. *)
