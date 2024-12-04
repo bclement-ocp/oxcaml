@@ -491,137 +491,110 @@ let rec meet env (t1 : TG.t) (t2 : TG.t) : TG.t meet_result =
   then
     Misc.fatal_errorf "Kind mismatch upon meet:@ %a@ versus@ %a" TG.print t1
       TG.print t2;
-  try
-    let kind = TG.kind t1 in
-    let simple1 =
-      match
-        TE.get_alias_then_canonical_simple_exn env t1
-          ~min_name_mode:Name_mode.in_types
-      with
-      | exception Not_found -> None
-      | canonical_simple -> Some canonical_simple
+  let kind = TG.kind t1 in
+  let simple1 =
+    match
+      TE.get_alias_then_canonical_simple_exn env t1
+        ~min_name_mode:Name_mode.in_types
+    with
+    | exception Not_found -> None
+    | canonical_simple -> Some canonical_simple
+  in
+  let simple2 =
+    match
+      TE.get_alias_then_canonical_simple_exn env t2
+        ~min_name_mode:Name_mode.in_types
+    with
+    | exception Not_found -> None
+    | canonical_simple -> Some canonical_simple
+  in
+  match simple1 with
+  | None -> (
+    let expanded1 =
+      Expand_head.expand_head0 env t1
+        ~known_canonical_simple_at_in_types_mode:simple1
     in
-    let simple2 =
-      match
-        TE.get_alias_then_canonical_simple_exn env t2
-          ~min_name_mode:Name_mode.in_types
-      with
-      | exception Not_found -> None
-      | canonical_simple -> Some canonical_simple
+    let expanded2 =
+      Expand_head.expand_head0 env t2
+        ~known_canonical_simple_at_in_types_mode:simple2
     in
-    match simple1 with
+    match simple2 with
+    | None ->
+      map_result ~f:ET.to_type (meet_expanded_head env expanded1 expanded2)
+    | Some simple2 -> (
+      (* Here we are meeting a non-alias type on the left with an alias on the
+         right. In all cases, the return type is the alias, so we will always
+         return [Right_input]; the interesting part will be the environment. *)
+      let env : unit meet_result =
+        match meet_expanded_head env expanded1 expanded2 with
+        | Ok (Left_input, env) ->
+          add_equation simple2 (ET.to_type expanded1) env ~meet_type
+        | Ok ((Right_input | Both_inputs), env) -> Ok (New_result (), env)
+        | Ok (New_result expanded, env) ->
+          add_equation simple2 (ET.to_type expanded) env ~meet_type
+        | Bottom r -> Bottom r
+      in
+      match env with
+      | Ok (_, env) -> Ok (Right_input, env)
+      | Bottom r -> Bottom r))
+  | Some simple1 as simple1_opt -> (
+    match simple2 with
     | None -> (
       let expanded1 =
         Expand_head.expand_head0 env t1
-          ~known_canonical_simple_at_in_types_mode:simple1
+          ~known_canonical_simple_at_in_types_mode:simple1_opt
       in
       let expanded2 =
         Expand_head.expand_head0 env t2
           ~known_canonical_simple_at_in_types_mode:simple2
       in
-      match simple2 with
-      | None ->
-        map_result ~f:ET.to_type (meet_expanded_head env expanded1 expanded2)
-      | Some simple2 -> (
-        (* Here we are meeting a non-alias type on the left with an alias on the
-           right. In all cases, the return type is the alias, so we will always
-           return [Right_input]; the interesting part will be the
-           environment. *)
-        let env : unit meet_result =
-          match meet_expanded_head env expanded1 expanded2 with
-          | Ok (Left_input, env) ->
-            add_equation simple2 (ET.to_type expanded1) env ~meet_type
-          | Ok ((Right_input | Both_inputs), env) -> Ok (New_result (), env)
-          | Ok (New_result expanded, env) ->
-            add_equation simple2 (ET.to_type expanded) env ~meet_type
-          | Bottom r -> Bottom r
+      (* We always return [Left_input] (see comment above) *)
+      let env : unit meet_result =
+        match meet_expanded_head env expanded1 expanded2 with
+        | Ok (Right_input, env) ->
+          add_equation simple1 (ET.to_type expanded2) env ~meet_type
+        | Ok ((Left_input | Both_inputs), env) -> Ok (New_result (), env)
+        | Ok (New_result expanded, env) ->
+          add_equation simple1 (ET.to_type expanded) env ~meet_type
+        | Bottom r -> Bottom r
+      in
+      match env with
+      | Ok (_, env) -> Ok (Left_input, env)
+      | Bottom r -> Bottom r)
+    | Some simple2 -> (
+      if (* We are doing a meet between two alias types. Whatever happens, the
+            resulting environment will contain an alias equation between the two
+            inputs, so both the left-hand alias and the right-hand alias are
+            correct results for the meet, allowing us to return [Both_inputs] in
+            all cases. *)
+         Simple.equal simple1 simple2
+      then
+        (* The alias is already present; no need to add any equation here *)
+        Ok (Both_inputs, env)
+      else
+        let env =
+          Simple.pattern_match simple2
+            ~name:(fun _ ~coercion:_ ->
+              add_equation simple2
+                (TG.alias_type_of kind simple1)
+                env ~meet_type)
+            ~const:(fun const2 ->
+              Simple.pattern_match simple1
+                ~name:(fun _ ~coercion:_ ->
+                  add_equation simple1
+                    (TG.alias_type_of kind simple2)
+                    env ~meet_type)
+                ~const:(fun const1 : unit meet_result ->
+                  if Reg_width_const.equal const1 const2
+                  then Ok (New_result (), env)
+                  else Bottom (New_result ())))
         in
+        (* [add_equation] will have called [meet] on the underlying types, so
+           [env] now contains all extra equations arising from meeting the
+           expanded heads. *)
         match env with
-        | Ok (_, env) -> Ok (Right_input, env)
+        | Ok (_, env) -> Ok (Both_inputs, env)
         | Bottom r -> Bottom r))
-    | Some simple1 as simple1_opt -> (
-      match simple2 with
-      | None -> (
-        let expanded1 =
-          Expand_head.expand_head0 env t1
-            ~known_canonical_simple_at_in_types_mode:simple1_opt
-        in
-        let expanded2 =
-          Expand_head.expand_head0 env t2
-            ~known_canonical_simple_at_in_types_mode:simple2
-        in
-        (* We always return [Left_input] (see comment above) *)
-        let env : unit meet_result =
-          match meet_expanded_head env expanded1 expanded2 with
-          | Ok (Right_input, env) ->
-            add_equation simple1 (ET.to_type expanded2) env ~meet_type
-          | Ok ((Left_input | Both_inputs), env) -> Ok (New_result (), env)
-          | Ok (New_result expanded, env) ->
-            add_equation simple1 (ET.to_type expanded) env ~meet_type
-          | Bottom r -> Bottom r
-        in
-        match env with
-        | Ok (_, env) -> Ok (Left_input, env)
-        | Bottom r -> Bottom r)
-      | Some simple2 -> (
-        if (* We are doing a meet between two alias types. Whatever happens, the
-              resulting environment will contain an alias equation between the
-              two inputs, so both the left-hand alias and the right-hand alias
-              are correct results for the meet, allowing us to return
-              [Both_inputs] in all cases. *)
-           Simple.equal simple1 simple2
-        then
-          (* The alias is already present; no need to add any equation here *)
-          Ok (Both_inputs, env)
-        else
-          let env =
-            Simple.pattern_match simple2
-              ~name:(fun _ ~coercion:_ ->
-                add_equation simple2
-                  (TG.alias_type_of kind simple1)
-                  env ~meet_type)
-              ~const:(fun const2 ->
-                Simple.pattern_match simple1
-                  ~name:(fun _ ~coercion:_ ->
-                    add_equation simple1
-                      (TG.alias_type_of kind simple2)
-                      env ~meet_type)
-                  ~const:(fun const1 : unit meet_result ->
-                    if Reg_width_const.equal const1 const2
-                    then Ok (New_result (), env)
-                    else Bottom (New_result ())))
-          in
-          (* [add_equation] will have called [meet] on the underlying types, so
-             [env] now contains all extra equations arising from meeting the
-             expanded heads. *)
-          match env with
-          | Ok (_, env) -> Ok (Both_inputs, env)
-          | Bottom r -> Bottom r))
-  with Misc.Fatal_error ->
-    let names1 = TG.free_names t1 in
-    let names2 = TG.free_names t2 in
-    let missing_names1 =
-      Name_occurrences.fold_names names1 ~init:Name.Set.empty
-        ~f:(fun missing_names1 name ->
-          if not (TE.mem ~min_name_mode:Name_mode.in_types env name)
-          then Name.Set.add name missing_names1
-          else missing_names1)
-    in
-    let missing_names2 =
-      Name_occurrences.fold_names names2 ~init:Name.Set.empty
-        ~f:(fun missing_names2 name ->
-          if not (TE.mem ~min_name_mode:Name_mode.in_types env name)
-          then Name.Set.add name missing_names2
-          else missing_names2)
-    in
-    let bt = Printexc.get_raw_backtrace () in
-    Format.eprintf
-      "\n\
-       %tContext is:%t meeting@ %a@ (missing: %a)\n\n\
-       @ and:@ %a@ (missing: %a)" Flambda_colours.error Flambda_colours.pop
-      TG.print t1 Name.Set.print missing_names1 TG.print t2 Name.Set.print
-      missing_names2;
-    Printexc.raise_with_backtrace Misc.Fatal_error bt
 
 and meet_or_unknown_or_bottom :
     type a b.
