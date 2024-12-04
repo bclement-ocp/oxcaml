@@ -61,3 +61,5 @@ val fold_on_defined_vars :
   (Variable.t -> Flambda_kind.t -> 'a -> 'a) -> t -> 'a -> 'a
 
 val as_extension_without_bindings : t -> Type_grammar.Env_extension.t
+
+val as_extension : t -> Type_grammar.Env_extension.t

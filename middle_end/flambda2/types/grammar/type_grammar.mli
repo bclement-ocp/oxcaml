@@ -159,7 +159,10 @@ and array_contents =
   | Immutable of { fields : t array }
   | Mutable
 
-and env_extension = private { equations : t Name.Map.t } [@@unboxed]
+and env_extension = private
+  { existential_vars : Flambda_kind.t Variable.Map.t;
+    equations : t Name.Map.t
+  }
 
 and variant_extensions =
   | No_extensions
@@ -569,6 +572,11 @@ module Env_extension : sig
   type t = env_extension
 
   val empty : t
+
+  val create_with_existential_vars :
+    existential_vars:Flambda_kind.t Variable.Map.t ->
+    equations:flambda_type Name.Map.t ->
+    t
 
   val create : equations:flambda_type Name.Map.t -> t
 

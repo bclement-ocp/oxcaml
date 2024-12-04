@@ -188,7 +188,7 @@ let ids_for_export t =
 
 let as_extension_without_bindings
     ({ defined_vars; binding_times; equations; symbol_projections } as t) =
-  if Flambda_features.check_invariants ()
+  if Flambda_features.check_light_invariants ()
   then
     if Variable.Map.is_empty defined_vars
        && Binding_time.Map.is_empty binding_times
@@ -199,3 +199,16 @@ let as_extension_without_bindings
         "Typing_env_level.as_extension_without_bindings:@ level %a has bindings"
         print t;
   TG.Env_extension.create ~equations
+
+let as_extension
+    ({ defined_vars; binding_times = _; equations; symbol_projections } as t) =
+  if Flambda_features.check_light_invariants ()
+  then
+    if Variable.Map.is_empty symbol_projections
+    then ()
+    else
+      Misc.fatal_errorf
+        "Typing_env_level.as_extension_without_bindings:@ level %a has bindings"
+        print t;
+  TG.Env_extension.create_with_existential_vars ~existential_vars:defined_vars
+    ~equations

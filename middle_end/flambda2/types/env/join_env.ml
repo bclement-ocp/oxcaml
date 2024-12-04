@@ -375,10 +375,11 @@ let join_joined_env ~meet_type ~central_env joined_envs =
                   Alias_set.fold
                     (fun alias partition ->
                       let canonical_in_other_env =
-                        try
+                        if mem_simple other_joined_env.typing_env alias
+                        then
                           get_canonical_simple_exn other_joined_env.typing_env
                             alias
-                        with Not_found -> assert false
+                        else alias
                       in
                       Simple.Map.update canonical_in_other_env
                         (function
@@ -537,9 +538,9 @@ module Binary = struct
               TE.find t.right_join_env.typing_env name None)
         in
         let name =
-          match reuse_name with
-          | Some name -> name
-          | None -> Name.var (Variable.create "join_var")
+          ignore reuse_name;
+          (* match reuse_name with | Some name -> name | None -> *)
+          Name.var (Variable.create "join_var")
         in
         let join_at_next_depth =
           Name.Map.add name
@@ -1079,32 +1080,17 @@ module Superjoin = struct
   let join_env_extensions ~meet_type ~join_ty central_env envs_with_extensions =
     let env, level =
       joinit ~meet_type ~join_ty central_env
-        (List.map (fun (t, te) -> t, TEE.to_map te) envs_with_extensions)
+        (List.map (fun (t, te) -> t, te.TG.equations) envs_with_extensions)
     in
     env, TEL.as_extension_without_bindings level
 
   let dodoblahdo ~meet_type ~join_ty central_env envs_with_levels =
-    let size = List.length envs_with_levels in
-    if size >= 1
-    then
-      if Flambda_features.debug_flambda2 ()
-      then
-        Format.eprintf
-          "@[<v>Join %d levels in environment:@ @[<v 2>@ %a@]@ %a@]@ @ @ " size
-          TE.print central_env
-          (Format.pp_print_list (fun ppf (i, level) ->
-               Format.fprintf ppf "Level %d:@ @[<v 2>@ %a@]" i TEL.print level))
-          (List.mapi (fun i (_, level) -> i, level) envs_with_levels);
     let out, outl =
       joinit ~meet_type ~join_ty central_env
         (List.map (fun (t, level) -> t, TEL.equations level) envs_with_levels)
     in
-    if size > 1
-    then
-      if Flambda_features.debug_flambda2 ()
-      then
-        Format.eprintf "@[<v>Result:@ @[<v 2>@ %a@]@[<v 2>@ %a@]@]" TE.print out
-          TEL.print outl;
+    ignore outl;
+    Format.eprintf "@[<v>joined:@ @[<v>%a@]@]@\n" TEL.print outl;
     out
 end
 
@@ -1120,17 +1106,7 @@ let join_binary_env_extensions ~meet_type ~join_ty join_env left_ext right_ext =
   in
   let _, level =
     Superjoin.joinit0 ~meet_type ~join_ty central_env
-      [ left_parent_env, left_env, TEE.to_map left_ext;
-        right_parent_env, right_env, TEE.to_map right_ext ]
+      [ left_parent_env, left_env, left_ext.TG.equations;
+        right_parent_env, right_env, right_ext.TG.equations ]
   in
-  if not (Variable.Set.is_empty (TEL.defined_variables level))
-  then (
-    Format.eprintf
-      "@\n\
-       @[<v 2>Joining:@ @[<v 2>Left env:@ @[<v>%a@]@]@ @[<v 2>Left extension:@ \
-       @[<v>%a@]@]@ @[<v 2>Right env:@ @[<v>%a@]@]@ @[<v 2>Right extension:@ \
-       @[<v>%a@]@]@ @[<v 2>Result:@ @[<v>%a@]@]@]@]@\n"
-      TE.print left_parent_env.typing_env TEE.print left_ext TE.print
-      right_parent_env.typing_env TEE.print right_ext TEL.print level;
-    assert false);
-  TEL.as_extension_without_bindings level
+  TEL.as_extension level

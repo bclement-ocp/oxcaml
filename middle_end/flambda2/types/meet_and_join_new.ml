@@ -287,8 +287,7 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
   let join_scope = TE.current_scope initial_env in
   let env = TE.increment_scope initial_env in
   let to_extension scoped_env =
-    TE.cut scoped_env ~cut_after:join_scope
-    |> Typing_env_level.as_extension_without_bindings
+    TE.cut_as_extension scoped_env ~cut_after:join_scope
   in
   let direct_return r =
     map_env r ~f:(fun scoped_env ->
@@ -1303,7 +1302,7 @@ and meet_row_like :
           else (
             result_is_t1 := false;
             result_is_t2 := false);
-          let env_extension = TEL.as_extension_without_bindings env_extension in
+          let env_extension = TEL.as_extension env_extension in
           Some
             (Or_unknown.Known
                (TG.Row_like_case.create ~maps_to ~index ~env_extension))))
@@ -1673,14 +1672,17 @@ and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
 
 and import_names ~from_env env names =
   Name_occurrences.fold_names names ~init:env ~f:(fun env name ->
-      let kind = TG.kind (TE.find from_env name None) in
-      (* XXX: importing is broken if the name is not canonical!!! use a specific
-         mechanism? *)
-      let _, env =
-        Join_env.Binary.now_joining_simple env kind (Simple.name name)
-          (Simple.name name)
-      in
-      env)
+      if not (TE.mem ~min_name_mode:Name_mode.in_types from_env name)
+      then env
+      else
+        let kind = TG.kind (TE.find from_env name None) in
+        (* XXX: importing is broken if the name is not canonical!!! use a
+           specific mechanism? *)
+        let _, env =
+          Join_env.Binary.now_joining_simple env kind (Simple.name name)
+            (Simple.name name)
+        in
+        env)
 
 and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) :
     ET.t join_result =
@@ -2132,9 +2134,16 @@ and join_row_like :
       match other1 with
       | Bottom ->
         let join_env =
-          import_names
-            ~from_env:(Join_env.Binary.right_join_env join_env)
-            join_env (free_names_case case2)
+          try
+            import_names
+              ~from_env:(Join_env.Binary.right_join_env join_env)
+              join_env (free_names_case case2)
+          with Misc.Fatal_error ->
+            Format.eprintf "Right env: %a@." TE.print
+              (Join_env.Binary.right_join_env join_env);
+            Format.eprintf "Free names: %a" Name_occurrences.print
+              (free_names_case case2);
+            assert false
         in
         Some (Known case2, join_env)
       | Ok other_case -> Some (join_case join_env other_case case2))
@@ -2458,3 +2467,11 @@ let meet_env_extension env ext1 ext2 : _ Or_bottom.t =
       | Ok scoped_env ->
         let env_extension = TE.cut_as_extension scoped_env ~cut_after:scope in
         Ok env_extension)
+
+let meet env t1 t2 =
+  try meet env t1 t2
+  with Stack_overflow ->
+    let bt = Printexc.get_raw_backtrace () in
+    Format.eprintf "@[<v>meet:@ @[<v>%a@]@ and@ @[<v>%a@]@]@." TG.print t1
+      TG.print t2;
+    Printexc.raise_with_backtrace Stack_overflow bt

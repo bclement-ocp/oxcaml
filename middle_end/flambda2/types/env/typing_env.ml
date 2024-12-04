@@ -812,10 +812,13 @@ let add_variable_definition t var kind name_mode =
        %a@ in environment:@ %a"
       Variable.print var print t;
   let name = Name.var var in
-  if Flambda_features.check_invariants () && mem t name
+  if Flambda_features.check_light_invariants () && mem t name
   then
-    Misc.fatal_errorf "Cannot rebind %a in environment:@ %a" Name.print name
-      print t;
+    if true
+    then assert false
+    else
+      Misc.fatal_errorf "Cannot rebind %a in environment:@ %a" Name.print name
+        print t;
   let level =
     TEL.add_definition
       (One_level.level t.current_level)
@@ -1095,21 +1098,6 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
     Simple.pattern_match bare_lhs ~name ~const:(fun _ -> t)
 
 and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
-  let missing =
-    Name_occurrences.fold_names (TG.free_names ty) ~init:Name.Set.empty
-      ~f:(fun missing name ->
-        if (not (Name.is_symbol name))
-           && not (mem ~min_name_mode:Name_mode.in_types t name)
-        then Name.Set.add name missing
-        else missing)
-  in
-  (if not (Name.Set.is_empty missing)
-  then
-    let s =
-      Format.asprintf "Missing: %a@ (from:@ %a)" Name.Set.print missing TG.print
-        ty
-    in
-    Misc.fatal_error s);
   let ty = TG.recover_some_aliases ty in
   match add_equation1 ~raise_on_bottom t name ty ~meet_type with
   | exception Binding_time_resolver_failure ->
@@ -1121,7 +1109,21 @@ and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
 
 and add_env_extension ~raise_on_bottom t
     (env_extension : Typing_env_extension.t) ~meet_type =
+  let renaming =
+    Variable.Map.fold
+      (fun var _ renaming ->
+        Renaming.add_variable renaming var
+          (Variable.create (Variable.raw_name var)))
+      env_extension.TG.existential_vars Renaming.empty
+  in
+  let env_extension =
+    if Renaming.is_identity renaming
+    then env_extension
+    else TG.Env_extension.apply_renaming env_extension renaming
+  in
   Typing_env_extension.fold
+    ~variable:(fun var kind t ->
+      add_variable_definition t var kind Name_mode.in_types)
     ~equation:(fun name ty t ->
       add_equation ~raise_on_bottom t name ty ~meet_type)
     env_extension t
@@ -1247,7 +1249,7 @@ let cut t ~cut_after =
     loop (One_level.level t.current_level) t.prev_levels
 
 let cut_as_extension t ~cut_after =
-  Typing_env_level.as_extension_without_bindings (cut t ~cut_after)
+  Typing_env_level.as_extension (cut t ~cut_after)
 
 let type_simple_in_term_exn t ?min_name_mode simple =
   (* If [simple] is a variable then it should not come from a missing .cmx file,
