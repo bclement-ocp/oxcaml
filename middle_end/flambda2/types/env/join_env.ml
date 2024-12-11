@@ -6,6 +6,11 @@ module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module ET = Expand_head.Expanded_type
 
+(* XXX: The only thing we really need from the join env is to get us the
+   aliases, and to mark the aliases for joining. We *DO NOT* actually need to
+   depend on the typing env in this file, which would make it easier to migrate
+   to the database (I have not given up on it). *)
+
 (* Some helpful aliases to access typing environments.
 
    Note that we only ever care about the "in types" name mode here. *)
@@ -1090,7 +1095,6 @@ module Superjoin = struct
         (List.map (fun (t, level) -> t, TEL.equations level) envs_with_levels)
     in
     ignore outl;
-    Format.eprintf "@[<v>joined:@ @[<v>%a@]@]@\n" TEL.print outl;
     out
 end
 
