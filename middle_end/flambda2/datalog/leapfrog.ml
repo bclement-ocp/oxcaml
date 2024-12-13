@@ -55,7 +55,12 @@ module Iterator_operations (Iterator : Iterator) = struct
   let rec search0 iterators index_of_lowest_key highest_key =
     let iterator_with_lowest_key = iterators.(index_of_lowest_key) in
     match Iterator.current iterator_with_lowest_key with
-    | At_end -> ()
+    | At_end ->
+      let highest_index = Array.length iterators - 1 in
+      if highest_index <> index_of_lowest_key
+      then (
+        iterators.(index_of_lowest_key) <- iterators.(highest_index);
+        iterators.(highest_index) <- iterator_with_lowest_key)
     | Key lowest_key when Iterator.equal_key lowest_key highest_key ->
       (* All iterators are on the same key. *)
       ()
