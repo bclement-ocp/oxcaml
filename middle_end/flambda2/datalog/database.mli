@@ -9,9 +9,7 @@ type symbol
 
 val create_symbol : int -> symbol
 
-type variable
-
-val create_variable : unit -> variable
+type variable = string
 
 val symbol : symbol -> term
 

@@ -166,7 +166,7 @@ let create_table_id =
 
 let pp_table_id ppf (Table_id tid) = Format.fprintf ppf "T%d" tid.id
 
-type variable = int
+type variable = string
 
 type symbol = int
 
@@ -594,12 +594,6 @@ let create_relation = create_table_id
 
 let create_symbol n = n
 
-let create_variable =
-  let cnt = ref 0 in
-  fun () ->
-    incr cnt;
-    !cnt
-
 type tuple = int array
 
 let tuple_arity = Array.length
@@ -735,9 +729,9 @@ let () =
     (* r *)
     let db = add_fact db (Fact (r, [| 1; 3; 0 |])) in
     let db = add_fact db (Fact (r, [| 7; 12; 1 |])) in
-    let x = create_variable () in
-    let y = create_variable () in
-    let z = create_variable () in
+    let x = "x" in
+    let y = "y" in
+    let z = "z" in
     let rule =
       create_rule ~variables:[| z; y; x |]
         (add_atom (create_atom r [| Variable x; Symbol 42; Variable z |]))
