@@ -766,3 +766,6 @@ let () =
     Format.eprintf "doit again@.";
     let db = saturate_naive db in
     Format.eprintf "@[<v>After:@ %a@]@." print_database db)
+
+let create_rule ~variables atom ?existentials hyps =
+  create_rule ~variables (add_atom atom) ?existentials hyps

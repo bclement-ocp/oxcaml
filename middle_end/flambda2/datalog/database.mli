@@ -57,7 +57,7 @@ type rule
     hypotheses [hyps]; their value is not available to the [action]. *)
 val create_rule :
   variables:variable array ->
-  action ->
+  atom ->
   ?existentials:variable array ->
   atom array ->
   rule
