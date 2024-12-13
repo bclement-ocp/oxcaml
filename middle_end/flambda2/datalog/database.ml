@@ -382,6 +382,14 @@ let print_database ppf db =
         table.table_id print_table table)
     db.tables
 
+let filter_database f db =
+  { tables = Id.Map.filter (fun _ table -> f table.table_id) db.tables;
+    levels = [];
+    current_level = 0;
+    last_propagation = Id.Map.empty;
+    rules = []
+  }
+
 let current_scope db = db.current_level
 
 let current_level db = Id.Map.map (fun table -> table.last_fact_id) db.tables
@@ -779,3 +787,5 @@ let () =
 
 let create_rule ~variables atom ?existentials hyps =
   create_rule ~variables (add_atom atom) ?existentials hyps
+
+let relation_name (Table_id { name; _ }) = name

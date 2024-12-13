@@ -87,3 +87,7 @@ val tuple_get : tuple -> int -> symbol
 val query_current : query -> tuple option
 
 val query_advance : query -> unit
+
+val relation_name : relation -> string
+
+val filter_database : (relation -> bool) -> database -> database
