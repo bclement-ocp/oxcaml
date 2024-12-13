@@ -212,45 +212,78 @@ let pp_used_graph ppf (graph : graph) =
 
 let rr = ref (Field.Map.empty, Numeric_types.Int.Map.empty, 0)
 
-let alias_rel = Database.create_relation ~arity:2
+let alias_rel =
+  Database.create_relation ~arity:2
     ~print:(fun ff a ->
-      Format.fprintf ff "alias(%a, %a)"
-                      Code_id_or_name.print (Obj.magic a.(0)) Code_id_or_name.print (Obj.magic a.(1)))
+      Format.fprintf ff "%a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Code_id_or_name.print
+        (Obj.magic a.(1)))
     "alias"
 
-let use_rel = Database.create_relation ~arity:2
-    ~print:(fun ff a -> Format.fprintf ff "use(%a, %a)" Code_id_or_name.print (Obj.magic a.(0)) Code_id_or_name.print (Obj.magic a.(1))) "use"
+let use_rel =
+  Database.create_relation ~arity:2
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Code_id_or_name.print
+        (Obj.magic a.(1)))
+    "use"
 
-let accessor_rel = Database.create_relation ~arity:3
-    ~print:(fun ff a -> Format.fprintf ff "accessor(%a, %a, %a)"
-               Code_id_or_name.print (Obj.magic a.(0))
-               Field.print (Numeric_types.Int.Map.find a.(1) (let (_, f, _) = !rr in f))
-               Code_id_or_name.print (Obj.magic a.(2)))
+let accessor_rel =
+  Database.create_relation ~arity:3
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Field.print
+        (Numeric_types.Int.Map.find a.(1)
+           (let _, f, _ = !rr in
+            f))
+        Code_id_or_name.print
+        (Obj.magic a.(2)))
     "accessor"
 
-let constructor_rel = Database.create_relation ~arity:3
-    ~print:(fun ff a -> Format.fprintf ff "constructor(%a, %a, %a)"
-               Code_id_or_name.print (Obj.magic a.(0))
-               Field.print (Numeric_types.Int.Map.find a.(1) (let (_, f, _) = !rr in f))
-               Code_id_or_name.print (Obj.magic a.(2)))
+let constructor_rel =
+  Database.create_relation ~arity:3
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Field.print
+        (Numeric_types.Int.Map.find a.(1)
+           (let _, f, _ = !rr in
+            f))
+        Code_id_or_name.print
+        (Obj.magic a.(2)))
     "constructor"
 
-let propagate_rel = Database.create_relation ~arity:3
-    ~print:(fun ff a -> Format.fprintf ff "propagate(%a, %a, %a)"
-               Code_id_or_name.print (Obj.magic a.(0))
-               Code_id_or_name.print (Obj.magic a.(1))
-               Code_id_or_name.print (Obj.magic a.(2)))
+let propagate_rel =
+  Database.create_relation ~arity:3
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Code_id_or_name.print
+        (Obj.magic a.(1))
+        Code_id_or_name.print
+        (Obj.magic a.(2)))
     "propagate"
 
-let used_pred = Database.create_relation ~arity:1
-    ~print:(fun ff a -> Format.fprintf ff "used(%a)" Code_id_or_name.print (Obj.magic a.(0)))
+let used_pred =
+  Database.create_relation ~arity:1
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a" Code_id_or_name.print (Obj.magic a.(0)))
     "used"
 
-let used_fields_rel = Database.create_relation ~arity:3
-    ~print:(fun ff a -> Format.fprintf ff "used_fields(%a, %a, %a)"
-               Code_id_or_name.print (Obj.magic a.(0))
-               Field.print (Numeric_types.Int.Map.find a.(1) (let (_, f, _) = !rr in f))
-               Code_id_or_name.print (Obj.magic a.(2)))
+let used_fields_rel =
+  Database.create_relation ~arity:3
+    ~print:(fun ff a ->
+      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
+        (Obj.magic a.(0))
+        Field.print
+        (Numeric_types.Int.Map.find a.(1)
+           (let _, f, _ = !rr in
+            f))
+        Code_id_or_name.print
+        (Obj.magic a.(2)))
     "used_fields"
 
 let ( ~$ ) = Database.variable
