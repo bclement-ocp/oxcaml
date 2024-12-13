@@ -431,8 +431,8 @@ let find_index permutation table =
 
 let build_index table perm = build_index ~arity:table.arity table.facts perm
 
-let bind_index_iterator (Table_id tid, permutation, iter) db =
-  let table = Id.Map.find tid.id db.tables in
+let bind_index_iterator ((Table_id tid as table_id), permutation, iter) db =
+  let table = get_table db table_id in
   match find_index permutation table with
   | None ->
     if true
