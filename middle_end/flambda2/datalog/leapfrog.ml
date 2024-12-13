@@ -77,7 +77,8 @@ module Iterator_operations (Iterator : Iterator) = struct
   let repair (Join ({ iterators; at_end } as j)) =
     assert (not at_end);
     match Iterator.current iterators.(Array.length iterators - 1) with
-    | At_start | At_end -> ()
+    | At_start -> assert false
+    | At_end -> j.at_end <- true
     | Key highest_key -> (
       match search iterators highest_key with
       | At_end -> j.at_end <- true
@@ -110,12 +111,12 @@ module Iterator_operations (Iterator : Iterator) = struct
           | At_end -> raise Empty_iterator
           | At_start | Key _ -> ())
         iterators;
-      j.at_end <- false;
       Array.sort
         (fun it1 it2 ->
           compare_position Iterator.compare_key (Iterator.current it1)
             (Iterator.current it2))
         iterators;
+      j.at_end <- false;
       repair t
     with Empty_iterator -> j.at_end <- true
 
@@ -142,7 +143,8 @@ module Iterator_operations (Iterator : Iterator) = struct
       Format.eprintf "@[Going down to depth %d with only %d variables.@]@."
         depth (Array.length levels);
       invalid_arg "down");
-    let (Join { iterators; at_end = _ } as join) = levels.(depth) in
+    let (Join ({ iterators; at_end = _ } as j) as join) = levels.(depth) in
+    j.at_end <- false;
     Array.iter Iterator.down iterators;
     init join
 

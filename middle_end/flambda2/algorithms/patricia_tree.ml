@@ -980,7 +980,7 @@ end = struct
     match descr t, rest with
     | Leaf (i, d), _ when unsigned_le k i -> Next (Binding.create i d, rest)
     | Branch (prefix, bit, t0, t1), _ when match_prefix k prefix bit ->
-      if zero_bit k prefix then seek0 k t0 (t1 :: rest) else seek0 k t1 rest
+      if zero_bit k bit then seek0 k t0 (t1 :: rest) else seek0 k t1 rest
     | Branch (prefix, _, t0, t1), _ when unsigned_le k prefix ->
       iterator0 t0 (t1 :: rest)
     | (Empty | Leaf _ | Branch _), [] -> Done
