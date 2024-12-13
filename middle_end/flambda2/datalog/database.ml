@@ -149,6 +149,8 @@ type 'a trie =
 
 type table_id = Table_id of int [@@unboxed]
 
+let pp_table_id ppf (Table_id tid) = Format.fprintf ppf "T%d" tid
+
 type variable = int
 
 type symbol = int
@@ -167,6 +169,13 @@ let create_atom a b = Atom (a, b)
 
 type fact = Fact of table_id * symbol array
 (* Arguments must be symbols. *)
+
+let print_fact ppf (Fact (tid, args)) =
+  Format.fprintf ppf "@[<hov>%a(@[<hov>%a@]).@]" pp_table_id tid
+    (Format.pp_print_list
+       ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
+       Format.pp_print_int)
+    (Array.to_list args)
 
 let create_fact a b = Fact (a, b)
 
@@ -200,6 +209,11 @@ module Permutation = struct
   let apply p a =
     match p with
     | Identity -> a
+    | Permutation sigma -> Array.init (Array.length a) (fun i -> a.(sigma.(i)))
+
+  let apply_copy p a =
+    match p with
+    | Identity -> Array.copy a
     | Permutation sigma -> Array.init (Array.length a) (fun i -> a.(sigma.(i)))
 end
 
@@ -236,6 +250,12 @@ type table =
     primary : index;
     indices : index Permap.t
   }
+
+let print_table ppf (tid, table) =
+  Id.Map.iter
+    (fun _ syms ->
+      Format.fprintf ppf "@[<hov>%a@]@ " print_fact (Fact (tid, syms)))
+    table.facts
 
 let empty_table =
   { facts = Id.Map.empty;
@@ -294,21 +314,48 @@ let cut_table table ~cut_after =
 
 let build_index table perm = build_index table.facts perm
 
+type query =
+  | Query :
+      { indices : (table_id * permutation * int Trie.iterator ref) array;
+        iterator : 'a Joined_iterator.triejoin;
+        mutable depth : int;
+        output : int array;
+        max_depth : int
+      }
+      -> query
+
+type rule = Rule of query * table_id * Permutation.t
+
 type database =
   { tables : table Id.Map.t;
     levels : int Id.Map.t list;
-    current_level : int
+    current_level : int;
+    rules : rule list
   }
 
-let db_increment_level db =
+let print_database ppf db =
+  Id.Map.iter
+    (fun tid table ->
+      Format.fprintf ppf "@[<v>%a@ @[<v>%a@]@]@ " pp_table_id (Table_id tid)
+        print_table (Table_id tid, table))
+    db.tables
+
+let current_scope db = db.current_level
+
+let push_scope db =
   let prev_level = Id.Map.map (fun table -> table.last_fact_id) db.tables in
   { db with
     levels = prev_level :: db.levels;
     current_level = db.current_level + 1
   }
 
+let pop_scope db =
+  match db.levels with
+  | [] -> invalid_arg "pop_scope"
+  | _ :: levels -> { db with levels; current_level = db.current_level - 1 }
+
 let cut_db db ~cut_after =
-  match List.nth_opt db.levels (db.current_level - cut_after) with
+  match List.nth_opt db.levels (db.current_level - cut_after - 1) with
   | None -> db
   | Some level ->
     let tables =
@@ -319,9 +366,10 @@ let cut_db db ~cut_after =
           | None -> table)
         db.tables
     in
-    { tables; levels = []; current_level = 0 }
+    { tables; levels = []; current_level = 0; rules = [] }
 
-let empty_db = { tables = Id.Map.empty; levels = []; current_level = 0 }
+let empty_db =
+  { tables = Id.Map.empty; levels = []; current_level = 0; rules = [] }
 
 let get_table db (Table_id tid) =
   match Id.Map.find_opt tid db.tables with
@@ -333,7 +381,8 @@ let set_table db (Table_id tid) table =
 
 let add_fact db (Fact (tid, args)) =
   let table = get_table db tid in
-  set_table db tid (add_fact table args)
+  let table' = add_fact table args in
+  if table' == table then db else set_table db tid table'
 
 let find_index permutation table =
   match permutation with
@@ -369,147 +418,128 @@ let register_index db tid permutation =
   let table = register_index table permutation in
   set_table db tid table
 
-let rec loop levels depth tuple =
+let rec loop ~max_depth levels depth tuple =
   match Joined_iterator.current levels with
   | Leapfrog.At_start -> assert false
   | Leapfrog.Key current_key ->
-    tuple.(depth) <- current_key;
-    if depth = Array.length tuple - 1
-    then depth
+    if depth < Array.length tuple then tuple.(depth) <- current_key;
+    if depth = max_depth
+    then
+      let rec moveup depth =
+        if depth = Array.length tuple - 1
+        then depth
+        else (
+          Joined_iterator.up levels;
+          moveup (depth - 1))
+      in
+      moveup depth
     else (
       Joined_iterator.down levels;
-      loop levels (depth + 1) tuple)
+      loop ~max_depth levels (depth + 1) tuple)
   | Leapfrog.At_end ->
     Joined_iterator.up levels;
     if depth <= 0
     then -1
     else (
       Joined_iterator.advance levels;
-      loop levels (depth - 1) tuple)
+      loop ~max_depth levels (depth - 1) tuple)
 
-type query =
-  (table_id * permutation * int Trie.iterator ref) array
-  * int Joined_iterator.triejoin
-  * int ref
-  * int array
+let build_permutation ?(inverse = false) ~scratch varmap args =
+  Array.fill scratch 0 (Array.length scratch) (-1);
+  Array.iteri
+    (fun pos term ->
+      match term with
+      | Variable var -> (
+        match Hashtbl.find_opt varmap var with
+        | Some index ->
+          if scratch.(index) <> -1 then invalid_arg "duplicate var in rel";
+          scratch.(index) <- pos
+        | None -> invalid_arg "unbound var")
+      | Symbol _ -> invalid_arg "symbols not supported in queries yet")
+    args;
+  let permutation = Array.make (Array.length args) (-1) in
+  let index = ref 0 in
+  for i = 0 to Array.length scratch - 1 do
+    if scratch.(i) <> -1
+    then (
+      if inverse
+      then permutation.(scratch.(i)) <- !index
+      else permutation.(!index) <- scratch.(i);
+      incr index)
+  done;
+  Permutation.create permutation
 
-let create_query ~variables ?(existentials = [||]) hyps : query =
-  ignore existentials;
+let create_varmap ?(existentials = [||]) variables =
   let varmap = Hashtbl.create 17 in
-  Array.iteri (fun index var -> Hashtbl.replace varmap var index) variables;
-  let scratch = Array.make (Array.length variables) (-1) in
-  let levels = Array.make (Array.length variables) [] in
+  Array.iteri
+    (fun index var ->
+      if Hashtbl.mem varmap var then invalid_arg "create_varmap";
+      Hashtbl.replace varmap var index)
+    variables;
+  let nvars = Array.length variables in
+  Array.iteri
+    (fun index var ->
+      if Hashtbl.mem varmap var then invalid_arg "create_varmap";
+      Hashtbl.replace varmap var (nvars + index))
+    existentials;
+  varmap, nvars + Array.length existentials
+
+let create_query ~variables ?existentials hyps : query =
+  let varmap, nvars = create_varmap ?existentials variables in
+  let scratch = Array.make nvars (-1) in
+  let levels = Array.make nvars [] in
   let all_iterators =
     Array.map
       (fun (Atom (tid, args)) ->
-        for i = 0 to Array.length scratch - 1 do
-          scratch.(i) <- -1
-        done;
-        Array.iteri
-          (fun pos term ->
-            match term with
-            | Variable var -> (
-              match Hashtbl.find_opt varmap var with
-              | Some index ->
-                if scratch.(index) <> -1 then invalid_arg "duplicate var in rel";
-                scratch.(index) <- pos
-              | None -> invalid_arg "unbound var")
-            | Symbol _ -> invalid_arg "symbols not supported in queries yet")
-          args;
-        let permutation = Array.make (Array.length args) (-1) in
-        let index = ref 0 in
-        for i = 0 to Array.length scratch - 1 do
-          if scratch.(i) <> -1
-          then (
-            permutation.(!index) <- scratch.(i);
-            incr index)
-        done;
+        let permutation = build_permutation ~scratch varmap args in
         let iter = Trie.Iterator.I.create () in
-        let iterator = tid, Permutation.create permutation, iter in
+        let iterator = tid, permutation, iter in
         Array.iteri
           (fun i v -> if v <> -1 then levels.(i) <- iter :: levels.(i))
           scratch;
         iterator)
       hyps
   in
-  let tuple = Array.make (Array.length levels) 0 in
+  let tuple = Array.make (Array.length variables) 0 in
   let levels =
     Joined_iterator.triejoin
-    @@ Array.map (fun l -> Joined_iterator.join_array (Array.of_list l)) levels
+    @@ Array.map
+         (fun l ->
+           match l with
+           | [] -> invalid_arg "create_query"
+           | _ -> Joined_iterator.join_array (Array.of_list l))
+         levels
   in
-  all_iterators, levels, ref 0, tuple
+  Query
+    { indices = all_iterators;
+      iterator = levels;
+      depth = -1;
+      output = tuple;
+      max_depth = nvars - 1
+    }
 
-let bind_query db (all_iterators, levels, depth, tuple) =
+let bind_query db
+    (Query ({ indices; iterator; depth = _; max_depth; output } as q)) =
   (* tuple has size nvars *)
-  Array.iter (fun iterator -> bind_index_iterator iterator db) all_iterators;
-  Joined_iterator.reset levels;
-  Joined_iterator.down levels;
-  depth := loop levels 0 tuple
+  Array.iter (fun iterator -> bind_index_iterator iterator db) indices;
+  Joined_iterator.reset iterator;
+  Joined_iterator.down iterator;
+  q.depth <- loop ~max_depth iterator 0 output
 
-let query_current (_, _levels, depth, tuple) =
-  if !depth < 0 then None else Some tuple
+let query_current (Query { depth; output; _ }) =
+  if depth < 0 then None else Some output
 
-let query_advance (_, levels, depth, tuple) =
-  if !depth >= 0
+let query_advance (Query ({ iterator; depth; output; max_depth; _ } as q)) =
+  if depth >= 0
   then (
-    Joined_iterator.advance levels;
-    depth := loop levels !depth tuple)
-
-let query_next q =
-  match query_current q with
-  | Some tuple ->
-    query_advance q;
-    Some tuple
-  | None -> None
+    Joined_iterator.advance iterator;
+    q.depth <- loop ~max_depth iterator depth output)
 
 let create_table_id =
   let cnt = ref 0 in
   fun () ->
     incr cnt;
     !cnt
-
-let () =
-  if false
-  then (
-    let db = empty_db in
-    let p = Table_id 0 in
-    let q = Table_id 1 in
-    let r = Table_id 2 in
-    (* Register indices *)
-    let db = register_index db p (Permutation.create [| 1; 0 |]) in
-    let db = register_index db q (Permutation.create [| 1; 0 |]) in
-    let db = register_index db r (Permutation.create [| 2; 1; 0 |]) in
-    (* p *)
-    let db = add_fact db (Fact (p, [| 0; 1 |])) in
-    let db = add_fact db (Fact (p, [| 1; 0 |])) in
-    let db = add_fact db (Fact (p, [| 2; 1 |])) in
-    let db = add_fact db (Fact (p, [| 1; 3 |])) in
-    (* q *)
-    let db = add_fact db (Fact (q, [| 1; 0 |])) in
-    let db = add_fact db (Fact (q, [| 1; 2 |])) in
-    let db = add_fact db (Fact (q, [| 3; 1 |])) in
-    (* r *)
-    let db = add_fact db (Fact (r, [| 1; 3; 0 |])) in
-    let query =
-      create_query ~variables:[| -3; -2; -1 |]
-        [| Atom (p, [| Variable (-1); Variable (-2) |]);
-           Atom (q, [| Variable (-1); Variable (-3) |]);
-           Atom (r, [| Variable (-1); Variable (-2); Variable (-3) |])
-        |]
-    in
-    bind_query db query;
-    let rec loop () =
-      match query_current query with
-      | None -> ()
-      | Some tuple ->
-        Format.eprintf "@[(%a)@]@."
-          (Format.pp_print_list ~pp_sep:Format.pp_print_space
-             Format.pp_print_int)
-          (Array.to_list tuple);
-        query_advance query;
-        loop ()
-    in
-    loop ())
 
 type relation = table_id
 
@@ -529,12 +559,82 @@ let tuple_arity = Array.length
 
 let tuple_get = Array.get
 
-type rule = unit
-
-let create_rule ~variables:_ ?existentials:_ _head _hyps : rule = ()
+let create_rule ~variables ?existentials (Atom (tid, args)) hyps : rule =
+  let query = create_query ~variables ?existentials hyps in
+  let varmap, nvars = create_varmap ?existentials variables in
+  let scratch = Array.make nvars (-1) in
+  let permutation = build_permutation ~inverse:true ~scratch varmap args in
+  Rule (query, tid, permutation)
 
 let create () = empty_db
 
-let saturate db = db
+let rec saturate_naive db0 =
+  let did_change = ref false in
+  let db =
+    List.fold_left
+      (fun db (Rule (query, tid, permutation)) ->
+        bind_query db0 query;
+        let rec loop db =
+          match query_current query with
+          | None -> db
+          | Some tuple ->
+            let args = Permutation.apply_copy permutation tuple in
+            let fact = Fact (tid, args) in
+            let db' = add_fact db fact in
+            if db' != db then did_change := true;
+            query_advance query;
+            loop db'
+        in
+        loop db)
+      db0 db0.rules
+  in
+  if !did_change then saturate_naive db else db
 
-let add_rule db () = db
+let saturate db = saturate_naive db
+
+let add_rule db rule = { db with rules = rule :: db.rules }
+
+let () =
+  if false
+  then (
+    let db = empty_db in
+    let p = Table_id 0 in
+    let q = Table_id 1 in
+    let r = Table_id 2 in
+    (* Register indices *)
+    let db = register_index db p (Permutation.create [| 1; 0 |]) in
+    let db = register_index db q (Permutation.create [| 1; 0 |]) in
+    let db = register_index db r (Permutation.create [| 2; 1; 0 |]) in
+    let db = register_index db r (Permutation.create [| 0; 2; 1 |]) in
+    (* p *)
+    let db = add_fact db (Fact (p, [| 0; 1 |])) in
+    let db = add_fact db (Fact (p, [| 1; 0 |])) in
+    let db = add_fact db (Fact (p, [| 2; 1 |])) in
+    let db = add_fact db (Fact (p, [| 7; 3 |])) in
+    (* q *)
+    let db = add_fact db (Fact (q, [| 1; 2 |])) in
+    let db = add_fact db (Fact (q, [| 3; 1 |])) in
+    (* r *)
+    let db = add_fact db (Fact (r, [| 1; 3; 0 |])) in
+    let db = add_fact db (Fact (r, [| 7; 12; 1 |])) in
+    let rule =
+      create_rule ~variables:[| -3; -2; -1 |]
+        (Atom (r, [| Variable (-1); Variable (-2); Variable (-3) |]))
+        [| Atom (p, [| Variable (-1); Variable (-2) |]);
+           Atom (q, [| Variable (-2); Variable (-3) |])
+        |]
+    in
+    let db = add_rule db rule in
+    let rule =
+      create_rule ~variables:[| 0; 1 |] ~existentials:[| 2 |]
+        (Atom (p, [| Variable 0; Variable 1 |]))
+        [| Atom (r, [| Variable 0; Variable 2; Variable 1 |]) |]
+    in
+    let db = add_rule db rule in
+    Format.eprintf "@[<v>Before:@ %a@]@." print_database db;
+    let level = current_scope db in
+    let db = push_scope db in
+    let db = saturate db in
+    let increment = cut_db db ~cut_after:level in
+    let _db = pop_scope db in
+    Format.eprintf "@[<v>Increment:@ %a@]@." print_database increment)
