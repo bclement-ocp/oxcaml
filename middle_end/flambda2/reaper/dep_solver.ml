@@ -418,10 +418,10 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   let t0 = Unix.gettimeofday () in
   Solver.fixpoint_topo graph_new uses result;
   let t1 = Unix.gettimeofday () in
-  let db = Database.saturate graph_new.datalog in
+  let _db = Database.saturate graph_new.datalog in
   let t2 = Unix.gettimeofday () in
   Format.eprintf "EXISTING: %f, DATALOG: %f@." (t1 -. t0) (t2 -. t1);
-  Format.eprintf "OLD RESULT:@.%a@."  pp_result result;
-  Format.eprintf "NEW_RESULT:@.%a@." Database.print_database (Database.filter_database (fun relation -> List.mem (Database.relation_name relation) ["used"; "used_fields"]) db);
+  (* Format.eprintf "OLD RESULT:@.%a@."  pp_result result;
+  Format.eprintf "NEW_RESULT:@.%a@." Database.print_database (Database.filter_database (fun relation -> List.mem (Database.relation_name relation) ["used"; "used_fields"]) _db); *)
   Solver.check_fixpoint graph_new uses result;
   result

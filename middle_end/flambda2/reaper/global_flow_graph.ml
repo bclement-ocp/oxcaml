@@ -373,7 +373,7 @@ let create () =
         (create_rule ~variables:[| "source"; "target" |]
            (used_pred @| [| ~$"target" |])
            [| used_pred @| [| ~$"source" |];
-              alias_rel @| [| ~$"source"; ~$"target" |]
+              use_rel @| [| ~$"source"; ~$"target" |]
            |]))
   in
   let db =
@@ -383,7 +383,7 @@ let create () =
            ~existentials:[| "anyf"; "anyx" |]
            (used_pred @| [| ~$"target" |])
            [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
-              alias_rel @| [| ~$"source"; ~$"target" |]
+              use_rel @| [| ~$"source"; ~$"target" |]
            |]))
   in
   { name_to_dep = Hashtbl.create 100;
