@@ -23,7 +23,10 @@ end) : sig
   end
 
   module Map : sig
-    include Container_types.Map with type key = int with module Set = Set
+    include
+      Container_types.Map_plus_iterator
+        with type key = int
+        with module Set = Set
 
     (** For testing; should always return [true] *)
     val valid : _ t -> bool

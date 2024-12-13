@@ -310,6 +310,16 @@ module Tree_operations (Tree : Tree) : sig
 
   val filter_map_sharing : (key -> 'a -> 'a option) -> 'a t -> 'a t
 
+  type 'a iterator
+
+  val iterator : 'a t -> 'a iterator
+
+  val current : 'a iterator -> 'a Binding.t option
+
+  val advance : 'a iterator -> 'a iterator
+
+  val seek : 'a iterator -> key -> 'a iterator
+
   val to_seq : 'a t -> 'a Binding.t Seq.t
 
   val of_list : 'a is_value -> 'a Binding.t list -> 'a t
@@ -944,6 +954,45 @@ end = struct
       let t0' = filter_map_sharing f t0 in
       let t1' = filter_map_sharing f t1 in
       if t0' == t0 && t1' == t1 then t else branch prefix bit t0' t1'
+
+  type 'a iterator =
+    | Done
+    | Next of 'a Binding.t * 'a t list
+
+  let rec iterator0 t rest =
+    match descr t with
+    | Empty -> Done
+    | Leaf (k, d) -> Next (Binding.create k d, rest)
+    | Branch (_, _, t0, t1) -> iterator0 t0 (t1 :: rest)
+
+  let iterator t = iterator0 t []
+
+  let current it = match it with Done -> None | Next (b, _) -> Some b
+
+  let advance it =
+    match it with
+    | Done | Next (_, []) -> Done
+    | Next (_, t :: rest) -> iterator0 t rest
+
+  let unsigned_le a b = a - min_int <= b - min_int
+
+  let rec seek0 k t rest =
+    match descr t, rest with
+    | Leaf (i, d), _ when unsigned_le k i -> Next (Binding.create i d, rest)
+    | Branch (prefix, bit, t0, t1), _ when match_prefix k prefix bit ->
+      if zero_bit k prefix then seek0 k t0 (t1 :: rest) else seek0 k t1 rest
+    | Branch (prefix, _, t0, t1), _ when unsigned_le k prefix ->
+      iterator0 t0 (t1 :: rest)
+    | (Empty | Leaf _ | Branch _), [] -> Done
+    | (Empty | Leaf _ | Branch _), t' :: rest' -> seek0 k t' rest'
+
+  let seek it k =
+    match it with
+    | Done -> Done
+    | Next (b, rest) -> (
+      if unsigned_le k (Binding.key b)
+      then it
+      else match rest with [] -> Done | t' :: rest' -> seek0 k t' rest')
 
   let to_seq t =
     let rec aux acc () =
