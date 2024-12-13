@@ -66,6 +66,8 @@ val create_rule :
 
 type database
 
+val print_database : Format.formatter -> database -> unit
+
 val create : unit -> database
 
 val add_fact : database -> fact -> database
