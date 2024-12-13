@@ -1,7 +1,11 @@
 type relation
 
 (** Create a new relation with the given arity. *)
-val create_relation : arity:int -> relation
+val create_relation :
+  arity:int ->
+  ?print:(Format.formatter -> int array -> unit) ->
+  string ->
+  relation
 
 type term
 

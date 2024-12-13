@@ -155,16 +155,23 @@ type 'a trie =
 type table_id =
   | Table_id of
       { id : int;
-        arity : int
+        arity : int;
+        name : string;
+        print : Format.formatter -> int array -> unit
       }
+
+let default_print_tuple ppf arr =
+  Format.pp_print_list
+    ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
+    Format.pp_print_int ppf (Array.to_list arr)
 
 let create_table_id =
   let cnt = ref 0 in
-  fun ~arity ->
+  fun ~arity ?(print = default_print_tuple) name ->
     incr cnt;
-    Table_id { id = !cnt; arity }
+    Table_id { id = !cnt; arity; print; name }
 
-let pp_table_id ppf (Table_id tid) = Format.fprintf ppf "T%d" tid.id
+let print_table_id ppf (Table_id tid) = Format.fprintf ppf "%s" tid.name
 
 type variable = string
 
@@ -185,12 +192,10 @@ let create_atom a b = Atom (a, b)
 type fact = Fact of table_id * symbol array
 (* Arguments must be symbols. *)
 
-let print_fact ppf (tid, args) =
-  Format.fprintf ppf "@[<hov>T%d(@[<hov>%a@]).@]" tid
-    (Format.pp_print_list
-       ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
-       Format.pp_print_int)
-    (Array.to_list args)
+let print_fact ppf (table_id, args) =
+  let (Table_id { print; _ }) = table_id in
+  Format.fprintf ppf "@[<hov>%a(@[<hov>%a@]).@]" print_table_id table_id print
+    args
 
 let create_fact a b = Fact (a, b)
 
@@ -268,20 +273,23 @@ type table =
     last_fact_id : int;  (** Identifier of the last recorded fact. *)
     primary : index;
     arity : int;
-    indices : index Permap.t
+    indices : index Permap.t;
+    table_id : table_id
   }
 
-let print_table ppf (tid, table) =
+let print_table ppf table =
   Id.Map.iter
-    (fun _ syms -> Format.fprintf ppf "@[<hov>%a@]@ " print_fact (tid, syms))
+    (fun _ syms ->
+      Format.fprintf ppf "@[<hov>%a@]@ " print_fact (table.table_id, syms))
     table.facts
 
-let create_table ~arity =
+let create_table ~arity table_id =
   { facts = Id.Map.empty;
     last_fact_id = 0;
     primary = Trie.create ~arity;
     arity;
-    indices = Permap.empty
+    indices = Permap.empty;
+    table_id
   }
 
 let build_index ~arity facts permutation =
@@ -321,7 +329,13 @@ let add_fact table args =
             fact_id index)
         table.indices
     in
-    { arity = table.arity; facts; last_fact_id; primary; indices }
+    { arity = table.arity;
+      facts;
+      last_fact_id;
+      primary;
+      indices;
+      table_id = table.table_id
+    }
 
 let cut_table table ~cut_after =
   let _, _, delta_facts = Id.Map.split cut_after table.facts in
@@ -333,7 +347,8 @@ let cut_table table ~cut_after =
     indices =
       Permap.mapi
         (fun perm _ -> build_index ~arity delta_facts perm)
-        table.indices
+        table.indices;
+    table_id = table.table_id
   }
 
 type query =
@@ -362,8 +377,9 @@ type database =
 
 let print_database ppf db =
   Id.Map.iter
-    (fun tid table ->
-      Format.fprintf ppf "@[<v>T%d@ @[<v>%a@]@]@ " tid print_table (tid, table))
+    (fun _ table ->
+      Format.fprintf ppf "@[<v>%a@ ==========@ @[<v>%a@]@]@ " print_table_id
+        table.table_id print_table table)
     db.tables
 
 let current_scope db = db.current_level
@@ -411,9 +427,9 @@ let empty_db =
     last_propagation = Id.Map.empty
   }
 
-let get_table db (Table_id tid) =
+let get_table db (Table_id tid as ttid) =
   match Id.Map.find_opt tid.id db.tables with
-  | None -> create_table ~arity:tid.arity
+  | None -> create_table ~arity:tid.arity ttid
   | Some table -> table
 
 let set_table db (Table_id tid) table =
@@ -705,13 +721,13 @@ let saturate db =
 let add_rule db rule = { db with rules = rule :: db.rules }
 
 let () =
-  if false
+  if true
   then (
     let db = empty_db in
-    let p = create_table_id ~arity:2 in
-    let q = create_table_id ~arity:2 in
-    let r = create_table_id ~arity:3 in
-    let s = create_table_id ~arity:2 in
+    let p = create_table_id "p" ~arity:2 in
+    let q = create_table_id "q" ~arity:2 in
+    let r = create_table_id "r" ~arity:3 in
+    let s = create_table_id "s" ~arity:2 in
     (* Register indices *)
     let db = register_index db p (Permutation.create [| 1; 0 |]) in
     let db = register_index db q (Permutation.create [| 1; 0 |]) in
