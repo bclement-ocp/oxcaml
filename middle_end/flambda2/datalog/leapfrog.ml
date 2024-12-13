@@ -42,38 +42,31 @@ module Iterator_operations (Iterator : Iterator) = struct
 
   let equal_key = Iterator.equal_key
 
-  type 'a t = Join : { iterators : 'a Iterator.t array } -> 'a t
-
-  let empty = Join { iterators = [||] }
+  type 'a t =
+    | Join :
+        { iterators : 'a Iterator.t array;
+          mutable at_end : bool
+        }
+        -> 'a t
 
   let current (type a) (t : a t) =
-    let (Join { iterators }) = t in
-    if Array.length iterators = 0
+    let (Join { iterators; at_end }) = t in
+    if at_end || Array.length iterators = 0
     then At_end
     else Iterator.current iterators.(Array.length iterators - 1)
 
   let rec search0 iterators index_of_lowest_key highest_key =
     let iterator_with_lowest_key = iterators.(index_of_lowest_key) in
     match Iterator.current iterator_with_lowest_key with
-    | At_end ->
-      let highest_index = Array.length iterators - 1 in
-      if highest_index <> index_of_lowest_key
-      then (
-        iterators.(index_of_lowest_key) <- iterators.(highest_index);
-        iterators.(highest_index) <- iterator_with_lowest_key)
+    | At_end -> At_end
     | Key lowest_key when Iterator.equal_key lowest_key highest_key ->
       (* All iterators are on the same key. *)
-      ()
+      Key lowest_key
     | At_start | Key _ -> (
       Iterator.seek iterator_with_lowest_key highest_key;
       match Iterator.current iterator_with_lowest_key with
       | At_start -> Misc.fatal_error "Impossibru"
-      | At_end ->
-        let highest_index = Array.length iterators - 1 in
-        if highest_index <> index_of_lowest_key
-        then (
-          iterators.(index_of_lowest_key) <- iterators.(highest_index);
-          iterators.(highest_index) <- iterator_with_lowest_key)
+      | At_end -> At_end
       | Key new_highest_key ->
         search0 iterators
           ((index_of_lowest_key + 1) mod Array.length iterators)
@@ -81,49 +74,52 @@ module Iterator_operations (Iterator : Iterator) = struct
 
   let search iterators highest_key = search0 iterators 0 highest_key
 
-  let repair iterators =
+  let repair (Join ({ iterators; at_end } as j)) =
+    assert (not at_end);
     match Iterator.current iterators.(Array.length iterators - 1) with
     | At_start | At_end -> ()
-    | Key highest_key -> search iterators highest_key
+    | Key highest_key -> (
+      match search iterators highest_key with
+      | At_end -> j.at_end <- true
+      | At_start | Key _ -> ())
 
   let advance (type a) (t : a t) =
-    let (Join { iterators }) = t in
-    let highest_iterator = iterators.(Array.length iterators - 1) in
-    Iterator.advance highest_iterator;
-    repair iterators
+    let (Join { iterators; at_end }) = t in
+    if not at_end
+    then (
+      let highest_iterator = iterators.(Array.length iterators - 1) in
+      Iterator.advance highest_iterator;
+      repair t)
 
   let seek (type a) (t : a t) key =
-    let (Join { iterators }) = t in
-    let highest_iterator = iterators.(Array.length iterators - 1) in
-    Iterator.seek highest_iterator key;
-    repair iterators
+    let (Join { iterators; at_end }) = t in
+    if not at_end
+    then (
+      let highest_iterator = iterators.(Array.length iterators - 1) in
+      Iterator.seek highest_iterator key;
+      repair t)
 
-  exception Empty_iterator of int
+  exception Empty_iterator
 
   let init (type a) (t : a t) =
-    let (Join { iterators }) = t in
+    let (Join ({ iterators; at_end = _ } as j)) = t in
     try
-      Array.iteri
-        (fun index it ->
+      Array.iter
+        (fun it ->
           match Iterator.current it with
-          | At_end -> raise (Empty_iterator index)
+          | At_end -> raise Empty_iterator
           | At_start | Key _ -> ())
         iterators;
+      j.at_end <- false;
       Array.sort
         (fun it1 it2 ->
           compare_position Iterator.compare_key (Iterator.current it1)
             (Iterator.current it2))
         iterators;
-      repair iterators
-    with Empty_iterator index ->
-      if index <> 0
-      then (
-        let last_index = Array.length iterators - 1 in
-        let empty_iterator = iterators.(index) in
-        iterators.(index) <- iterators.(last_index);
-        iterators.(last_index) <- empty_iterator)
+      repair t
+    with Empty_iterator -> j.at_end <- true
 
-  let join_array iters = Join { iterators = iters }
+  let join_array iters = Join { iterators = iters; at_end = false }
 
   type 'a triejoin =
     { levels : 'a t array;
@@ -146,13 +142,13 @@ module Iterator_operations (Iterator : Iterator) = struct
       Format.eprintf "@[Going down to depth %d with only %d variables.@]@."
         depth (Array.length levels);
       invalid_arg "down");
-    let (Join { iterators } as join) = levels.(depth) in
+    let (Join { iterators; at_end = _ } as join) = levels.(depth) in
     Array.iter Iterator.down iterators;
     init join
 
   let up ({ levels; depth } as t) =
     if depth < 0 then invalid_arg "up";
-    let (Join { iterators }) = levels.(depth) in
+    let (Join { iterators; at_end = _ }) = levels.(depth) in
     Array.iter Iterator.up iterators;
     t.depth <- depth - 1
 
