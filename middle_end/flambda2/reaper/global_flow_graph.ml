@@ -194,7 +194,9 @@ end
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
-    used : (Code_id_or_name.t, unit) Hashtbl.t
+    used : (Code_id_or_name.t, unit) Hashtbl.t;
+    mutable datalog : Database.database;
+    mutable field_map : (int Field.Map.t * Field.t Numeric_types.Int.Map.t * int)
   }
 
 let pp_used_graph ppf (graph : graph) =
@@ -208,25 +210,141 @@ let pp_used_graph ppf (graph : graph) =
   in
   Format.fprintf ppf "{ %a }" pp elts
 
-let create () = { name_to_dep = Hashtbl.create 100; used = Hashtbl.create 100 }
+let alias_rel = Database.create_relation ~arity:2 
+let use_rel = Database.create_relation ~arity:2
+let accessor_rel = Database.create_relation ~arity:3
+let constructor_rel = Database.create_relation ~arity:3
+let propagate_rel = Database.create_relation ~arity:3
 
-let insert t k v =
-  match Hashtbl.find_opt t k with
-  | None -> Hashtbl.add t k (Dep.Set.singleton v)
-  | Some s -> Hashtbl.replace t k (Dep.Set.add v s)
+let used_pred = Database.create_relation ~arity:1
+
+let used_fields_rel = Database.create_relation ~arity:3
+
+let var1 f = f (Database.create_variable ())
+let var2 f = var1 (var1 f)
+let var3 f = var1 (var2 f)
+let var4 f = var1 (var3 f)
+let var5 f = var1 (var4 f)
+(*let var6 f = var1 (var5 f)
+let var7 f = var1 (var6 f)
+*)
+let (~$) = Database.variable
+let (@|) = Database.create_atom
+
+let create () =
+  let db = Database.create () in
+  (* propagate *)
+  let db = Database.(add_rule db (var3 (fun if_defined source target ->
+      create_rule 
+        ~variables:[|if_defined; source; target|]
+        (alias_rel@|[|~$source; ~$target|])
+        [| used_pred@|[|~$if_defined|]; propagate_rel@|[|~$if_defined; ~$source; ~$target|] |]
+    ))) in
+  (* alias *)
+  let db = Database.(add_rule db (var4 (fun source target field v ->
+      create_rule
+        ~variables:[|source; target; field; v|]
+        (used_fields_rel@|[|~$target; ~$field; ~$v|])
+        [| alias_rel@|[|~$source; ~$target|]; used_fields_rel@|[|~$source; ~$field; ~$v|] |]
+    ))) in
+  let db = Database.(add_rule db (var2 (fun source target ->
+      create_rule
+        ~variables:[|source; target|]
+        (used_pred@|[|~$target|])
+        [| alias_rel@|[|~$source; ~$target|]; used_pred@|[|~$source|] |]
+    ))) in
+  (* accessor *)
+  let db = Database.(add_rule db (var3 (fun source field target ->
+      create_rule
+        ~variables:[|source; field; target|]
+        (used_fields_rel@|[|~$target; ~$field; ~$source|])
+        [| accessor_rel@|[|~$source; ~$field; ~$target|]; used_pred@|[|~$source|] |]
+    ))) in
+  let db = Database.(add_rule db (var5 (fun source field target anyf anyx ->
+      create_rule
+        ~variables:[|source; field; target|] ~existentials:[|anyf; anyx|]
+        (used_fields_rel@|[|~$target; ~$field; ~$source|])
+        [| accessor_rel@|[|~$source; ~$field; ~$target|]; used_fields_rel@|[|~$source; ~$anyf; ~$anyx|] |]
+    ))) in
+  (* constructor *)
+  let db = Database.(add_rule db (var4 (fun source field target v ->
+      create_rule
+        ~variables:[|source; field; target; v|]
+        (alias_rel@|[|~$v; ~$target|])
+        [| used_fields_rel@|[|~$source; ~$field; ~$v|]; constructor_rel@|[|~$source; ~$field; ~$target|] |]
+    ))) in
+  let db = Database.(add_rule db (var3 (fun source field target ->
+      create_rule
+        ~variables:[|source; field; target|]
+        (used_pred@|[|~$target|])
+        [| used_pred@|[|~$source|]; constructor_rel@|[|~$source; ~$field; ~$target|] |]
+    ))) in
+  (* use *)
+  let db = Database.(add_rule db (var2 (fun source target ->
+      create_rule
+        ~variables:[|source; target|]
+        (used_pred@|[|~$target|])
+        [| used_pred@|[|~$source|]; alias_rel@|[|~$source; ~$target|] |]
+    ))) in
+  let db = Database.(add_rule db (var4 (fun source target anyf anyx ->
+      create_rule
+        ~variables:[|source; target|] ~existentials:[|anyf; anyx|]
+        (used_pred@|[|~$target|])
+        [| used_fields_rel@|[|~$source; ~$anyf; ~$anyx|]; alias_rel@|[|~$source; ~$target|] |]
+    ))) in
+  { name_to_dep = Hashtbl.create 100; used = Hashtbl.create 100; datalog = db;
+  field_map = (Field.Map.empty, Numeric_types.Int.Map.empty, 0) }
+
+let get_field t field =
+  let map, rev_map, sz = t.field_map in
+  match Field.Map.find_opt field map with
+  | Some f -> f
+  | None ->
+      t.field_map <- (
+        Field.Map.add field sz map,
+        Numeric_types.Int.Map.add sz field rev_map,
+        sz + 1);
+      sz
+
+
+let insert t (k : Code_id_or_name.t) v =
+  let tbl = t.name_to_dep in
+  (match Hashtbl.find_opt tbl k with
+  | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
+  | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s));
+  match (v : Dep.t) with
+  | Alias { target } ->
+      t.datalog <- Database.add_fact t.datalog
+          (Database.create_fact alias_rel [|Database.create_symbol (k :> int); Database.create_symbol (target :> int)|])
+  | Use { target } ->
+      t.datalog <- Database.add_fact t.datalog
+          (Database.create_fact use_rel [|Database.create_symbol (k :> int); Database.create_symbol (target :> int)|])
+  | Accessor { relation; target } ->
+      let field = get_field t relation in
+      t.datalog <- Database.add_fact t.datalog
+          (Database.create_fact accessor_rel [|Database.create_symbol (k :> int); Database.create_symbol field; Database.create_symbol (target :> int)|])
+  | Constructor { relation; target } ->
+      let field = get_field t relation in
+      t.datalog <- Database.add_fact t.datalog
+          (Database.create_fact constructor_rel [|Database.create_symbol (k :> int); Database.create_symbol field; Database.create_symbol (target :> int)|])
+  | Alias_if_def _ -> ()
+  | Propagate { target; source } ->
+      t.datalog <- Database.add_fact t.datalog
+          (Database.create_fact propagate_rel [|Database.create_symbol (k :> int); Database.create_symbol (source :> int); Database.create_symbol (target :> int)|])
 
 let inserts t k v =
-  match Hashtbl.find_opt t k with
-  | None -> Hashtbl.add t k v
-  | Some s -> Hashtbl.replace t k (Dep.Set.union v s)
+  (*let tbl = t.name_to_dep in
+  match Hashtbl.find_opt tbl k with
+  | None -> Hashtbl.add tbl k v
+  | Some s -> Hashtbl.replace tbl k (Dep.Set.union v s) *)
+  Dep.Set.iter (fun dep -> insert t k dep) v
 
 let add_opaque_let_dependency t bp fv =
-  let tbl = t.name_to_dep in
   let bound_to = Bound_pattern.free_names bp in
   let f () bound_to =
     Name_occurrences.fold_names fv
       ~f:(fun () dep ->
-        insert tbl
+        insert t
           (Code_id_or_name.name bound_to)
           (Dep.Use { target = Code_id_or_name.name dep }))
       ~init:()
@@ -234,11 +352,11 @@ let add_opaque_let_dependency t bp fv =
   Name_occurrences.fold_names bound_to ~f ~init:()
 
 let add_dep t bound_to dep =
-  let tbl = t.name_to_dep in
-  insert tbl bound_to dep
+  insert t bound_to dep
 
 let add_deps t bound_to deps =
-  let tbl = t.name_to_dep in
-  inserts tbl bound_to deps
+  inserts t bound_to deps
 
-let add_use t dep = Hashtbl.replace t.used dep ()
+let add_use t (dep : Code_id_or_name.t) =
+  Hashtbl.replace t.used dep ();
+  t.datalog <- Database.add_fact t.datalog (Database.create_fact used_pred [|Database.create_symbol (dep :> int)|])

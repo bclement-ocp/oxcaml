@@ -78,14 +78,16 @@ end
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
-    used : (Code_id_or_name.t, unit) Hashtbl.t
+    used : (Code_id_or_name.t, unit) Hashtbl.t;
+    mutable datalog : Database.database;
+    mutable field_map : int Field.Map.t * Field.t Numeric_types.Int.Map.t * int
   }
 
 val pp_used_graph : Format.formatter -> graph -> unit
 
 val create : unit -> graph
 
-val inserts : ('a, Dep.Set.t) Hashtbl.t -> 'a -> Dep.Set.t -> unit
+val inserts : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 
 val add_opaque_let_dependency :
   graph -> Bound_pattern.t -> Name_occurrences.t -> unit
