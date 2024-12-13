@@ -220,78 +220,70 @@ let used_pred = Database.create_relation ~arity:1
 
 let used_fields_rel = Database.create_relation ~arity:3
 
-let var1 f = f (Database.create_variable ())
-let var2 f = var1 (var1 f)
-let var3 f = var1 (var2 f)
-let var4 f = var1 (var3 f)
-let var5 f = var1 (var4 f)
-(*let var6 f = var1 (var5 f)
-let var7 f = var1 (var6 f)
-*)
 let (~$) = Database.variable
 let (@|) = Database.create_atom
 
 let create () =
   let db = Database.create () in
   (* propagate *)
-  let db = Database.(add_rule db (var3 (fun if_defined source target ->
+  let db = Database.(add_rule db (
       create_rule 
-        ~variables:[|if_defined; source; target|]
-        (alias_rel@|[|~$source; ~$target|])
-        [| used_pred@|[|~$if_defined|]; propagate_rel@|[|~$if_defined; ~$source; ~$target|] |]
-    ))) in
+        ~variables:[|"if_defined"; "source"; "target"|]
+        (alias_rel@|[|~$"source"; ~$"target"|])
+        [| used_pred@|[|~$"if_defined"|]; propagate_rel@|[|~$"if_defined"; ~$"source"; ~$"target"|] |]
+    )) in
   (* alias *)
-  let db = Database.(add_rule db (var4 (fun source target field v ->
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; target; field; v|]
-        (used_fields_rel@|[|~$target; ~$field; ~$v|])
-        [| alias_rel@|[|~$source; ~$target|]; used_fields_rel@|[|~$source; ~$field; ~$v|] |]
-    ))) in
-  let db = Database.(add_rule db (var2 (fun source target ->
+        ~variables:[|"source"; "target"; "field"; "v"|]
+        (used_fields_rel@|[|~$"target"; ~$"field"; ~$"v"|])
+        [| alias_rel@|[|~$"source"; ~$"target"|]; used_fields_rel@|[|~$"source"; ~$"field"; ~$"v"|] |]
+    )) in
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; target|]
-        (used_pred@|[|~$target|])
-        [| alias_rel@|[|~$source; ~$target|]; used_pred@|[|~$source|] |]
-    ))) in
+        ~variables:[|"source"; "target"|]
+        (used_pred@|[|~$"target"|])
+        [| alias_rel@|[|~$"source"; ~$"target"|]; used_pred@|[|~$"source"|] |]
+    )) in
   (* accessor *)
-  let db = Database.(add_rule db (var3 (fun source field target ->
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; field; target|]
-        (used_fields_rel@|[|~$target; ~$field; ~$source|])
-        [| accessor_rel@|[|~$source; ~$field; ~$target|]; used_pred@|[|~$source|] |]
-    ))) in
-  let db = Database.(add_rule db (var5 (fun source field target anyf anyx ->
+        ~variables:[|"source"; "field"; "target"|]
+        (used_fields_rel@|[|~$"target"; ~$"field"; ~$"source"|])
+        [| accessor_rel@|[|~$"source"; ~$"field"; ~$"target"|]; used_pred@|[|~$"source"|] |]
+    )) in
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; field; target|] ~existentials:[|anyf; anyx|]
-        (used_fields_rel@|[|~$target; ~$field; ~$source|])
-        [| accessor_rel@|[|~$source; ~$field; ~$target|]; used_fields_rel@|[|~$source; ~$anyf; ~$anyx|] |]
-    ))) in
+        ~variables:[|"source"; "field"; "target"|] ~existentials:[|"anyf"; "anyx"|]
+        (used_fields_rel@|[|~$"target"; ~$"field"; ~$"source"|])
+        [| accessor_rel@|[|~$"source"; ~$"field"; ~$"target"|]; used_fields_rel@|[|~$"source"; ~$"anyf"; ~$"anyx"|] |]
+    )) in
   (* constructor *)
-  let db = Database.(add_rule db (var4 (fun source field target v ->
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; field; target; v|]
-        (alias_rel@|[|~$v; ~$target|])
-        [| used_fields_rel@|[|~$source; ~$field; ~$v|]; constructor_rel@|[|~$source; ~$field; ~$target|] |]
-    ))) in
-  let db = Database.(add_rule db (var3 (fun source field target ->
+        ~variables:[|"source"; "field"; "target"; "v"|]
+        (alias_rel@|[|~$"v"; ~$"target"|])
+        [| used_fields_rel@|[|~$"source"; ~$"field"; ~$"v"|]; constructor_rel@|[|~$"source"; ~$"field"; ~$"target"|] |]
+    )) in
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; field; target|]
-        (used_pred@|[|~$target|])
-        [| used_pred@|[|~$source|]; constructor_rel@|[|~$source; ~$field; ~$target|] |]
-    ))) in
+        ~variables:[|"source"; "field"; "target"|]
+        (used_pred@|[|~$"target"|])
+        [| used_pred@|[|~$"source"|]; constructor_rel@|[|~$"source"; ~$"field"; ~$"target"|] |]
+    )) in
   (* use *)
-  let db = Database.(add_rule db (var2 (fun source target ->
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; target|]
-        (used_pred@|[|~$target|])
-        [| used_pred@|[|~$source|]; alias_rel@|[|~$source; ~$target|] |]
-    ))) in
-  let db = Database.(add_rule db (var4 (fun source target anyf anyx ->
+        ~variables:[|"source"; "target"|]
+        (used_pred@|[|~$"target"|])
+        [| used_pred@|[|~$"source"|]; alias_rel@|[|~$"source"; ~$"target"|] |]
+    )) in
+  let db = Database.(add_rule db (
       create_rule
-        ~variables:[|source; target|] ~existentials:[|anyf; anyx|]
-        (used_pred@|[|~$target|])
-        [| used_fields_rel@|[|~$source; ~$anyf; ~$anyx|]; alias_rel@|[|~$source; ~$target|] |]
-    ))) in
+        ~variables:[|"source"; "target"|] ~existentials:[|"anyf"; "anyx"|]
+        (used_pred@|[|~$"target"|])
+        [| used_fields_rel@|[|~$"source"; ~$"anyf"; ~$"anyx"|]; alias_rel@|[|~$"source"; ~$"target"|] |]
+    )) in
   { name_to_dep = Hashtbl.create 100; used = Hashtbl.create 100; datalog = db;
   field_map = (Field.Map.empty, Numeric_types.Int.Map.empty, 0) }
 
