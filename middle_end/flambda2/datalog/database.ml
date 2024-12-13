@@ -721,7 +721,7 @@ let saturate db =
 let add_rule db rule = { db with rules = rule :: db.rules }
 
 let () =
-  if true
+  if false
   then (
     let db = empty_db in
     let p = create_table_id "p" ~arity:2 in
