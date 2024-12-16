@@ -120,7 +120,7 @@ module Trie = struct
         let subtrie' = add_or_replace other_inputs output subtrie in
         Map (Id.Map.add first_input subtrie' m))
 
-  let rec remove t inputs =
+  let rec remove inputs t =
     match inputs, t with
     | _, Absent | [], Present _ -> Absent
     | [], Map _ | _ :: _, Present _ -> invalid_arg "Trie.remove"
@@ -128,7 +128,7 @@ module Trie = struct
       match Id.Map.find_opt first_input m with
       | None -> t
       | Some subtrie ->
-        let subtrie' = remove subtrie other_inputs in
+        let subtrie' = remove other_inputs subtrie in
         if is_empty subtrie'
         then
           let m = Id.Map.remove first_input m in
@@ -147,10 +147,6 @@ module Trie = struct
 
   let mem t inputs = Option.is_some (find_opt t inputs)
 end
-
-type 'a trie =
-  | Value of 'a
-  | Map of 'a
 
 type table_id =
   | Table_id of
@@ -172,6 +168,13 @@ let create_table_id =
     Table_id { id = !cnt; arity; print; name }
 
 let print_table_id ppf (Table_id tid) = Format.fprintf ppf "%s" tid.name
+
+let print_relation pp_arg ppf (Table_id tid, args) =
+  Format.fprintf ppf "@[<hov>(%s@ %a)@]" tid.name
+    (Format.pp_print_list
+       ~pp_sep:(fun ppf () -> Format.fprintf ppf "@ ")
+       (fun ppf arg -> Format.fprintf ppf "@[%a@]" pp_arg arg))
+    args
 
 type variable = string
 
@@ -212,6 +215,14 @@ module Permutation = struct
     | Identity
     | Permutation of int array
 
+  let inverse p =
+    match p with
+    | Identity -> Identity
+    | Permutation sigma ->
+      let inv = Array.make (Array.length sigma) (-1) in
+      Array.iteri (fun i j -> inv.(j) <- i) sigma;
+      Permutation inv
+
   let print ppf p =
     match p with
     | Identity -> Format.fprintf ppf "id"
@@ -230,15 +241,24 @@ module Permutation = struct
     match p with
     | Identity -> a
     | Permutation sigma -> Array.init (Array.length a) (fun i -> a.(sigma.(i)))
+
+  let get p i = match p with Identity -> i | Permutation sigma -> sigma.(i)
 end
 
 type expr =
   | Evar of int
   | Esym of symbol
 
+let print_expr print_var ppf e =
+  match e with Evar i -> print_var ppf i | Esym _ -> assert false
+
+type projection = expr array
+
 module Projection = struct
   let apply sigma a =
     Array.map (fun s -> match s with Evar n -> a.(n) | Esym s -> s) sigma
+
+  let get sigma i = sigma.(i)
 end
 
 exception Found of int
@@ -311,6 +331,31 @@ module Joined_iterator = Leapfrog.Iterator_operations (struct
   include Trie.Iterator.I
 end)
 
+let find_fact table args =
+  let args_list = Array.to_list args in
+  Trie.find_opt table.primary args_list
+
+let remove_fact table args =
+  let args_list = Array.to_list args in
+  match Trie.find_opt table.primary args_list with
+  | None -> table
+  | Some fact_id ->
+    let primary = Trie.remove args_list table.primary in
+    let facts = Id.Map.remove fact_id table.facts in
+    let indices =
+      Permap.mapi
+        (fun perm index ->
+          Trie.remove (Array.to_list @@ Permutation.apply perm args) index)
+        table.indices
+    in
+    { arity = table.arity;
+      facts;
+      last_fact_id = table.last_fact_id;
+      primary;
+      indices;
+      table_id = table.table_id
+    }
+
 let add_fact table args =
   let args_list = Array.to_list args in
   match Trie.find_opt table.primary args_list with
@@ -351,60 +396,177 @@ let cut_table table ~cut_after =
     table_id = table.table_id
   }
 
+type 'a state =
+  { levels : 'a Joined_iterator.triejoin;
+    mutable depth : int
+  }
+
+type outcome =
+  | Accept  (** Accept and output the current tuple. *)
+  | Down
+      (** Accept the current prefix, look for the a binding at the next level. *)
+  | Skip  (** Skip the current prefix. *)
+
+type _ action =
+  | Const : 'a -> 'a action  (** Return the provided value. *)
+  | Set_field : int array * int -> unit action
+      (** [Set_field out i] sets the field [out.(i)] to the current key. *)
+  | Moveto : int -> unit action
+      (** [Moveto depth] moves up to depth [depth]. *)
+  | Then : unit action * 'a action -> 'a action
+  | And : outcome action * outcome action -> outcome action
+      (** [Then] performs actions in sequence. *)
+  | Mem_fact : table_id * expr array * int array -> bool action
+  | Ite : bool action * 'a action * 'a action -> 'a action
+
+(* ite (test tbl proj tup) advance accept *)
+
 type query =
   | Query :
-      { indices : (table_id * permutation * int Trie.iterator ref) array;
-        iterator : 'a Joined_iterator.triejoin;
-        mutable depth : int;
+      { indices :
+          (table_id * permutation * projection * int Trie.iterator ref) array;
+        state : 'a state;
         output : int array;
-        max_depth : int
+        variables : variable array;
+        existentials : variable array;
+        actions : outcome action array;
+        hyps : atom array
       }
       -> query
 
+let table_arity (Table_id tid) = tid.arity
+
+let print_query_var (Query { variables; existentials; _ }) ppf i =
+  if i < Array.length variables
+  then Format.pp_print_string ppf variables.(i)
+  else Format.pp_print_string ppf existentials.(i - Array.length variables)
+
+let print_query pp_var ppf
+    (Query
+      { indices;
+        state = _;
+        output = _;
+        variables = _;
+        existentials = _;
+        actions = _;
+        hyps = _
+      }) =
+  let first = ref true in
+  Format.fprintf ppf "@[(";
+  Array.iter
+    (fun (table_id, _, proj, _) ->
+      if !first then first := false else Format.fprintf ppf "@ ";
+      print_relation pp_var ppf
+        ( table_id,
+          List.init (table_arity table_id) (fun i -> Projection.get proj i) ))
+    indices;
+  Format.fprintf ppf ")@]"
+
 type instruction =
   | Add of table_id * expr array
+  | Remove of table_id * expr array
   | Sequence of instruction list
+
+let rec print_instruction print_var ppf instruction =
+  match instruction with
+  | Add (tid, args) ->
+    Format.fprintf ppf "@[<hov 0>(add@ ";
+    print_relation
+      (fun ppf expr ->
+        match expr with
+        | Evar v -> print_var ppf v
+        | Esym s -> Format.pp_print_int ppf s)
+      ppf
+      (tid, Array.to_list args);
+    Format.fprintf ppf ")@]"
+  | Remove (tid, args) ->
+    Format.fprintf ppf "@[<hov 0>(remove@ ";
+    print_relation
+      (fun ppf expr ->
+        match expr with
+        | Evar v -> print_var ppf v
+        | Esym s -> Format.pp_print_int ppf s)
+      ppf
+      (tid, Array.to_list args);
+    Format.fprintf ppf ")@]"
+  | Sequence instructions ->
+    Format.pp_print_list
+      ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
+      (print_instruction print_var)
+      ppf instructions
+
+type topaction =
+  | Add_atom of table_id * term array
+  | Remove_atom of table_id * term array
+  | Many of topaction list
 
 type rule = Rule of query * instruction
 
+type ruleset = Ruleset of rule list
+
+let print_ruleset ppf (Ruleset rules) =
+  Format.pp_print_list ~pp_sep:Format.pp_print_space
+    (fun ppf (Rule (query, instruction)) ->
+      let print_var = print_query_var query in
+      Format.fprintf ppf "@[<2>(rule @[<hv>";
+      print_query (print_expr print_var) ppf query;
+      Format.fprintf ppf "@]@ @[%a@])@]"
+        (print_instruction print_var)
+        instruction)
+    ppf rules
+
+type schedule =
+  | Saturate of ruleset * int Id.Map.t
+  | Sequence of schedule list
+  | Fixpoint of schedule
+
+module Schedule = struct
+  type t = schedule
+
+  let saturate rules = Saturate (Ruleset rules, Id.Map.empty)
+
+  let list schedule = Sequence schedule
+
+  let fixpoint schedule = Fixpoint schedule
+end
+
+let rec print_schedule ppf schedule =
+  match schedule with
+  | Saturate (ruleset, _) ->
+    Format.fprintf ppf "@[<hv 2>(saturate@ %a)@]" print_ruleset ruleset
+  | Sequence schedules ->
+    Format.fprintf ppf "@[<hv 2>(sequence@ %a)@]"
+      (Format.pp_print_list ~pp_sep:Format.pp_print_space print_schedule)
+      schedules
+  | Fixpoint schedule ->
+    Format.fprintf ppf "@[<hv 2>(fixpoint@ %a)@]" print_schedule schedule
+
 type database =
   { tables : table Id.Map.t;
-    levels : int Id.Map.t list;
-    current_level : int;
     last_propagation : int Id.Map.t;
-    rules : rule list
+    schedule : schedule
   }
 
 let print_database ppf db =
+  Format.fprintf ppf "@[<v>";
   Id.Map.iter
     (fun _ table ->
-      Format.fprintf ppf "@[<v>%a@ ==========@ @[<v>%a@]@]@ " print_table_id
-        table.table_id print_table table)
-    db.tables
+      Format.fprintf ppf "@[<v>%a (%d)@ ==========@ @[<v>%a@]@]@ "
+        print_table_id table.table_id
+        (Id.Map.cardinal table.facts)
+        print_table table)
+    db.tables;
+  Format.fprintf ppf "@ Rules@ =====@ ";
+  print_schedule ppf db.schedule;
+  Format.fprintf ppf "@]"
 
 let filter_database f db =
   { tables = Id.Map.filter (fun _ table -> f table.table_id) db.tables;
-    levels = [];
-    current_level = 0;
     last_propagation = Id.Map.empty;
-    rules = []
+    schedule = db.schedule
   }
-
-let current_scope db = db.current_level
 
 let current_level db = Id.Map.map (fun table -> table.last_fact_id) db.tables
-
-let push_scope db =
-  let prev_level = current_level db in
-  { db with
-    levels = prev_level :: db.levels;
-    current_level = db.current_level + 1
-  }
-
-let pop_scope db =
-  match db.levels with
-  | [] -> invalid_arg "pop_scope"
-  | _ :: levels -> { db with levels; current_level = db.current_level - 1 }
 
 let cut_level db level =
   let tables =
@@ -415,23 +577,11 @@ let cut_level db level =
         | None -> table)
       db.tables
   in
-  { tables;
-    levels = [];
-    current_level = 0;
-    rules = [];
-    last_propagation = Id.Map.empty
-  }
-
-let cut_db db ~cut_after =
-  match List.nth_opt db.levels (db.current_level - cut_after - 1) with
-  | None -> db
-  | Some level -> cut_level db level
+  { tables; schedule = db.schedule; last_propagation = Id.Map.empty }
 
 let empty_db =
   { tables = Id.Map.empty;
-    levels = [];
-    current_level = 0;
-    rules = [];
+    schedule = Sequence [];
     last_propagation = Id.Map.empty
   }
 
@@ -443,9 +593,16 @@ let get_table db (Table_id tid as ttid) =
 let set_table db (Table_id tid) table =
   { db with tables = Id.Map.add tid.id table db.tables }
 
+let find_fact db (Fact (tid, args)) = find_fact (get_table db tid) args
+
 let add_fact db (Fact (tid, args)) =
   let table = get_table db tid in
   let table' = add_fact table args in
+  if table' == table then db else set_table db tid table'
+
+let remove_fact db (Fact (tid, args)) =
+  let table = get_table db tid in
+  let table' = remove_fact table args in
   if table' == table then db else set_table db tid table'
 
 let find_index permutation table =
@@ -455,14 +612,14 @@ let find_index permutation table =
 
 let build_index table perm = build_index ~arity:table.arity table.facts perm
 
-let bind_index_iterator ((Table_id tid as table_id), permutation, iter) db =
+let bind_index_iterator (table_id, permutation, _, iter) db =
   let table = get_table db table_id in
   match find_index permutation table with
   | None ->
     if true
     then (
-      Format.eprintf "Could not find index on table: %d for: %a@." tid.id
-        Permutation.print permutation;
+      Format.eprintf "Could not find index on table: %a for: %a@."
+        print_table_id table_id Permutation.print permutation;
       assert false)
     else
       let index = build_index table permutation in
@@ -484,31 +641,60 @@ let register_index db tid permutation =
   let table = register_index table permutation in
   set_table db tid table
 
-let rec loop ~max_depth levels depth tuple =
-  match Joined_iterator.current levels with
+let movedown (st : _ state) =
+  Joined_iterator.down st.levels;
+  st.depth <- st.depth + 1
+
+let moveup (st : _ state) =
+  Joined_iterator.up st.levels;
+  st.depth <- st.depth - 1
+
+let rec run_action : type a. _ -> _ -> _ -> a action -> a =
+ fun db st key action ->
+  match action with
+  | Const c -> c
+  | Set_field (tuple, field) -> tuple.(field) <- key
+  | Mem_fact (tid, projection, tuple) ->
+    let args = Projection.apply projection tuple in
+    Option.is_some (find_fact db (Fact (tid, args)))
+  | Moveto depth ->
+    while st.depth > depth do
+      moveup st
+    done
+  | Then (lhs, rhs) ->
+    run_action db st key lhs;
+    run_action db st key rhs
+  | Ite (c, t, e) ->
+    if run_action db st key c
+    then run_action db st key t
+    else run_action db st key e
+  | And (a1, a2) -> (
+    match run_action db st key a1 with
+    | Skip -> Skip
+    | (Accept | Down) as out -> (
+      match run_action db st key a2 with
+      | Skip -> Skip
+      | Accept -> out
+      | Down -> assert false))
+
+let rec loop db (st : _ state) actions =
+  match Joined_iterator.current st.levels with
   | Leapfrog.At_start -> assert false
-  | Leapfrog.Key current_key ->
-    if depth < Array.length tuple then tuple.(depth) <- current_key;
-    if depth = max_depth
-    then
-      let rec moveup depth =
-        if depth = Array.length tuple - 1
-        then depth
-        else (
-          Joined_iterator.up levels;
-          moveup (depth - 1))
-      in
-      moveup depth
-    else (
-      Joined_iterator.down levels;
-      loop ~max_depth levels (depth + 1) tuple)
+  | Leapfrog.Key current_key -> (
+    match run_action db st current_key actions.(st.depth) with
+    | Accept -> ()
+    | Down ->
+      movedown st;
+      loop db st actions
+    | Skip ->
+      Joined_iterator.advance st.levels;
+      loop db st actions)
   | Leapfrog.At_end ->
-    Joined_iterator.up levels;
-    if depth <= 0
-    then -1
-    else (
-      Joined_iterator.advance levels;
-      loop ~max_depth levels (depth - 1) tuple)
+    moveup st;
+    if st.depth >= 0
+    then (
+      Joined_iterator.advance st.levels;
+      loop db st actions)
 
 let build_projection varmap args =
   Array.map
@@ -561,16 +747,18 @@ let create_varmap ?(existentials = [||]) variables =
     existentials;
   varmap, nvars + Array.length existentials
 
-let create_query ~variables ?existentials hyps : query =
-  let varmap, nvars = create_varmap ?existentials variables in
+let create_query ~variables ?(existentials = [||]) ?(negate = [||]) hyps : query
+    =
+  let varmap, nvars = create_varmap ~existentials variables in
   let scratch = Array.make nvars (-1) in
   let levels = Array.make nvars [] in
   let all_iterators =
     Array.map
       (fun (Atom (tid, args)) ->
         let permutation = build_permutation ~scratch varmap args in
+        let projection = build_projection varmap args in
         let iter = Trie.Iterator.I.create () in
-        let iterator = tid, permutation, iter in
+        let iterator = tid, permutation, projection, iter in
         Array.iteri
           (fun i v -> if v <> -1 then levels.(i) <- iter :: levels.(i))
           scratch;
@@ -587,30 +775,68 @@ let create_query ~variables ?existentials hyps : query =
            | _ -> Joined_iterator.join_array (Array.of_list l))
          levels
   in
+  let output_size = Array.length tuple in
+  let actions =
+    Array.init nvars (fun i ->
+        let action =
+          if i = nvars - 1
+          then Then (Moveto (output_size - 1), Const Accept)
+          else Const Down
+        in
+        if i < output_size then Then (Set_field (tuple, i), action) else action)
+  in
+  (* Add negation checks *)
+  Array.iter
+    (fun (Atom (tid, args)) ->
+      (* XXX: this could use existential variables, which are not actually
+         available in the tuple. *)
+      let projection = build_projection varmap args in
+      let max_var =
+        Array.fold_left
+          (fun max_var expr ->
+            match expr with
+            | Esym _ -> max_var
+            | Evar n -> (
+              assert (n <= Array.length variables);
+              match max_var with None -> Some n | Some m -> Some (max n m)))
+          None projection
+      in
+      match max_var with
+      | None -> invalid_arg "negation with no variables"
+      | Some max_var ->
+        actions.(max_var)
+          <- And
+               ( actions.(max_var),
+                 Ite
+                   (Mem_fact (tid, projection, tuple), Const Skip, Const Accept)
+               ))
+    negate;
+  let state = { levels; depth = -1 } in
   Query
     { indices = all_iterators;
-      iterator = levels;
-      depth = -1;
+      state;
       output = tuple;
-      max_depth = nvars - 1
+      variables;
+      existentials;
+      actions;
+      hyps
     }
 
-let bind_query db
-    (Query ({ indices; iterator; depth = _; max_depth; output } as q)) =
-  (* tuple has size nvars *)
+let bind_query db (Query { indices; state; actions; _ }) =
   Array.iter (fun iterator -> bind_index_iterator iterator db) indices;
-  Joined_iterator.reset iterator;
-  Joined_iterator.down iterator;
-  q.depth <- loop ~max_depth iterator 0 output
+  Joined_iterator.reset state.levels;
+  Joined_iterator.down state.levels;
+  state.depth <- 0;
+  loop db state actions
 
-let query_current (Query { depth; output; _ }) =
-  if depth < 0 then None else Some output
+let query_current (Query { state; output; _ }) =
+  if state.depth < 0 then None else Some output
 
-let query_advance (Query ({ iterator; depth; output; max_depth; _ } as q)) =
-  if depth >= 0
+let query_advance db (Query { state; actions; _ }) =
+  if state.depth >= 0
   then (
-    Joined_iterator.advance iterator;
-    q.depth <- loop ~max_depth iterator depth output)
+    Joined_iterator.advance state.levels;
+    loop db state actions)
 
 type relation = table_id
 
@@ -624,67 +850,68 @@ let tuple_arity = Array.length
 
 let tuple_get = Array.get
 
-type action =
-  | Add_atom of table_id * term array
-  | Many of action list
-
 let add_atom (Atom (r, args)) = Add_atom (r, args)
+
+let remove_atom (Atom (r, args)) = Remove_atom (r, args)
 
 let action_sequence actions = Many actions
 
-let rec compile_action varmap action =
+let rec compile_action varmap action : instruction =
   match action with
   | Add_atom (tid, args) -> Add (tid, build_projection varmap args)
+  | Remove_atom (tid, args) -> Remove (tid, build_projection varmap args)
   | Many actions -> Sequence (List.map (compile_action varmap) actions)
 
-let create_rule ~variables action ?existentials hyps : rule =
-  let query = create_query ~variables ?existentials hyps in
+let create_rule ~variables action ?existentials ?negate hyps : rule =
+  let query = create_query ~variables ?existentials ?negate hyps in
   (* Existential variables cannot be used in actions. *)
   let varmap, _ = create_varmap variables in
   Rule (query, compile_action varmap action)
 
 let create () = empty_db
 
-let rec apply_action db action tuple =
+let rec apply_action db (action : instruction) tuple =
   match action with
   | Add (tid, projection) ->
     let args = Projection.apply projection tuple in
     let fact = Fact (tid, args) in
     add_fact db fact
+  | Remove (tid, projection) ->
+    let args = Projection.apply projection tuple in
+    let fact = Fact (tid, args) in
+    remove_fact db fact
   | Sequence instructions ->
     List.fold_left
       (fun db instruction -> apply_action db instruction tuple)
       db instructions
 
-let rec saturate_naive db0 =
-  let did_change = ref false in
-  let db =
-    List.fold_left
-      (fun db (Rule (query, action)) ->
-        bind_query db0 query;
-        let rec loop db =
-          match query_current query with
-          | None -> db
-          | Some tuple ->
-            let db' = apply_action db action tuple in
-            if db' != db then did_change := true;
-            query_advance query;
-            loop db'
-        in
-        loop db)
-      db0 db0.rules
-  in
-  if !did_change then saturate_naive db else db
+let run_ruleset (Ruleset rules) db0 =
+  List.fold_left
+    (fun db (Rule (query, action)) ->
+      bind_query db0 query;
+      let rec loop db =
+        match query_current query with
+        | None -> db
+        | Some tuple ->
+          let db' = apply_action db action tuple in
+          query_advance db0 query;
+          loop db'
+      in
+      loop db)
+    db0 rules
 
-let rec saturate_seminaive db0 db1 =
-  let did_change = ref false in
+let rec saturate_naive_ruleset (Ruleset rules) db0 =
+  let db' = run_ruleset (Ruleset rules) db0 in
+  let did_change = db' != db0 in
+  if did_change then saturate_naive_ruleset (Ruleset rules) db' else db'
+
+let rec saturate_seminaive_ruleset ruleset db0 db1 =
+  let (Ruleset rules) = ruleset in
   let current_scope = current_level db0 in
   let db =
     List.fold_left
       (fun db (Rule (query, action)) ->
-        let (Query ({ indices; iterator; depth = _; max_depth; output } as q)) =
-          query
-        in
+        let (Query { indices; state; actions; _ }) = query in
         let rec loop0 db delta_index =
           if delta_index < 0
           then db
@@ -695,38 +922,62 @@ let rec saturate_seminaive db0 db1 =
                 then bind_index_iterator iterator db1
                 else bind_index_iterator iterator db0)
               indices;
-            Joined_iterator.reset iterator;
-            Joined_iterator.down iterator;
-            q.depth <- loop ~max_depth iterator 0 output;
+            Joined_iterator.reset state.levels;
+            Joined_iterator.down state.levels;
+            state.depth <- 0;
+            loop db0 state actions;
             let rec loop1 db =
               match query_current query with
               | None -> db
               | Some tuple ->
                 let db' = apply_action db action tuple in
-                if db' != db then did_change := true;
-                query_advance query;
+                query_advance db0 query;
                 loop1 db'
             in
             loop0 (loop1 db) (delta_index - 1))
         in
         loop0 db (Array.length indices - 1))
-      db0 db0.rules
+      db0 rules
   in
-  if !did_change
-  then saturate_seminaive db (cut_level db current_scope)
-  else
-    let db' = cut_level db current_scope in
-    assert (
-      Id.Map.for_all (fun _ table -> Id.Map.is_empty table.facts) db'.tables);
-    db
+  let did_change = db != db0 in
+  if did_change
+  then saturate_seminaive_ruleset ruleset db (cut_level db current_scope)
+  else db
+
+let rec run_schedule db schedule =
+  match schedule with
+  | Saturate (ruleset, last_propagation) ->
+    let db, last_propagation =
+      if Id.Map.is_empty last_propagation
+      then run_ruleset ruleset db, current_level db
+      else db, last_propagation
+    in
+    let db1 = cut_level db last_propagation in
+    let db' = saturate_seminaive_ruleset ruleset db db1 in
+    db', Saturate (ruleset, current_level db')
+  | Sequence schedules ->
+    let db, schedules = List.fold_left_map run_schedule db schedules in
+    db, Sequence schedules
+  | Fixpoint schedule ->
+    let db', schedule' = run_schedule db schedule in
+    if db == db'
+    then db', Fixpoint schedule'
+    else run_schedule db' (Fixpoint schedule')
 
 let saturate db =
-  let db1 = cut_level db db.last_propagation in
-  let db' = saturate_seminaive db db1 in
-  assert (db'.current_level = db.current_level);
-  { db' with last_propagation = current_level db' }
+  let db', schedule' = run_schedule db db.schedule in
+  { db' with schedule = schedule' }
 
-let add_rule db rule = { db with rules = rule :: db.rules }
+let add_rule db rule =
+  let schedule =
+    match db.schedule with
+    | Sequence [] -> Saturate (Ruleset [rule], Id.Map.empty)
+    | Sequence _ -> assert false
+    | Fixpoint _ -> assert false
+    | Saturate (Ruleset ruleset, last) ->
+      Saturate (Ruleset (rule :: ruleset), last)
+  in
+  { db with schedule }
 
 let () =
   if false
@@ -756,36 +1007,64 @@ let () =
     let x = "x" in
     let y = "y" in
     let z = "z" in
-    let rule =
+    let rule1 =
       create_rule ~variables:[| z; y; x |]
         (add_atom (create_atom r [| Variable x; Symbol 42; Variable z |]))
         [| Atom (p, [| Variable x; Variable y |]);
            Atom (q, [| Variable y; Variable z |])
         |]
     in
-    let db = add_rule db rule in
-    let rule =
+    let rule2 =
       create_rule ~variables:[| x; y |] ~existentials:[| z |]
         (add_atom (create_atom p [| Variable x; Variable y |]))
         [| Atom (r, [| Variable x; Variable z; Variable y |]) |]
     in
-    let db = add_rule db rule in
-    let rule =
+    let _rule3 =
       create_rule ~variables:[| x; y |]
         (add_atom (create_atom s [| Variable x; Variable y |]))
         [| create_atom p [| Variable x; Variable y |];
            create_atom p [| Variable y; Variable x |]
         |]
     in
-    let db = add_rule db rule in
+    let _rule4 =
+      create_rule ~variables:[| x; y |]
+        (remove_atom (create_atom p [| Variable x; Variable y |]))
+        [| create_atom s [| Variable x; Variable y |] |]
+    in
+    let _rule5 =
+      create_rule ~variables:[| x; y |]
+        (add_atom (create_atom s [| Variable x; Variable y |]))
+        ~negate:[| create_atom q [| Variable y; Variable x |] |]
+        [| create_atom p [| Variable x; Variable y |] |]
+    in
+    let schedule =
+      let open! Schedule in
+      list
+        [ fixpoint (list [saturate [rule1; rule2] (* ; saturate ([rule3]) *)]);
+          saturate [_rule5] ]
+    in
     Format.eprintf "@[<v>Before:@ %a@]@." print_database db;
-    let db = saturate_naive db in
-    let db = add_fact db (Fact (p, [| 57; 57 |])) in
+    let db = { db with schedule } in
+    let db, _schedule = run_schedule db schedule in
+    (* let db = add_fact db (Fact (p, [| 57; 57 |])) in *)
     Format.eprintf "doit again@.";
-    let db = saturate_naive db in
+    (* let db, _schedule = run_schedule db schedule in *)
     Format.eprintf "@[<v>After:@ %a@]@." print_database db)
 
-let create_rule ~variables atom ?existentials hyps =
-  create_rule ~variables (add_atom atom) ?existentials hyps
+let create_deletion_rule ~variables atom ?existentials ?negate hyps =
+  create_rule ~variables (remove_atom atom) ?existentials ?negate hyps
+
+let create_rule ~variables atom ?existentials ?negate hyps =
+  create_rule ~variables (add_atom atom) ?existentials ?negate hyps
 
 let relation_name (Table_id { name; _ }) = name
+
+let register_index db p perm = register_index db p (Permutation.create perm)
+
+let set_schedule db schedule = { db with schedule }
+
+let mem_fact db fact = Option.is_some (find_fact db fact)
+
+let print_fact ppf (Fact (tid, args)) = print_fact ppf (tid, args)
+
+let table_size db tid = Id.Map.cardinal (get_table db tid).facts

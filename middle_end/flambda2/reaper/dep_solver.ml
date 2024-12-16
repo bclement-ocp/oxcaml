@@ -429,7 +429,7 @@ let db_to_uses db field_id_to_field =
     | Some t ->
         let u = (Obj.magic (Database.tuple_get t 0) : Code_id_or_name.t) in
         Hashtbl.replace h u Top;
-        Database.query_advance query_uses;
+        Database.query_advance db query_uses;
         loop ()
   in
   loop ();
@@ -456,7 +456,7 @@ let db_to_uses db field_id_to_field =
         | Some Top -> incr useless
         | None -> ff Field.Map.empty
         | Some (Fields f) -> ff f);
-        Database.query_advance query_used_field;
+        Database.query_advance db query_used_field;
         loop ()
   in
   loop ();

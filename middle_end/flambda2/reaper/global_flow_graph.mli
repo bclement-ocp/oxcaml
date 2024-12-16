@@ -99,4 +99,5 @@ val add_deps : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 val add_use : graph -> Code_id_or_name.t -> unit
 
 val used_pred : Database.relation
+
 val used_fields_rel : Database.relation

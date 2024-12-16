@@ -293,99 +293,122 @@ let ( @| ) = Database.create_atom
 let create () =
   let db = Database.create () in
   (* propagate *)
-  let db =
+  let alias_from_used_propagate =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "if_defined"; "source"; "target" |]
-           (alias_rel @| [| ~$"source"; ~$"target" |])
-           [| used_pred @| [| ~$"if_defined" |];
-              propagate_rel @| [| ~$"if_defined"; ~$"source"; ~$"target" |]
-           |]))
+      create_rule
+        ~variables:[| "if_defined"; "source"; "target" |]
+        (alias_rel @| [| ~$"source"; ~$"target" |])
+        [| used_pred @| [| ~$"if_defined" |];
+           propagate_rel @| [| ~$"if_defined"; ~$"source"; ~$"target" |]
+        |])
   in
   (* alias *)
-  let db =
+  let used_fields_from_used_fields_alias =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "source"; "target"; "field"; "v" |]
-           (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"v" |])
-           [| alias_rel @| [| ~$"source"; ~$"target" |];
-              used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |]
-           |]))
+      create_rule
+        ~variables:[| "source"; "target"; "field"; "v" |]
+        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"v" |])
+        ~negate:
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
+        [| alias_rel @| [| ~$"source"; ~$"target" |];
+           used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |]
+        |])
   in
-  let db =
+  let used_from_alias_used =
     Database.(
-      add_rule db
-        (create_rule ~variables:[| "source"; "target" |]
-           (used_pred @| [| ~$"target" |])
-           [| alias_rel @| [| ~$"source"; ~$"target" |];
-              used_pred @| [| ~$"source" |]
-           |]))
+      create_rule ~variables:[| "source"; "target" |]
+        (used_pred @| [| ~$"target" |])
+        [| alias_rel @| [| ~$"source"; ~$"target" |];
+           used_pred @| [| ~$"source" |]
+        |])
   in
   (* accessor *)
-  let db =
+  let used_fields_from_accessor_used =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "source"; "field"; "target" |]
-           (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
-           [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
-              used_pred @| [| ~$"source" |]
-           |]))
+      create_rule
+        ~variables:[| "source"; "field"; "target" |]
+        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
+        ~negate:[| used_pred @| [| ~$"target" |] |]
+        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
+           used_pred @| [| ~$"source" |]
+        |])
   in
-  let db =
+  let used_fields_from_accessor_used_fields =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "source"; "field"; "target" |]
-           ~existentials:[| "anyf"; "anyx" |]
-           (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
-           [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
-              used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |]
-           |]))
+      create_rule
+        ~variables:[| "source"; "field"; "target" |]
+        ~existentials:[| "anyf"; "anyx" |]
+        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
+        ~negate:
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
+        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
+           used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |]
+        |])
   in
   (* constructor *)
-  let db =
+  let alias_from_used_fields_constructor =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "source"; "field"; "target"; "v" |]
-           (alias_rel @| [| ~$"v"; ~$"target" |])
-           [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |];
-              constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
-           |]))
+      create_rule
+        ~variables:[| "source"; "field"; "target"; "v" |]
+        (alias_rel @| [| ~$"v"; ~$"target" |])
+        [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |];
+           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
+        |])
   in
-  let db =
+  let used_from_constructor_used =
     Database.(
-      add_rule db
-        (create_rule
-           ~variables:[| "source"; "field"; "target" |]
-           (used_pred @| [| ~$"target" |])
-           [| used_pred @| [| ~$"source" |];
-              constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
-           |]))
+      create_rule
+        ~variables:[| "source"; "field"; "target" |]
+        (used_pred @| [| ~$"target" |])
+        [| used_pred @| [| ~$"source" |];
+           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
+        |])
   in
   (* use *)
-  let db =
+  let used_from_used_use =
     Database.(
-      add_rule db
-        (create_rule ~variables:[| "source"; "target" |]
-           (used_pred @| [| ~$"target" |])
-           [| used_pred @| [| ~$"source" |];
-              use_rel @| [| ~$"source"; ~$"target" |]
-           |]))
+      create_rule ~variables:[| "source"; "target" |]
+        (used_pred @| [| ~$"target" |])
+        [| used_pred @| [| ~$"source" |];
+           use_rel @| [| ~$"source"; ~$"target" |]
+        |])
   in
-  let db =
+  let used_from_used_fields_use =
     Database.(
-      add_rule db
-        (create_rule ~variables:[| "source"; "target" |]
-           ~existentials:[| "anyf"; "anyx" |]
-           (used_pred @| [| ~$"target" |])
-           [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
-              use_rel @| [| ~$"source"; ~$"target" |]
-           |]))
+      create_rule ~variables:[| "source"; "target" |]
+        ~existentials:[| "anyf"; "anyx" |]
+        (used_pred @| [| ~$"target" |])
+        [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
+           use_rel @| [| ~$"source"; ~$"target" |]
+        |])
   in
+  let subsumption_rule =
+    Database.(
+      create_deletion_rule
+        ~variables:[| "source"; "anyf"; "anyx" |]
+        (used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |])
+        [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
+           used_pred @| [| ~$"source" |]
+        |])
+  in
+  let schedule =
+    Database.Schedule.(
+      fixpoint
+        (list
+           [ saturate
+               [ subsumption_rule;
+                 alias_from_used_propagate;
+                 alias_from_used_fields_constructor;
+                 used_from_used_fields_use;
+                 used_from_alias_used;
+                 used_from_constructor_used;
+                 used_from_used_use ];
+             saturate
+               [ used_fields_from_used_fields_alias;
+                 used_fields_from_accessor_used;
+                 used_fields_from_accessor_used_fields ] ]))
+  in
+  let db = Database.set_schedule db schedule in
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;
     datalog = db;

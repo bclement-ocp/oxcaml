@@ -32,19 +32,9 @@ type query
 val create_query :
   variables:variable array ->
   ?existentials:variable array ->
+  ?negate:atom array ->
   atom array ->
   query
-
-(** [action]s are used in rules to perform an effect when the right-hand side of
-    the rule matches. *)
-type action
-
-(** [add_atom atom] adds the fact obtained by substituting variables in [atom]
-    to the database. *)
-val add_atom : atom -> action
-
-(** [action_sequence actions] performs all the actions in [actions] in order. *)
-val action_sequence : action list -> action
 
 type rule
 
@@ -61,6 +51,15 @@ val create_rule :
   variables:variable array ->
   atom ->
   ?existentials:variable array ->
+  ?negate:atom array ->
+  atom array ->
+  rule
+
+val create_deletion_rule :
+  variables:variable array ->
+  atom ->
+  ?existentials:variable array ->
+  ?negate:atom array ->
   atom array ->
   rule
 
@@ -76,6 +75,18 @@ val add_rule : database -> rule -> database
 
 val saturate : database -> database
 
+module Schedule : sig
+  type t
+
+  val saturate : rule list -> t
+
+  val list : t list -> t
+
+  val fixpoint : t -> t
+end
+
+val run_schedule : database -> Schedule.t -> database * Schedule.t
+
 val bind_query : database -> query -> unit
 
 type tuple
@@ -86,8 +97,18 @@ val tuple_get : tuple -> int -> symbol
 
 val query_current : query -> tuple option
 
-val query_advance : query -> unit
+val query_advance : database -> query -> unit
 
 val relation_name : relation -> string
 
 val filter_database : (relation -> bool) -> database -> database
+
+val register_index : database -> relation -> int array -> database
+
+val set_schedule : database -> Schedule.t -> database
+
+val mem_fact : database -> fact -> bool
+
+val print_fact : Format.formatter -> fact -> unit
+
+val table_size : database -> relation -> int

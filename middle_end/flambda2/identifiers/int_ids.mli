@@ -142,7 +142,7 @@ end
 module Name : sig
   type t = private Table_by_int_id.Id.t
 
-  include Container_types.S with type t := t
+  include Container_types.S_plus_iterator with type t := t
 
   val var : Variable.t -> t
 
@@ -164,7 +164,7 @@ module Simple : sig
 
   type exported
 
-  include Container_types.S with type t := t
+  include Container_types.S_plus_iterator with type t := t
 
   val name : Name.t -> t
 

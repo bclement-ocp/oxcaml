@@ -965,7 +965,12 @@ end = struct
     | Leaf (k, d) -> Next (Binding.create k d, rest)
     | Branch (_, _, t0, t1) -> iterator0 t0 (t1 :: rest)
 
-  let iterator t = iterator0 t []
+  let iterator t =
+    match descr t with
+    | Empty -> Done
+    | Leaf (k, d) -> Next (Binding.create k d, [])
+    | Branch (_prefix, bit, t0, t1) ->
+      if bit < 0 then iterator0 t1 [t0] else iterator0 t0 [t1]
 
   let current it = match it with Done -> None | Next (b, _) -> Some b
 
@@ -974,15 +979,12 @@ end = struct
     | Done | Next (_, []) -> Done
     | Next (_, t :: rest) -> iterator0 t rest
 
-  let unsigned_le a b = a - min_int <= b - min_int
-
   let rec seek0 k t rest =
     match descr t, rest with
-    | Leaf (i, d), _ when unsigned_le k i -> Next (Binding.create i d, rest)
+    | Leaf (i, d), _ when k <= i -> Next (Binding.create i d, rest)
     | Branch (prefix, bit, t0, t1), _ when match_prefix k prefix bit ->
       if zero_bit k bit then seek0 k t0 (t1 :: rest) else seek0 k t1 rest
-    | Branch (prefix, _, t0, t1), _ when unsigned_le k prefix ->
-      iterator0 t0 (t1 :: rest)
+    | Branch (prefix, _, t0, t1), _ when k <= prefix -> iterator0 t0 (t1 :: rest)
     | (Empty | Leaf _ | Branch _), [] -> Done
     | (Empty | Leaf _ | Branch _), t' :: rest' -> seek0 k t' rest'
 
@@ -990,7 +992,7 @@ end = struct
     match it with
     | Done -> Done
     | Next (b, rest) -> (
-      if unsigned_le k (Binding.key b)
+      if k <= Binding.key b
       then it
       else match rest with [] -> Done | t' :: rest' -> seek0 k t' rest')
 
