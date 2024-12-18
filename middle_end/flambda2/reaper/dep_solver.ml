@@ -410,12 +410,19 @@ let pp_result ppf (res : result) =
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
 let db_to_uses db field_id_to_field =
+  (* Format.eprintf "%a@." Database.print_database db; *)
   let query_uses =
     Database.create_query
       ~variables:[|"X"|]
       [|Database.create_atom Global_flow_graph.used_pred [|Database.variable "X"|] |]
   in
   Database.bind_query db query_uses;
+  let query_used_field_top =
+    Database.create_query
+      ~variables:[|"X"; "F"|]
+      [|Database.create_atom Global_flow_graph.used_fields_top_rel [|Database.variable "X"; Database.variable "F"|] |]
+  in
+  Database.bind_query db query_used_field_top;
   let query_used_field =
     Database.create_query
       ~variables:[|"X"; "F"; "Y"|]
@@ -433,7 +440,24 @@ let db_to_uses db field_id_to_field =
         loop ()
   in
   loop ();
-  let useless = ref 0 in
+  let rec loop () =
+    match Database.query_current query_used_field_top with
+    | None -> ()
+    | Some t ->
+      let u = (Obj.magic (Database.tuple_get t 0) : Code_id_or_name.t) in
+      let f = Numeric_types.Int.Map.find (Obj.magic (Database.tuple_get t 1) : int) field_id_to_field in
+      let[@local] ff fields =
+        Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
+      in
+      (match Hashtbl.find_opt h u with
+       | Some Bottom -> assert false
+       | Some Top -> ()
+       | None -> ff Field.Map.empty
+       | Some (Fields f) -> ff f);
+      Database.query_advance db query_used_field_top;
+      loop ()
+  in
+  loop ();
   let rec loop () =
     match Database.query_current query_used_field with
     | None -> ()
@@ -453,7 +477,7 @@ let db_to_uses db field_id_to_field =
         in
         (match Hashtbl.find_opt h u with
         | Some Bottom -> assert false
-        | Some Top -> incr useless
+        | Some Top -> () 
         | None -> ff Field.Map.empty
         | Some (Fields f) -> ff f);
         Database.query_advance db query_used_field;

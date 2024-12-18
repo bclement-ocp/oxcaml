@@ -273,6 +273,15 @@ let used_pred =
       Format.fprintf ff "%a" Code_id_or_name.print (Obj.magic a.(0)))
     "used"
 
+let used_fields_top_rel =
+  Database.create_relation ~arity:2
+    ~print:(fun ff a ->
+        Format.fprintf ff "%a, %a" Code_id_or_name.print
+          (Obj.magic a.(0))
+          Field.print
+          (Numeric_types.Int.Map.find a.(1) (let _, f, _ = !rr in f)))
+    "used_fields_top"
+
 let used_fields_rel =
   Database.create_relation ~arity:3
     ~print:(fun ff a ->
@@ -309,9 +318,20 @@ let create () =
         ~variables:[| "source"; "target"; "field"; "v" |]
         (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"v" |])
         ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
         [| alias_rel @| [| ~$"source"; ~$"target" |];
            used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |]
+        |])
+  in
+  let used_fields_top_from_used_fields_alias_top =
+    Database.(
+      create_rule
+        ~variables:[| "source"; "target"; "field" |]
+        (used_fields_top_rel @| [| ~$"target"; ~$"field" |])
+        ~negate:
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
+        [| alias_rel @| [| ~$"source"; ~$"target" |];
+           used_fields_top_rel @| [| ~$"source"; ~$"field" |]
         |])
   in
   let used_from_alias_used =
@@ -327,7 +347,7 @@ let create () =
     Database.(
       create_rule
         ~variables:[| "source"; "field"; "target" |]
-        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
+        (used_fields_top_rel @| [| ~$"target"; ~$"field" |])
         ~negate:[| used_pred @| [| ~$"target" |] |]
         [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
            used_pred @| [| ~$"source" |]
@@ -340,9 +360,21 @@ let create () =
         ~existentials:[| "anyf"; "anyx" |]
         (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
         ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
         [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
            used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |]
+        |])
+  in
+  let used_fields_from_accessor_used_fields_top =
+    Database.(
+      create_rule
+        ~variables:[| "source"; "field"; "target" |]
+        ~existentials:[| "anyf" |]
+        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
+        ~negate:
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
+        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
+           used_fields_top_rel @| [| ~$"source"; ~$"anyf" |]
         |])
   in
   (* constructor *)
@@ -354,6 +386,16 @@ let create () =
         [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |];
            constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
         |])
+  in
+  let used_from_constructor_field_used =
+    Database.(
+      create_rule
+        ~variables:[| "source"; "field"; "target" |]
+        (used_pred @| [| ~$"target" |])
+        [| used_fields_top_rel @| [| ~$"source"; ~$"field" |];
+           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
+        |]
+    )
   in
   let used_from_constructor_used =
     Database.(
@@ -373,6 +415,16 @@ let create () =
            use_rel @| [| ~$"source"; ~$"target" |]
         |])
   in
+  let used_from_used_fields_top_use =
+    Database.(
+      create_rule ~variables:[| "source"; "target" |]
+        ~existentials:[| "anyf" |]
+        (used_pred @| [| ~$ "target" |])
+        [| used_fields_top_rel @| [| ~$"source"; ~$"anyf" |];
+           use_rel @| [| ~$"source"; ~$"target"|]
+        |]
+    )
+  in
   let used_from_used_fields_use =
     Database.(
       create_rule ~variables:[| "source"; "target" |]
@@ -382,7 +434,7 @@ let create () =
            use_rel @| [| ~$"source"; ~$"target" |]
         |])
   in
-  let subsumption_rule =
+  let subsumption_rule_used_used_fields =
     Database.(
       create_deletion_rule
         ~variables:[| "source"; "anyf"; "anyx" |]
@@ -391,21 +443,43 @@ let create () =
            used_pred @| [| ~$"source" |]
         |])
   in
+  let subsumption_rule_used_used_fields_top =
+    Database.(
+      create_deletion_rule
+        ~variables:[| "source"; "anyf" |]
+        (used_fields_top_rel @| [| ~$"source"; ~$"anyf" |])
+        [| used_fields_top_rel @| [| ~$"source"; ~$"anyf" |]; used_pred @| [| ~$"source" |] |]
+    )
+  in
+  let subsumption_rule_used_fields_used_fields_top =
+    Database.(
+      create_deletion_rule
+        ~variables:[| "source"; "field"; "anyx" |]
+        (used_fields_rel @| [| ~$"source"; ~$"field"; ~$"anyx" |])
+        [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"anyx" |]; used_fields_top_rel @| [| ~$"source"; ~$"field" |] |]
+             )
+  in
   let schedule =
     Database.Schedule.(
       fixpoint
         (list
            [ saturate
-               [ subsumption_rule;
+               [ subsumption_rule_used_used_fields;
+                 subsumption_rule_used_used_fields_top;
                  alias_from_used_propagate;
                  alias_from_used_fields_constructor;
                  used_from_used_fields_use;
+                 used_from_used_fields_top_use;
                  used_from_alias_used;
                  used_from_constructor_used;
+                 used_from_constructor_field_used;
                  used_from_used_use ];
              saturate
-               [ used_fields_from_used_fields_alias;
+               [ subsumption_rule_used_fields_used_fields_top;
+                 used_fields_top_from_used_fields_alias_top;
+                 used_fields_from_used_fields_alias;
                  used_fields_from_accessor_used;
+                 used_fields_from_accessor_used_fields_top;
                  used_fields_from_accessor_used_fields ] ]))
   in
   let db = Database.set_schedule db schedule in
