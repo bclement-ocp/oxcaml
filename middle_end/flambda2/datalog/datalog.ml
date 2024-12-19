@@ -75,23 +75,24 @@ end
 module type Heterogenous = sig
   type 'a t
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 end
 
 module Constant = struct
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 end
 
 module Ref = struct
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a ref * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a ref * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 
-  let rec get_hlist : type a. a hlist -> a Constant.hlist = function
+  let rec get_hlist : type a. (a, unit) hlist -> (a, unit) Constant.hlist =
+    function
     | [] -> []
     | r :: rs -> !r :: get_hlist rs
 end
@@ -106,7 +107,7 @@ module Trie : sig
   val value_is_trie : ('a, unit, 'a) is_trie
 
   val map_is_trie :
-    ('t, 'a, 's) is_map -> ('s, 'b, 'v) is_trie -> ('t, 'a * 'b, 'v) is_trie
+    ('t, 'a, 's) is_map -> ('s, 'b, 'v) is_trie -> ('t, 'a -> 'b, 'v) is_trie
 
   val empty : ('t, 'k, 'v) is_trie -> 't
 
@@ -115,7 +116,7 @@ module Trie : sig
   module Iterator : sig
     type _ t =
       | [] : unit t
-      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a * 'b) t
+      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a -> 'b) t
   end
 
   type 'k iterator = 'k Iterator.t
@@ -123,19 +124,22 @@ module Trie : sig
   val map_iterator :
     ('m, 'k, 'v) is_map -> 'm ref -> 'v handler -> 'k Map_iterator.t
 
-  val trie_add : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 'v -> 't -> 't
+  val trie_add :
+    ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 'v -> 't -> 't
 
-  val remove : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 't -> 't
+  val remove : ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 't -> 't
 
-  val find_opt : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 't -> 'v option
+  val find_opt :
+    ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 't -> 'v option
 
-  val find_opt_refs : ('t, 'k, 'v) is_trie -> 'k Ref.hlist -> 't -> 'v option
+  val find_opt_refs :
+    ('t, 'k, 'v) is_trie -> ('k, unit) Ref.hlist -> 't -> 'v option
 
   val iterator : ('m, 'k, 'v) is_trie -> 'v handler -> 'm handler * 'k iterator
 
   val fold :
     ('t, 'k, 'v) is_trie ->
-    ('k Constant.hlist -> 'v -> 'a -> 'a) ->
+    (('k, unit) Constant.hlist -> 'v -> 'a -> 'a) ->
     't ->
     'a ->
     'a
@@ -148,7 +152,7 @@ end = struct
     | Value_is_trie : ('a, unit, 'a) is_trie
     | Map_is_trie :
         ('t, 'a, 's) is_map * ('s, 'b, 'v) is_trie
-        -> ('t, 'a * 'b, 'v) is_trie
+        -> ('t, 'a -> 'b, 'v) is_trie
 
   let value_is_trie = Value_is_trie
 
@@ -203,7 +207,7 @@ end = struct
   module Iterator = struct
     type _ t =
       | [] : unit t
-      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a * 'b) t
+      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a -> 'b) t
   end
 
   type 'a iterator = 'a Iterator.t
@@ -221,7 +225,11 @@ end = struct
 
   let rec fold :
       type t k v a.
-      (t, k, v) is_trie -> (k Constant.hlist -> v -> a -> a) -> t -> a -> a =
+      (t, k, v) is_trie ->
+      ((k, unit) Constant.hlist -> v -> a -> a) ->
+      t ->
+      a ->
+      a =
    fun w f t acc ->
     match w with
     | Value_is_trie -> f [] t acc
@@ -231,7 +239,8 @@ end = struct
         t acc
 
   let rec find_opt :
-      type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> v option =
+      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> t -> v option
+      =
    fun w k t ->
     match k, w with
     | [], Value_is_trie -> Some t
@@ -239,7 +248,7 @@ end = struct
       match Id.Map.find_opt k t with Some s -> find_opt w' k' s | None -> None)
 
   let rec find_opt_refs :
-      type t k v. (t, k, v) is_trie -> k Ref.hlist -> t -> v option =
+      type t k v. (t, k, v) is_trie -> (k, unit) Ref.hlist -> t -> v option =
    fun w k t ->
     match k, w with
     | [], Value_is_trie -> Some t
@@ -250,7 +259,7 @@ end = struct
       | None -> None)
 
   let rec singleton :
-      type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t =
+      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> v -> t =
    fun w k v ->
     match k, w with
     | [], Value_is_trie -> v
@@ -258,7 +267,7 @@ end = struct
       Id.Map.singleton k (singleton w' k' v)
 
   let rec trie_add :
-      type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t -> t =
+      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> v -> t -> t =
    fun w inputs output t ->
     match inputs, w with
     | [], Value_is_trie -> output
@@ -278,7 +287,7 @@ end = struct
       (t, k, v) is_trie ->
       t Id.Map.t ->
       int ->
-      k Constant.hlist ->
+      (k, unit) Constant.hlist ->
       t ->
       t Id.Map.t =
    fun w t k k' m ->
@@ -291,7 +300,8 @@ end = struct
         let m' = remove0 w' m a b m' in
         if is_empty w m' then Id.Map.remove k t else Id.Map.add k m' t)
 
-  let remove : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> t =
+  let remove :
+      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> t -> t =
    fun w k t ->
     match k, w with
     | [], Value_is_trie -> t
@@ -325,7 +335,7 @@ module ColumnType : sig
   type (_, _) any_trie =
     | Any_trie : ('t, 'k, 'v) Trie.is_trie -> ('k, 'v) any_trie
 
-  val is_trie : 'a hlist -> ('a, 'b) any_trie
+  val is_trie : ('a, unit) hlist -> ('a, 'b) any_trie
 
   val provably_equal : 'a t -> 'b t -> ('a, 'b) Type.eq option
 
@@ -338,9 +348,9 @@ end = struct
       is_int : ('a, int) Type.eq
     }
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 
   let is_int { is_int; _ } = is_int
 
@@ -362,7 +372,7 @@ end = struct
   type (_, _) any_trie =
     | Any_trie : ('t, 'k, 'v) Trie.is_trie -> ('k, 'v) any_trie
 
-  let rec is_trie : type a b. a hlist -> (a, b) any_trie =
+  let rec is_trie : type a b. (a, unit) hlist -> (a, b) any_trie =
    fun s ->
     match s with
     | [] -> Any_trie Trie.value_is_trie
@@ -496,13 +506,13 @@ module Table = struct
   type ('t, 'k, 'v) is_table =
     { id : ('t -> 'k -> 'v) Type.Id.t;
       name : string;
-      schema : 'k ColumnType.hlist;
+      schema : ('k, unit) ColumnType.hlist;
       is_trie : ('t, 'k, int) Trie.is_trie
     }
 
   type ('t, 'k, 'v) table =
     { trie : 't;
-      facts : ('k Constant.hlist * 'v) Id.Map.t;
+      facts : (('k, unit) Constant.hlist * 'v) Id.Map.t;
       last_fact_id : int;
       is_table : ('t, 'k, 'v) is_table
     }
@@ -513,8 +523,11 @@ module Table = struct
     Format.fprintf ppf "%s/%d" is_table.name (Type.Id.uid is_table.id)
 
   let rec print_row :
-      type a. a ColumnType.hlist -> Format.formatter -> a Constant.hlist -> unit
-      =
+      type a.
+      (a, unit) ColumnType.hlist ->
+      Format.formatter ->
+      (a, unit) Constant.hlist ->
+      unit =
    fun schema ppf ->
     match schema with
     | [] -> fun [] -> ()
@@ -601,11 +614,11 @@ end
 
 module Iterator = Joined_iterator (Trie.Map_iterator)
 
-type _ cells =
-  | No_cells : unit cells
+type (_, _) cells =
+  | No_cells : ('a, 'a) cells
   | One_cell :
-      'a ColumnType.t * 'a ColumnType.Cell.t * 'b cells
-      -> ('a * 'b) cells
+      'a ColumnType.t * 'a ColumnType.Cell.t * ('b, 'c) cells
+      -> ('a -> 'b, 'c) cells
 
 module Relation = struct
   type (_, _) t = Table : ('t, 'k, 'v) Table.t -> ('k, 'v) t [@@unboxed]
@@ -614,8 +627,8 @@ module Relation = struct
     let (Any_trie is_trie) = ColumnType.is_trie schema in
     Table (Table.create ~name is_trie schema)
 
-  let add_fact (type t k v) (id : (t, k, v) Table.t) (keys : k Constant.hlist)
-      (value : v) table =
+  let add_fact (type t k v) (id : (t, k, v) Table.t)
+      (keys : (k, unit) Constant.hlist) (value : v) table =
     let is_trie = Table.is_trie id in
     match Trie.find_opt is_trie keys table.Table.trie with
     | Some _ -> table
@@ -692,9 +705,9 @@ type incremental =
 module Variable = struct
   type t = string
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : (t * 'a ColumnType.t) * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : (t * 'a ColumnType.t) * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 end
 
 module Term = struct
@@ -706,13 +719,13 @@ module Term = struct
 
   let constant c = Constant c
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
 end
 
 module Atom = struct
-  type _ t = Atom : ('a, 'b) Relation.t * 'a Term.hlist -> 'b t
+  type _ t = Atom : ('a, 'b) Relation.t * ('a, unit) Term.hlist -> 'b t
 
   let create relation args = Atom (relation, args)
 end
@@ -721,7 +734,7 @@ module Query = struct
   type _ instruction =
     | Accept : bool instruction
     | Reject : bool instruction
-    | Mem : ('a, 'b) Relation.t * 'a Ref.hlist -> bool instruction
+    | Mem : ('a, 'b) Relation.t * ('a, unit) Ref.hlist -> bool instruction
     | Ite : bool instruction * 'a instruction * 'a instruction -> 'a instruction
 
   type iterator_ex =
@@ -747,8 +760,8 @@ module Query = struct
   type binder = Bind : ('t, 'k, 'v) Table.t * 't handler list -> binder
 
   type ('p, 'v) t =
-    { parameters : 'p cells;
-      variables : 'v Ref.hlist;
+    { parameters : ('p, unit) cells;
+      variables : ('v, unit) Ref.hlist;
       binders : (int, binder) Hashtbl.t;
       iterators : iterator_ex array;
       last_iterator : int
@@ -864,8 +877,8 @@ module Query = struct
       Misc.fatal_errorf "Variable '%s' is used (with type '%a') but not bound."
         var ColumnType.print ty
 
-  let rec build_var_order : type a. bindings -> a Variable.hlist -> a Ref.hlist
-      =
+  let rec build_var_order :
+      type a b. bindings -> (a, b) Variable.hlist -> (a, b) Ref.hlist =
    fun bindings variables ->
     match variables with
     | [] -> []
@@ -873,7 +886,8 @@ module Query = struct
       let binding = create_binding bindings var (Some column) in
       get_or_create_output binding :: build_var_order bindings other_variables
 
-  let rec process_parameters : type a. bindings -> a Variable.hlist -> a cells =
+  let rec process_parameters :
+      type a b. bindings -> (a, b) Variable.hlist -> (a, b) cells =
    fun bindings parameters ->
     match parameters with
     | [] -> No_cells
@@ -889,7 +903,11 @@ module Query = struct
       One_cell (ty, cell, process_parameters bindings other_params)
 
   let rec compile_atom :
-      type a. bindings -> a ColumnType.hlist -> a Term.hlist -> a Ref.hlist =
+      type a.
+      bindings ->
+      (a, unit) ColumnType.hlist ->
+      (a, unit) Term.hlist ->
+      (a, unit) Ref.hlist =
    fun bindings schema vars ->
     match schema, vars with
     | [], [] -> []
@@ -904,8 +922,8 @@ module Query = struct
       type a.
       bindings ->
       binding_info ->
-      a ColumnType.hlist ->
-      a Term.hlist ->
+      (a, unit) ColumnType.hlist ->
+      (a, unit) Term.hlist ->
       a Trie.iterator ->
       unit =
    fun bindings last_binding schema args iterators ->
@@ -949,8 +967,8 @@ module Query = struct
     | None -> assert false
 
   type ('p, 'v) raw_query =
-    { parameters : 'p cells;
-      variables : 'v Ref.hlist;
+    { parameters : ('p, unit) cells;
+      variables : ('v, unit) Ref.hlist;
       bindings : bindings;
       binders : (int, binder) Hashtbl.t
     }
@@ -959,9 +977,9 @@ module Query = struct
       type a.
       bindings ->
       binding_info ->
-      a ColumnType.hlist ->
-      a Term.hlist ->
-      binding_info * a Ref.hlist =
+      (a, unit) ColumnType.hlist ->
+      (a, unit) Term.hlist ->
+      binding_info * (a, unit) Ref.hlist =
    fun bindings last_binding schema args ->
     match schema, args with
     | [], [] -> last_binding, []
@@ -1074,7 +1092,8 @@ module Query = struct
   let create ~parameters ~variables atoms =
     from_raw (create_raw ~parameters ~variables atoms)
 
-  let rec bind_parameters : type a. a cells -> a Constant.hlist -> unit =
+  let rec bind_parameters :
+      type a. (a, unit) cells -> (a, unit) Constant.hlist -> unit =
    fun cells values ->
     match cells, values with
     | No_cells, [] -> ()
@@ -1210,7 +1229,7 @@ module Rule = struct
     | Rule :
         { query : (unit, unit) Query.t;
           relation : ('k, 'v) Relation.t;
-          arguments : 'k Ref.hlist;
+          arguments : ('k, unit) Ref.hlist;
           value : 'v option
         }
         -> t

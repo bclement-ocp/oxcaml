@@ -1,9 +1,13 @@
-module ColumnType : sig
+module type Heterogenous = sig
   type 'a t
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a * 'b) hlist
+  type (_, _) hlist =
+    | [] : ('a, 'a) hlist
+    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
+end
+
+module ColumnType : sig
+  include Heterogenous
 
   val int : int t
 
@@ -13,13 +17,11 @@ end
 module Relation : sig
   type ('k, 'v) t
 
-  val create : name:string -> 'k ColumnType.hlist -> ('k, 'v) t
+  val create : name:string -> ('k, unit) ColumnType.hlist -> ('k, 'v) t
 end
 
 module Constant : sig
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a * 'b hlist -> ('a * 'b) hlist
+  include Heterogenous with type 'a t := 'a
 end
 
 type database
@@ -27,56 +29,50 @@ type database
 val empty : database
 
 val add_fact :
-  ('a, unit) Relation.t -> 'a Constant.hlist -> database -> database
+  ('a, unit) Relation.t -> ('a, unit) Constant.hlist -> database -> database
 
 module Variable : sig
   type t = string
 
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : (t * 'a ColumnType.t) * 'b hlist -> ('a * 'b) hlist
+  include Heterogenous with type 'a t := t * 'a ColumnType.t
 end
 
 module Term : sig
-  type 'a t
+  include Heterogenous
 
   val variable : Variable.t -> 'a t
 
   val constant : 'a -> 'a t
-
-  type _ hlist =
-    | [] : unit hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a * 'b) hlist
 end
 
 module Atom : sig
   type 'a t
 
-  val create : ('k, 'v) Relation.t -> 'k Term.hlist -> 'v t
+  val create : ('k, 'v) Relation.t -> ('k, unit) Term.hlist -> 'v t
 end
 
 module Query : sig
   type ('p, 'v) t
 
   val create :
-    parameters:'p Variable.hlist ->
-    variables:'v Variable.hlist ->
+    parameters:('p, unit) Variable.hlist ->
+    variables:('v, unit) Variable.hlist ->
     unit Atom.t list ->
     ('p, 'v) t
 
   val fold :
     ('p, 'v) t ->
-    'p Constant.hlist ->
+    ('p, unit) Constant.hlist ->
     database ->
     init:'a ->
-    f:('v Constant.hlist -> 'a -> 'a) ->
+    f:(('v, unit) Constant.hlist -> 'a -> 'a) ->
     'a
 
   val iter :
     ('p, 'v) t ->
-    'p Constant.hlist ->
+    ('p, unit) Constant.hlist ->
     database ->
-    f:('v Constant.hlist -> unit) ->
+    f:(('v, unit) Constant.hlist -> unit) ->
     unit
 end
 
