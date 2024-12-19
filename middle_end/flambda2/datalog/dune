@@ -9,7 +9,5 @@
  (flags
   (:standard
    -open
-   Flambda2_algorithms
-   -open
-   Flambda2_identifiers))
- (libraries ocamlcommon flambda2_algorithms flambda2_identifiers))
+   Flambda2_algorithms))
+ (libraries ocamlcommon flambda2_algorithms))

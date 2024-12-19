@@ -195,7 +195,8 @@ end
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
-    mutable datalog : Database.database;
+    mutable datalog : Datalog.database;
+    schedule : Datalog.Schedule.t;
     mutable field_map : int Field.Map.t * Field.t Numeric_types.Int.Map.t * int
   }
 
@@ -212,255 +213,184 @@ let pp_used_graph ppf (graph : graph) =
 
 let rr = ref (Field.Map.empty, Numeric_types.Int.Map.empty, 0)
 
+let field =
+  Datalog.ColumnType.make "field" ~print:(fun ppf i ->
+      let _, rev_map, _ = !rr in
+      Field.print ppf (Numeric_types.Int.Map.find i rev_map))
+
+let field_datalog_type = field
+
 let alias_rel =
-  Database.create_relation ~arity:2
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Code_id_or_name.print
-        (Obj.magic a.(1)))
-    "alias"
+  Datalog.Relation.create ~name:"alias"
+    [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
 
 let use_rel =
-  Database.create_relation ~arity:2
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Code_id_or_name.print
-        (Obj.magic a.(1)))
-    "use"
+  Datalog.Relation.create ~name:"use"
+    [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
 
 let accessor_rel =
-  Database.create_relation ~arity:3
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Field.print
-        (Numeric_types.Int.Map.find a.(1)
-           (let _, f, _ = !rr in
-            f))
-        Code_id_or_name.print
-        (Obj.magic a.(2)))
-    "accessor"
+  Datalog.Relation.create ~name:"accessor"
+    [ Code_id_or_name.datalog_column_type;
+      field;
+      Code_id_or_name.datalog_column_type ]
 
 let constructor_rel =
-  Database.create_relation ~arity:3
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Field.print
-        (Numeric_types.Int.Map.find a.(1)
-           (let _, f, _ = !rr in
-            f))
-        Code_id_or_name.print
-        (Obj.magic a.(2)))
-    "constructor"
+  Datalog.Relation.create ~name:"constructor"
+    [ Code_id_or_name.datalog_column_type;
+      field;
+      Code_id_or_name.datalog_column_type ]
 
 let propagate_rel =
-  Database.create_relation ~arity:3
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Code_id_or_name.print
-        (Obj.magic a.(1))
-        Code_id_or_name.print
-        (Obj.magic a.(2)))
-    "propagate"
+  Datalog.Relation.create ~name:"propagate"
+    [ Code_id_or_name.datalog_column_type;
+      Code_id_or_name.datalog_column_type;
+      Code_id_or_name.datalog_column_type ]
 
 let used_pred =
-  Database.create_relation ~arity:1
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a" Code_id_or_name.print (Obj.magic a.(0)))
-    "used"
+  Datalog.Relation.create ~name:"used" [Code_id_or_name.datalog_column_type]
 
 let used_fields_top_rel =
-  Database.create_relation ~arity:2
-    ~print:(fun ff a ->
-        Format.fprintf ff "%a, %a" Code_id_or_name.print
-          (Obj.magic a.(0))
-          Field.print
-          (Numeric_types.Int.Map.find a.(1) (let _, f, _ = !rr in f)))
-    "used_fields_top"
+  Datalog.Relation.create ~name:"used_fields_top"
+    [Code_id_or_name.datalog_column_type; field]
 
 let used_fields_rel =
-  Database.create_relation ~arity:3
-    ~print:(fun ff a ->
-      Format.fprintf ff "%a, %a, %a" Code_id_or_name.print
-        (Obj.magic a.(0))
-        Field.print
-        (Numeric_types.Int.Map.find a.(1)
-           (let _, f, _ = !rr in
-            f))
-        Code_id_or_name.print
-        (Obj.magic a.(2)))
-    "used_fields"
+  Datalog.Relation.create ~name:"used_fields"
+    [ Code_id_or_name.datalog_column_type;
+      field;
+      Code_id_or_name.datalog_column_type ]
 
-let ( ~$ ) = Database.variable
+let ( ~$ ) = Datalog.Term.variable
 
-let ( @| ) = Database.create_atom
+let ( @| ) = Datalog.Atom.create
 
 let create () =
-  let db = Database.create () in
   (* propagate *)
   let alias_from_used_propagate =
-    Database.(
-      create_rule
-        ~variables:[| "if_defined"; "source"; "target" |]
-        (alias_rel @| [| ~$"source"; ~$"target" |])
-        [| used_pred @| [| ~$"if_defined" |];
-           propagate_rel @| [| ~$"if_defined"; ~$"source"; ~$"target" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["if_defined"; "source"; "target"]
+      (alias_rel @| [~$"source"; ~$"target"])
+      [ used_pred @| [~$"if_defined"];
+        propagate_rel @| [~$"if_defined"; ~$"source"; ~$"target"] ]
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "target"; "field"; "v" |]
-        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"v" |])
-        ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |]; used_fields_top_rel @| [| ~$"target"; ~$"field"|] |]
-        [| alias_rel @| [| ~$"source"; ~$"target" |];
-           used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "target"; "field"; "v"]
+      (used_fields_rel @| [~$"target"; ~$"field"; ~$"v"])
+      ~negate:
+        [ used_pred @| [~$"target"];
+          used_pred @| [~$"source"];
+          used_fields_top_rel @| [~$"target"; ~$"field"] ]
+      [ alias_rel @| [~$"source"; ~$"target"];
+        used_fields_rel @| [~$"source"; ~$"field"; ~$"v"] ]
   in
   let used_fields_top_from_used_fields_alias_top =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "target"; "field" |]
-        (used_fields_top_rel @| [| ~$"target"; ~$"field" |])
-        ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |] |]
-        [| alias_rel @| [| ~$"source"; ~$"target" |];
-           used_fields_top_rel @| [| ~$"source"; ~$"field" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "target"; "field"]
+      (used_fields_top_rel @| [~$"target"; ~$"field"])
+      ~negate:[used_pred @| [~$"target"]; used_pred @| [~$"source"]]
+      [ alias_rel @| [~$"source"; ~$"target"];
+        used_fields_top_rel @| [~$"source"; ~$"field"] ]
   in
   let used_from_alias_used =
-    Database.(
-      create_rule ~variables:[| "source"; "target" |]
-        (used_pred @| [| ~$"target" |])
-        [| alias_rel @| [| ~$"source"; ~$"target" |];
-           used_pred @| [| ~$"source" |]
-        |])
+    Datalog.Rule.create ~variables:["source"; "target"]
+      (used_pred @| [~$"target"])
+      [alias_rel @| [~$"source"; ~$"target"]; used_pred @| [~$"source"]]
   in
   (* accessor *)
   let used_fields_from_accessor_used =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target" |]
-        (used_fields_top_rel @| [| ~$"target"; ~$"field" |])
-        ~negate:[| used_pred @| [| ~$"target" |] |]
-        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
-           used_pred @| [| ~$"source" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"]
+      (used_fields_top_rel @| [~$"target"; ~$"field"])
+      ~negate:[used_pred @| [~$"target"]]
+      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
+        used_pred @| [~$"source"] ]
   in
   let used_fields_from_accessor_used_fields =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target" |]
-        ~existentials:[| "anyf"; "anyx" |]
-        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
-        ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
-        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
-           used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"]
+      ~existentials:["anyf"; "anyx"]
+      (used_fields_rel @| [~$"target"; ~$"field"; ~$"source"])
+      ~negate:
+        [ used_pred @| [~$"target"];
+          used_pred @| [~$"source"];
+          used_fields_top_rel @| [~$"target"; ~$"field"] ]
+      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
+        used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"] ]
   in
   let used_fields_from_accessor_used_fields_top =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target" |]
-        ~existentials:[| "anyf" |]
-        (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"source" |])
-        ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
-        [| accessor_rel @| [| ~$"source"; ~$"field"; ~$"target" |];
-           used_fields_top_rel @| [| ~$"source"; ~$"anyf" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"]
+      ~existentials:["anyf"]
+      (used_fields_rel @| [~$"target"; ~$"field"; ~$"source"])
+      ~negate:
+        [ used_pred @| [~$"target"];
+          used_pred @| [~$"source"];
+          used_fields_top_rel @| [~$"target"; ~$"field"] ]
+      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
+        used_fields_top_rel @| [~$"source"; ~$"anyf"] ]
   in
   (* constructor *)
   let alias_from_used_fields_constructor =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target"; "v" |]
-        (alias_rel @| [| ~$"v"; ~$"target" |])
-        [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |];
-           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"; "v"]
+      (alias_rel @| [~$"v"; ~$"target"])
+      [ used_fields_rel @| [~$"source"; ~$"field"; ~$"v"];
+        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
   in
   let used_from_constructor_field_used =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target" |]
-        (used_pred @| [| ~$"target" |])
-        [| used_fields_top_rel @| [| ~$"source"; ~$"field" |];
-           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
-        |]
-    )
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"]
+      (used_pred @| [~$"target"])
+      [ used_fields_top_rel @| [~$"source"; ~$"field"];
+        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
   in
   let used_from_constructor_used =
-    Database.(
-      create_rule
-        ~variables:[| "source"; "field"; "target" |]
-        (used_pred @| [| ~$"target" |])
-        [| used_pred @| [| ~$"source" |];
-           constructor_rel @| [| ~$"source"; ~$"field"; ~$"target" |]
-        |])
+    Datalog.Rule.create
+      ~variables:["source"; "field"; "target"]
+      (used_pred @| [~$"target"])
+      [ used_pred @| [~$"source"];
+        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
   in
   (* use *)
   let used_from_used_use =
-    Database.(
-      create_rule ~variables:[| "source"; "target" |]
-        (used_pred @| [| ~$"target" |])
-        [| used_pred @| [| ~$"source" |];
-           use_rel @| [| ~$"source"; ~$"target" |]
-        |])
+    Datalog.Rule.create ~variables:["source"; "target"]
+      (used_pred @| [~$"target"])
+      [used_pred @| [~$"source"]; use_rel @| [~$"source"; ~$"target"]]
   in
   let used_from_used_fields_top_use =
-    Database.(
-      create_rule ~variables:[| "source"; "target" |]
-        ~existentials:[| "anyf" |]
-        (used_pred @| [| ~$ "target" |])
-        [| used_fields_top_rel @| [| ~$"source"; ~$"anyf" |];
-           use_rel @| [| ~$"source"; ~$"target"|]
-        |]
-    )
+    Datalog.Rule.create ~variables:["source"; "target"] ~existentials:["anyf"]
+      (used_pred @| [~$"target"])
+      [ used_fields_top_rel @| [~$"source"; ~$"anyf"];
+        use_rel @| [~$"source"; ~$"target"] ]
   in
   let used_from_used_fields_use =
-    Database.(
-      create_rule ~variables:[| "source"; "target" |]
-        ~existentials:[| "anyf"; "anyx" |]
-        (used_pred @| [| ~$"target" |])
-        [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
-           use_rel @| [| ~$"source"; ~$"target" |]
-        |])
+    Datalog.Rule.create ~variables:["source"; "target"]
+      ~existentials:["anyf"; "anyx"]
+      (used_pred @| [~$"target"])
+      [ used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"];
+        use_rel @| [~$"source"; ~$"target"] ]
   in
   let subsumption_rule_used_used_fields =
-    Database.(
-      create_deletion_rule
-        ~variables:[| "source"; "anyf"; "anyx" |]
-        (used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |])
-        [| used_fields_rel @| [| ~$"source"; ~$"anyf"; ~$"anyx" |];
-           used_pred @| [| ~$"source" |]
-        |])
+    Datalog.Rule.delete ~variables:["source"; "anyf"; "anyx"]
+      (used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"])
+      [ used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"];
+        used_pred @| [~$"source"] ]
   in
   let subsumption_rule_used_used_fields_top =
-    Database.(
-      create_deletion_rule
-        ~variables:[| "source"; "anyf" |]
-        (used_fields_top_rel @| [| ~$"source"; ~$"anyf" |])
-        [| used_fields_top_rel @| [| ~$"source"; ~$"anyf" |]; used_pred @| [| ~$"source" |] |]
-    )
+    Datalog.Rule.delete ~variables:["source"; "anyf"]
+      (used_fields_top_rel @| [~$"source"; ~$"anyf"])
+      [used_fields_top_rel @| [~$"source"; ~$"anyf"]; used_pred @| [~$"source"]]
   in
   let subsumption_rule_used_fields_used_fields_top =
-    Database.(
-      create_deletion_rule
-        ~variables:[| "source"; "field"; "anyx" |]
-        (used_fields_rel @| [| ~$"source"; ~$"field"; ~$"anyx" |])
-        [| used_fields_rel @| [| ~$"source"; ~$"field"; ~$"anyx" |]; used_fields_top_rel @| [| ~$"source"; ~$"field" |] |]
-             )
+    Datalog.Rule.delete
+      ~variables:["source"; "field"; "anyx"]
+      (used_fields_rel @| [~$"source"; ~$"field"; ~$"anyx"])
+      [ used_fields_rel @| [~$"source"; ~$"field"; ~$"anyx"];
+        used_fields_top_rel @| [~$"source"; ~$"field"] ]
   in
   let schedule =
-    Database.Schedule.(
+    Datalog.Schedule.(
       fixpoint
         (list
            [ saturate
@@ -485,10 +415,10 @@ let create () =
                  used_fields_from_accessor_used_fields_top;
                  used_fields_from_accessor_used_fields ] ]))
   in
-  let db = Database.set_schedule db schedule in
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;
-    datalog = db;
+    datalog = Datalog.empty;
+    schedule;
     field_map = Field.Map.empty, Numeric_types.Int.Map.empty, 0
   }
 
@@ -504,53 +434,26 @@ let get_field t field =
     rr := t.field_map;
     sz
 
+let add_fact t rel args = t.datalog <- Datalog.add_fact rel args t.datalog
+
 let insert t (k : Code_id_or_name.t) v =
   let tbl = t.name_to_dep in
   (match Hashtbl.find_opt tbl k with
   | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
   | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s));
   match (v : Dep.t) with
-  | Alias { target } ->
-    t.datalog
-      <- Database.add_fact t.datalog
-           (Database.create_fact alias_rel
-              [| Database.create_symbol (k :> int);
-                 Database.create_symbol (target :> int)
-              |])
-  | Use { target } ->
-    t.datalog
-      <- Database.add_fact t.datalog
-           (Database.create_fact use_rel
-              [| Database.create_symbol (k :> int);
-                 Database.create_symbol (target :> int)
-              |])
+  | Alias { target } -> add_fact t alias_rel [k; Code_id_or_name.name target]
+  | Use { target } -> add_fact t use_rel [k; target]
   | Accessor { relation; target } ->
     let field = get_field t relation in
-    t.datalog
-      <- Database.add_fact t.datalog
-           (Database.create_fact accessor_rel
-              [| Database.create_symbol (k :> int);
-                 Database.create_symbol field;
-                 Database.create_symbol (target :> int)
-              |])
+    add_fact t accessor_rel [k; field; Code_id_or_name.name target]
   | Constructor { relation; target } ->
     let field = get_field t relation in
-    t.datalog
-      <- Database.add_fact t.datalog
-           (Database.create_fact constructor_rel
-              [| Database.create_symbol (k :> int);
-                 Database.create_symbol field;
-                 Database.create_symbol (target :> int)
-              |])
+    add_fact t constructor_rel [k; field; target]
   | Alias_if_def _ -> ()
   | Propagate { target; source } ->
-    t.datalog
-      <- Database.add_fact t.datalog
-           (Database.create_fact propagate_rel
-              [| Database.create_symbol (k :> int);
-                 Database.create_symbol (source :> int);
-                 Database.create_symbol (target :> int)
-              |])
+    add_fact t propagate_rel
+      [k; Code_id_or_name.name source; Code_id_or_name.name target]
 
 let inserts t k v =
   (*let tbl = t.name_to_dep in match Hashtbl.find_opt tbl k with | None ->
@@ -575,7 +478,4 @@ let add_deps t bound_to deps = inserts t bound_to deps
 
 let add_use t (dep : Code_id_or_name.t) =
   Hashtbl.replace t.used dep ();
-  t.datalog
-    <- Database.add_fact t.datalog
-         (Database.create_fact used_pred
-            [| Database.create_symbol (dep :> int) |])
+  add_fact t used_pred [dep]

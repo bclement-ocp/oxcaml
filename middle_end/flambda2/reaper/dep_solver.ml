@@ -412,81 +412,67 @@ let pp_result ppf (res : result) =
 let db_to_uses db field_id_to_field =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let query_uses =
-    Database.create_query
-      ~variables:[|"X"|]
-      [|Database.create_atom Global_flow_graph.used_pred [|Database.variable "X"|] |]
+    Datalog.Query.create ~parameters:[]
+      ~variables:["X", Code_id_or_name.datalog_column_type]
+      [ Datalog.Atom.create Global_flow_graph.used_pred
+          [Datalog.Term.variable "X"] ]
   in
-  Database.bind_query db query_uses;
   let query_used_field_top =
-    Database.create_query
-      ~variables:[|"X"; "F"|]
-      [|Database.create_atom Global_flow_graph.used_fields_top_rel [|Database.variable "X"; Database.variable "F"|] |]
+    Datalog.Query.create ~parameters:[]
+      ~variables:
+        [ "X", Code_id_or_name.datalog_column_type;
+          "F", Global_flow_graph.field_datalog_type ]
+      [ Datalog.Atom.create Global_flow_graph.used_fields_top_rel
+          [Datalog.Term.variable "X"; Datalog.Term.variable "F"] ]
   in
-  Database.bind_query db query_used_field_top;
   let query_used_field =
-    Database.create_query
-      ~variables:[|"X"; "F"; "Y"|]
-      [|Database.create_atom Global_flow_graph.used_fields_rel [|Database.variable "X"; Database.variable "F"; Database.variable "Y"|] |]
+    Datalog.Query.create ~parameters:[]
+      ~variables:
+        [ "X", Code_id_or_name.datalog_column_type;
+          "F", Global_flow_graph.field_datalog_type;
+          "Y", Code_id_or_name.datalog_column_type ]
+      [ Datalog.Atom.create Global_flow_graph.used_fields_rel
+          [ Datalog.Term.variable "X";
+            Datalog.Term.variable "F";
+            Datalog.Term.variable "Y" ] ]
   in
-  Database.bind_query db query_used_field;
   let h = Hashtbl.create 17 in
-  let rec loop () =
-    match Database.query_current query_uses with
-    | None -> ()
-    | Some t ->
-        let u = (Obj.magic (Database.tuple_get t 0) : Code_id_or_name.t) in
-        Hashtbl.replace h u Top;
-        Database.query_advance db query_uses;
-        loop ()
-  in
-  loop ();
-  let rec loop () =
-    match Database.query_current query_used_field_top with
-    | None -> ()
-    | Some t ->
-      let u = (Obj.magic (Database.tuple_get t 0) : Code_id_or_name.t) in
-      let f = Numeric_types.Int.Map.find (Obj.magic (Database.tuple_get t 1) : int) field_id_to_field in
+  Datalog.Query.iter query_uses [] db ~f:(fun [u] -> Hashtbl.replace h u Top);
+  Datalog.Query.iter query_used_field_top [] db ~f:(fun [u; f] ->
+      let f = Numeric_types.Int.Map.find f field_id_to_field in
       let[@local] ff fields =
         Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
       in
-      (match Hashtbl.find_opt h u with
-       | Some Bottom -> assert false
-       | Some Top -> ()
-       | None -> ff Field.Map.empty
-       | Some (Fields f) -> ff f);
-      Database.query_advance db query_used_field_top;
-      loop ()
-  in
-  loop ();
-  let rec loop () =
-    match Database.query_current query_used_field with
-    | None -> ()
-    | Some t ->
-        let u = (Obj.magic (Database.tuple_get t 0) : Code_id_or_name.t) in
-        let[@local] ff fields =
-          let f = Numeric_types.Int.Map.find (Obj.magic (Database.tuple_get t 1) : int) field_id_to_field in
-          let v = (Obj.magic (Database.tuple_get t 2) : Code_id_or_name.t) in
-          let v_top = Hashtbl.find_opt h v = Some Top in
-          let fields = if v_top then Field.Map.add f Field_top fields else
-          match Field.Map.find_opt f fields with
-            | None -> Field.Map.add f (Field_vals (Code_id_or_name.Set.singleton v)) fields
+      match Hashtbl.find_opt h u with
+      | Some Bottom -> assert false
+      | Some Top -> ()
+      | None -> ff Field.Map.empty
+      | Some (Fields f) -> ff f);
+  Datalog.Query.iter query_used_field [] db ~f:(fun [u; f; v] ->
+      let[@local] ff fields =
+        let f = Numeric_types.Int.Map.find f field_id_to_field in
+        let v_top = Hashtbl.find_opt h v = Some Top in
+        let fields =
+          if v_top
+          then Field.Map.add f Field_top fields
+          else
+            match Field.Map.find_opt f fields with
+            | None ->
+              Field.Map.add f
+                (Field_vals (Code_id_or_name.Set.singleton v))
+                fields
             | Some Field_top -> fields
-            | Some (Field_vals w) -> Field.Map.add f (Field_vals (Code_id_or_name.Set.add v w)) fields
-          in
-          Hashtbl.replace h u (Fields fields)
+            | Some (Field_vals w) ->
+              Field.Map.add f (Field_vals (Code_id_or_name.Set.add v w)) fields
         in
-        (match Hashtbl.find_opt h u with
-        | Some Bottom -> assert false
-        | Some Top -> () 
-        | None -> ff Field.Map.empty
-        | Some (Fields f) -> ff f);
-        Database.query_advance db query_used_field;
-        loop ()
-  in
-  loop ();
+        Hashtbl.replace h u (Fields fields)
+      in
+      match Hashtbl.find_opt h u with
+      | Some Bottom -> assert false
+      | Some Top -> ()
+      | None -> ff Field.Map.empty
+      | Some (Fields f) -> ff f);
   h
-
- 
 
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in
@@ -500,20 +486,34 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   let t1 = Unix.gettimeofday () in
   Gc.full_major ();
   let t1' = Unix.gettimeofday () in
-  let db = Database.saturate graph_new.datalog in
+  let db = Datalog.Schedule.run graph_new.schedule graph_new.datalog in
   let t2 = Unix.gettimeofday () in
-  Format.eprintf "EXISTING: %f, DATALOG: %f, SPEEDUP: %f@." (t1 -. t0) (t2 -. t1') ((t1 -. t0) /. (t2 -. t1'));
-  let result2 = db_to_uses db (let (_, f, _) = graph_new.field_map in f) in
-  (* Format.eprintf "OLD:@.%a@.@.NEW:@.%a@.@." pp_result result pp_result result2;
-  Format.eprintf "DB:@.%a@." Database.print_database db; *)
-  (* Format.eprintf "OLD RESULT:@.%a@."  pp_result result;
-  Format.eprintf "NEW_RESULT:@.%a@." Database.print_database (Database.filter_database (fun relation -> List.mem (Database.relation_name relation) ["used"; "used_fields"]) _db); *)
+  Format.eprintf "EXISTING: %f, DATALOG: %f, SPEEDUP: %f@." (t1 -. t0)
+    (t2 -. t1')
+    ((t1 -. t0) /. (t2 -. t1'));
+  let result2 =
+    db_to_uses db
+      (let _, f, _ = graph_new.field_map in
+       f)
+  in
+  (* Format.eprintf "OLD:@.%a@.@.NEW:@.%a@.@." pp_result result pp_result
+     result2; Format.eprintf "DB:@.%a@." Database.print_database db; *)
+  (* Format.eprintf "OLD RESULT:@.%a@." pp_result result; Format.eprintf
+     "NEW_RESULT:@.%a@." Database.print_database (Database.filter_database (fun
+     relation -> List.mem (Database.relation_name relation) ["used";
+     "used_fields"]) _db); *)
   Solver.check_fixpoint graph_new uses result;
-  Hashtbl.iter (fun k v ->
+  Hashtbl.iter
+    (fun k v ->
       let v2 = Hashtbl.find result2 k in
-      if not (Graph.less_equal_elt v v2 && Graph.less_equal_elt v2 v) then
-        Misc.fatal_errorf "KEY %a OLD %a NEW %a@." Code_id_or_name.print k pp_elt v pp_elt v2
-    ) result;
-  Hashtbl.iter (fun k _v ->
-      let _v2 = Hashtbl.find result k in ()) result2;
+      if not (Graph.less_equal_elt v v2 && Graph.less_equal_elt v2 v)
+      then
+        Misc.fatal_errorf "KEY %a OLD %a NEW %a@." Code_id_or_name.print k
+          pp_elt v pp_elt v2)
+    result;
+  Hashtbl.iter
+    (fun k _v ->
+      let _v2 = Hashtbl.find result k in
+      ())
+    result2;
   result

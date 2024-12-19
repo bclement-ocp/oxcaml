@@ -79,7 +79,8 @@ end
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
-    mutable datalog : Database.database;
+    mutable datalog : Datalog.database;
+    schedule : Datalog.Schedule.t;
     mutable field_map : int Field.Map.t * Field.t Numeric_types.Int.Map.t * int
   }
 
@@ -98,8 +99,14 @@ val add_deps : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 
 val add_use : graph -> Code_id_or_name.t -> unit
 
-val used_pred : Database.relation
+val used_pred : (Code_id_or_name.t * unit, unit) Datalog.Relation.t
 
-val used_fields_rel : Database.relation
+val used_fields_rel :
+  ( Code_id_or_name.t * (int * (Code_id_or_name.t * unit)),
+    unit )
+  Datalog.Relation.t
 
-val used_fields_top_rel : Database.relation
+val used_fields_top_rel :
+  (Code_id_or_name.t * (int * unit), unit) Datalog.Relation.t
+
+val field_datalog_type : int Datalog.ColumnType.t

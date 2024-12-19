@@ -258,7 +258,9 @@ end
 module Code_id_or_name : sig
   type t = private Table_by_int_id.Id.t
 
-  include Container_types.S with type t := t
+  include Container_types.S_plus_iterator with type t := t
+
+  val datalog_column_type : t Datalog.ColumnType.t
 
   val code_id : Code_id.t -> t
 

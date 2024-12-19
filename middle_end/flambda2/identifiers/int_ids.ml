@@ -912,6 +912,8 @@ module Code_id_or_name = struct
 
   module Set = Tree.Set
   module Map = Tree.Map
+
+  let datalog_column_type = Datalog.ColumnType.make "code_id_or_name" ~print
 end
 
 let initialise () =
