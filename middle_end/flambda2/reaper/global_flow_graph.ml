@@ -280,7 +280,9 @@ let create () =
       ~negate:
         [ used_pred @| [~$"target"];
           used_pred @| [~$"source"];
-          used_fields_top_rel @| [~$"target"; ~$"field"] ]
+          used_fields_top_rel @| [~$"target"; ~$"field"] ;
+          used_fields_top_rel @| [~$"source"; ~$"field"] ;
+          ]
       [ alias_rel @| [~$"source"; ~$"target"];
         used_fields_rel @| [~$"source"; ~$"field"; ~$"v"] ]
   in
