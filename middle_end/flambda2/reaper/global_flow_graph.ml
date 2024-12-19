@@ -318,7 +318,7 @@ let create () =
         ~variables:[| "source"; "target"; "field"; "v" |]
         (used_fields_rel @| [| ~$"target"; ~$"field"; ~$"v" |])
         ~negate:
-          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |] |]
+          [| used_pred @| [| ~$"target" |]; used_pred @| [| ~$"source" |]; used_fields_top_rel @| [| ~$"target"; ~$"field" |]; used_fields_top_rel @| [| ~$"target"; ~$"field"|] |]
         [| alias_rel @| [| ~$"source"; ~$"target" |];
            used_fields_rel @| [| ~$"source"; ~$"field"; ~$"v" |]
         |])
@@ -474,11 +474,14 @@ let create () =
                  used_from_constructor_used;
                  used_from_constructor_field_used;
                  used_from_used_use ];
-             saturate
-               [ subsumption_rule_used_fields_used_fields_top;
+             saturate [
+                 subsumption_rule_used_fields_used_fields_top;
                  used_fields_top_from_used_fields_alias_top;
-                 used_fields_from_used_fields_alias;
                  used_fields_from_accessor_used;
+             ];
+             saturate
+               [ 
+                 used_fields_from_used_fields_alias;
                  used_fields_from_accessor_used_fields_top;
                  used_fields_from_accessor_used_fields ] ]))
   in
