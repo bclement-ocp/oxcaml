@@ -56,8 +56,8 @@ module Query : sig
 
   val create :
     parameters:('p, unit) Variable.hlist ->
-    variables:('v, unit) Variable.hlist ->
-    unit Atom.t list ->
+    ('v, unit) Variable.hlist ->
+    (('p, unit) Term.hlist -> ('v, unit) Term.hlist -> unit Atom.t list) ->
     ('p, 'v) t
 
   val fold :

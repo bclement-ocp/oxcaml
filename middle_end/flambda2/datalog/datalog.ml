@@ -722,6 +722,10 @@ module Term = struct
   type (_, _) hlist =
     | [] : ('a, 'a) hlist
     | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
+
+  let rec variables : type a b. (a, b) Variable.hlist -> (a, b) hlist = function
+    | [] -> []
+    | (var, _) :: vars -> Variable var :: variables vars
 end
 
 module Atom = struct
@@ -878,7 +882,7 @@ module Query = struct
         var ColumnType.print ty
 
   let rec build_var_order :
-      type a b. bindings -> (a, b) Variable.hlist -> (a, b) Ref.hlist =
+      type a. bindings -> (a, unit) Variable.hlist -> (a, unit) Ref.hlist =
    fun bindings variables ->
     match variables with
     | [] -> []
@@ -1002,10 +1006,7 @@ module Query = struct
         in
         last_binding, get_or_create_output var_info :: refs)
 
-  let create_raw ~parameters ~variables ?(existentials = []) ?(negate = [])
-      (atoms : unit Atom.t list) : _ =
-    (* First we create all the binding levels, in order. *)
-    let bindings = create_bindings () in
+  let populate_bindings ~parameters ~variables ?(existentials = []) bindings =
     (* Compute the cells in which to pass parameter values. *)
     let parameter_cells = process_parameters bindings parameters in
     (* Create bindings for variables, in order. *)
@@ -1013,6 +1014,10 @@ module Query = struct
     List.iter
       (fun var -> ignore (create_binding bindings var None))
       existentials;
+    parameter_cells, output
+
+  let create_raw bindings ~parameters:parameter_cells ~variables:output
+      ?(negate = []) (atoms : unit Atom.t list) : _ =
     let binders = Hashtbl.create 17 in
     List.iter
       (fun (Atom.Atom (Table relation, args)) ->
@@ -1089,8 +1094,18 @@ module Query = struct
     let iterators, last_iterator = make_iterators bindings in
     { parameters; variables; binders; iterators; last_iterator }
 
-  let create ~parameters ~variables atoms =
-    from_raw (create_raw ~parameters ~variables atoms)
+  let _create ~parameters ~variables atoms =
+    let bindings = create_bindings () in
+    let parameters, variables =
+      populate_bindings ~parameters ~variables bindings
+    in
+    from_raw (create_raw bindings ~parameters ~variables atoms)
+
+  let create ~parameters variables f =
+    let bindings = create_bindings () in
+    let cells, output = populate_bindings ~parameters ~variables bindings in
+    let query = f (Term.variables parameters) (Term.variables variables) in
+    from_raw (create_raw bindings ~parameters:cells ~variables:output query)
 
   let rec bind_parameters :
       type a. (a, unit) cells -> (a, unit) Constant.hlist -> unit =
@@ -1236,9 +1251,13 @@ module Rule = struct
 
   let create ~variables ?(existentials = []) conclusion value ?negate hypotheses
       =
+    let bindings = Query.create_bindings () in
+    let parameters, variables =
+      Query.populate_bindings ~parameters:[] ~variables:[]
+        ~existentials:(variables @ existentials) bindings
+    in
     let raw =
-      Query.create_raw ~parameters:[] ~variables:[] ?negate
-        ~existentials:(variables @ existentials) hypotheses
+      Query.create_raw bindings ~parameters ~variables ?negate hypotheses
     in
     let (Atom.Atom (Table table, args)) = conclusion in
     let arguments = Query.compile_atom raw.bindings (Table.schema table) args in

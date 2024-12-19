@@ -413,28 +413,23 @@ let db_to_uses db field_id_to_field =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let query_uses =
     Datalog.Query.create ~parameters:[]
-      ~variables:["X", Code_id_or_name.datalog_column_type]
-      [ Datalog.Atom.create Global_flow_graph.used_pred
-          [Datalog.Term.variable "X"] ]
+      ["X", Code_id_or_name.datalog_column_type]
+      (fun [] [x] -> [Datalog.Atom.create Global_flow_graph.used_pred [x]])
   in
   let query_used_field_top =
     Datalog.Query.create ~parameters:[]
-      ~variables:
-        [ "X", Code_id_or_name.datalog_column_type;
-          "F", Global_flow_graph.field_datalog_type ]
-      [ Datalog.Atom.create Global_flow_graph.used_fields_top_rel
-          [Datalog.Term.variable "X"; Datalog.Term.variable "F"] ]
+      [ "X", Code_id_or_name.datalog_column_type;
+        "F", Global_flow_graph.field_datalog_type ]
+      (fun [] [x; f] ->
+        [Datalog.Atom.create Global_flow_graph.used_fields_top_rel [x; f]])
   in
   let query_used_field =
     Datalog.Query.create ~parameters:[]
-      ~variables:
-        [ "X", Code_id_or_name.datalog_column_type;
-          "F", Global_flow_graph.field_datalog_type;
-          "Y", Code_id_or_name.datalog_column_type ]
-      [ Datalog.Atom.create Global_flow_graph.used_fields_rel
-          [ Datalog.Term.variable "X";
-            Datalog.Term.variable "F";
-            Datalog.Term.variable "Y" ] ]
+      [ "X", Code_id_or_name.datalog_column_type;
+        "F", Global_flow_graph.field_datalog_type;
+        "Y", Code_id_or_name.datalog_column_type ]
+      (fun [] [x; f; y] ->
+        [Datalog.Atom.create Global_flow_graph.used_fields_rel [x; f; y]])
   in
   let h = Hashtbl.create 17 in
   Datalog.Query.iter query_uses [] db ~f:(fun [u] -> Hashtbl.replace h u Top);
