@@ -16,10 +16,6 @@ module type Iterator = sig
   val compare_key : 'a t -> 'a -> 'a -> int
 end
 
-type _ handler =
-  | Ignore : 'a handler
-  | Set_ref : 'a ref -> 'a handler
-
 module type Heterogenous = sig
   type 'a t
 

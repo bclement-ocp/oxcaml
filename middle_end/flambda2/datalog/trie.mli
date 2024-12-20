@@ -34,11 +34,10 @@ module Iterator : sig
     | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 end
 
-val create_iterator :
-  ('m, 'k, 'v) is_map -> 'm ref -> 'v handler -> 'k Iterator.t
+val create_iterator : ('m, 'k, 'v) is_map -> 'm ref -> 'v ref -> 'k Iterator.t
 
 val iterators :
-  ('m, 'k, 'v) is_trie -> 'v handler -> 'm handler * 'k Iterator.hlist
+  ('m, 'k -> 'r, 'v) is_trie -> 'v ref -> 'm ref * ('k -> 'r) Iterator.hlist
 
 val iter :
   ('t, 'k, 'v) is_trie -> ('k Constant.hlist -> 'v -> unit) -> 't -> unit

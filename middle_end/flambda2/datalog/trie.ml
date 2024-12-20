@@ -31,7 +31,7 @@ module Iterator = struct
     | Iterator :
         { mutable iterator : 'v Int.Map.iterator;
           map : 'v Int.Map.t ref;
-          handler : 'v handler
+          handler : 'v ref
         }
         -> int t
 
@@ -60,37 +60,36 @@ module Iterator = struct
   let accept (type a) (Iterator i : a t) : unit =
     match Int.Map.current i.iterator with
     | None -> invalid_arg "accept: iterator must have a value"
-    | Some (_, value) -> (
-      match i.handler with Ignore -> () | Set_ref r -> r := value)
+    | Some (_, value) -> i.handler := value
 end
 
 let make_ref (type m k v) (Is_map : (m, k, v) is_map) : m ref =
   ref Int.Map.empty
 
 let create_iterator (type m k v) (Is_map : (m, k, v) is_map) (cell : m ref)
-    (handler : v handler) : k Iterator.t =
+    (handler : v ref) : k Iterator.t =
   Iterator.Iterator
     { iterator = Int.Map.iterator Int.Map.empty; map = cell; handler }
 
 let rec create_iterators :
     type m k v r.
-    (m, k -> r, v) is_trie -> m ref -> v handler -> (k -> r) Iterator.hlist =
+    (m, k -> r, v) is_trie -> m ref -> v ref -> (k -> r) Iterator.hlist =
  fun (Map_is_trie (is_map, is_trie)) this_ref value_handler ->
   match is_trie with
   | Value_is_trie -> [create_iterator is_map this_ref value_handler]
   | Map_is_trie (next_map, _) ->
     let next_ref = make_ref next_map in
-    create_iterator is_map this_ref (Set_ref next_ref)
+    create_iterator is_map this_ref next_ref
     :: create_iterators is_trie next_ref value_handler
 
 let iterators :
-    type m k v. (m, k, v) is_trie -> v handler -> m handler * k Iterator.hlist =
+    type m k r v.
+    (m, k -> r, v) is_trie -> v ref -> m ref * (k -> r) Iterator.hlist =
  fun is_trie handler ->
   match is_trie with
-  | Value_is_trie -> handler, []
   | Map_is_trie (is_map, _) ->
     let next_ref = make_ref is_map in
-    Set_ref next_ref, create_iterators is_trie next_ref handler
+    next_ref, create_iterators is_trie next_ref handler
 
 let rec iter :
     type t k v.

@@ -12,9 +12,6 @@ module type Heterogenous = Heterogenous
 
 module Constant = Constant
 
-let run_handler (type a) (value : a) (handler : a handler) =
-  match handler with Ignore -> () | Set_ref r -> r := value
-
 module Type = struct
   type (_, _) eq = Equal : ('a, 'a) eq
 
@@ -125,8 +122,10 @@ end = struct
 
     let set (type a) (Cell r : a t) (v : a) : unit = r := Int.Map.singleton v ()
 
+    let unit_ref = ref ()
+
     let iterator (type a) (Cell cell : a t) : a Trie.Iterator.t =
-      Trie.create_iterator Trie.is_map cell Ignore
+      Trie.create_iterator Trie.is_map cell unit_ref
   end
 end
 
@@ -256,9 +255,14 @@ module Table : sig
 
   val cell_iterator : 'a ColumnType.Cell.t -> 'a Iterator.t
 
-  val iterator : ('t, 'k, 'v) Id.t -> 't binder * 'k Iterator.hlist
+  type ('t, 'v) output
 
-  val bind : ('t, 'k, 'v) Id.t -> 't -> 't binder -> unit
+  val get_output : ('t, 'v) output -> 'v [@@warning "-unused-value-declaration"]
+
+  val iterator :
+    ('t, 'k, 'v) Id.t -> 't binder * ('t, 'v) output * 'k Iterator.hlist
+
+  val bind : 't -> 't binder -> unit
 
   module Map : sig
     type t
@@ -289,13 +293,14 @@ end = struct
           -> (('t, 'k -> 'r, 'v) trie, 'k -> 'r, 'v) t
 
     type 't handler_ =
-      | Handler : 't handler -> ('t, 'k -> 'r, 'v) trie handler_
-    [@@unboxed]
+      | Handler :
+          't ref * (('k -> 'r) Constant.hlist * 'v) Int.Map.t ref
+          -> ('t, 'k -> 'r, 'v) trie handler_
 
-    let run_handler (type a k v) (repr : (a, k, v) t) : a -> a handler_ -> unit
-        =
-      match repr with
-      | Trie _ -> fun t (Handler handler) -> run_handler t.trie handler
+    let run_handler (type a) : a -> a handler_ -> unit =
+     fun t (Handler (trie_ref, facts_ref)) ->
+      trie_ref := t.trie;
+      facts_ref := t.facts
 
     let iter (type a k v) (repr : (a, k, v) t)
         (f : k Constant.hlist -> v -> unit) (t : a) =
@@ -317,12 +322,22 @@ end = struct
           pp_row keys value)
         table
 
+    type (_, _) output =
+      | Output_fact_id :
+          ('k Constant.hlist * 'v) Int.Map.t ref * int ref
+          -> (('a, 'k, 'v) trie, 'v) output
+
+    let get_output (type a v) : (a, v) output -> v =
+     fun (Output_fact_id (t, r)) -> snd (Int.Map.find !r !t)
+
     let iterator (type a k v) (repr : (a, k, v) t) :
-        a handler_ * k Trie.Iterator.hlist =
+        a handler_ * (a, v) output * k Trie.Iterator.hlist =
       match repr with
       | Trie is_trie ->
-        let handler, iterator = Trie.iterators is_trie Ignore in
-        Handler handler, iterator
+        let facts = ref Int.Map.empty in
+        let out = ref (-1) in
+        let handler, iterator = Trie.iterators is_trie out in
+        Handler (handler, facts), Output_fact_id (facts, out), iterator
 
     let empty (type a k v) (repr : (a, k, v) t) : a =
       match repr with
@@ -403,13 +418,17 @@ end = struct
 
   type 't binder = 't Repr.handler_
 
+  type ('t, 'v) output = ('t, 'v) Repr.output
+
+  let get_output = Repr.get_output
+
   module Iterator = Trie.Iterator
 
   let cell_iterator = ColumnType.Cell.iterator
 
   let iterator id = Repr.iterator id.Id.repr
 
-  let bind id table binder = Repr.run_handler id.Id.repr table binder
+  let bind table binder = Repr.run_handler table binder
 
   let rec print_row :
       type a. a ColumnType.hlist -> Format.formatter -> a Constant.hlist -> unit
@@ -577,7 +596,7 @@ module Cursor = struct
     | Level :
         { iterator : 'a Iterator.t;
           cell : 'a ColumnType.Cell.t option;
-          output : 'a handler;
+          output : 'a ref option;
           instruction : outcome instruction
         }
         -> level
@@ -605,7 +624,7 @@ module Cursor = struct
   let get_variables query = Ref.get_hlist query.environment.variables
 
   let iterator_ex _column it =
-    Level { iterator = it; cell = None; output = Ignore; instruction = Accept }
+    Level { iterator = it; cell = None; output = None; instruction = Accept }
 
   type constant_level =
     { order : int;
@@ -652,13 +671,10 @@ module Cursor = struct
         Misc.fatal_errorf "%a always appears after variables with lower order."
           print_binding binding
       | _ :: _ ->
-        let output =
-          match binding.output with None -> Ignore | Some ref -> Set_ref ref
-        in
         Level
           { iterator = Iterator.create binding.iterators;
             cell = binding.cell;
-            output;
+            output = binding.output;
             instruction = binding.instruction
           }
         :: levels)
@@ -859,7 +875,7 @@ module Cursor = struct
     let binders =
       List.fold_left
         (fun binders (Atom (id, args)) ->
-          let handler, iterators = Table.iterator id in
+          let handler, _, iterators = Table.iterator id in
           bind_atom bindings (Constant_level bindings.constant_binding_info)
             (Table.Id.schema id) args iterators;
           Bind (id, handler) :: binders)
@@ -946,7 +962,7 @@ module Cursor = struct
   let rec advance db arr depth (Level level) =
     match Iterator.current level.iterator with
     | Some current_key -> (
-      run_handler current_key level.output;
+      Option.iter (fun r -> r := current_key) level.output;
       match run_instruction db level.instruction with
       | Reject ->
         Iterator.advance level.iterator;
@@ -975,8 +991,7 @@ module Cursor = struct
   let bind_environment environment database =
     List.iter
       (fun (Bind (id, handler)) ->
-        let table = Database.get_table database id in
-        Table.bind id table handler)
+        Table.bind (Database.get_table database id) handler)
       environment.binders
 
   let[@inline] with_naive environment database acc f =
@@ -991,11 +1006,11 @@ module Cursor = struct
           let table = Database.get_table database relation in
           let diff = Database.get_table new_facts relation in
           if Table.is_empty relation diff
-          then Table.bind relation table handler
+          then Table.bind table handler
           else (
             if !cnt_this_run = cnt
-            then Table.bind relation diff handler
-            else Table.bind relation table handler;
+            then Table.bind diff handler
+            else Table.bind table handler;
             incr cnt_this_run))
         environment.binders;
       if cnt < !cnt_this_run then loop (cnt + 1) (f acc) else acc
