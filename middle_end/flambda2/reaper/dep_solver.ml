@@ -412,28 +412,28 @@ let pp_result ppf (res : result) =
 let db_to_uses db field_id_to_field =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let query_uses =
-    Datalog.Query.create ~parameters:[]
+    Datalog.Cursor.create
       ["X", Code_id_or_name.datalog_column_type]
-      (fun [] [x] -> [Datalog.Atom.create Global_flow_graph.used_pred [x]])
+      (fun [x] -> [Datalog.atom Global_flow_graph.used_pred [x]])
   in
   let query_used_field_top =
-    Datalog.Query.create ~parameters:[]
+    Datalog.Cursor.create
       [ "X", Code_id_or_name.datalog_column_type;
         "F", Global_flow_graph.field_datalog_type ]
-      (fun [] [x; f] ->
-        [Datalog.Atom.create Global_flow_graph.used_fields_top_rel [x; f]])
+      (fun [x; f] ->
+        [Datalog.atom Global_flow_graph.used_fields_top_rel [x; f]])
   in
   let query_used_field =
-    Datalog.Query.create ~parameters:[]
+    Datalog.Cursor.create
       [ "X", Code_id_or_name.datalog_column_type;
         "F", Global_flow_graph.field_datalog_type;
         "Y", Code_id_or_name.datalog_column_type ]
-      (fun [] [x; f; y] ->
-        [Datalog.Atom.create Global_flow_graph.used_fields_rel [x; f; y]])
+      (fun [x; f; y] ->
+        [Datalog.atom Global_flow_graph.used_fields_rel [x; f; y]])
   in
   let h = Hashtbl.create 17 in
-  Datalog.Query.iter query_uses [] db ~f:(fun [u] -> Hashtbl.replace h u Top);
-  Datalog.Query.iter query_used_field_top [] db ~f:(fun [u; f] ->
+  Datalog.Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
+  Datalog.Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
       let f = Numeric_types.Int.Map.find f field_id_to_field in
       let[@local] ff fields =
         Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
@@ -443,7 +443,7 @@ let db_to_uses db field_id_to_field =
       | Some Top -> ()
       | None -> ff Field.Map.empty
       | Some (Fields f) -> ff f);
-  Datalog.Query.iter query_used_field [] db ~f:(fun [u; f; v] ->
+  Datalog.Cursor.iter query_used_field db ~f:(fun [u; f; v] ->
       let[@local] ff fields =
         let f = Numeric_types.Int.Map.find f field_id_to_field in
         let v_top = Hashtbl.find_opt h v = Some Top in
@@ -476,13 +476,13 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
     |> Code_id_or_name.Set.of_list
   in
   Gc.full_major ();
-  let t0 = Unix.gettimeofday () in
+  let t0 = Sys.time () in
   Solver.fixpoint_topo graph_new uses result;
-  let t1 = Unix.gettimeofday () in
+  let t1 = Sys.time () in
   Gc.full_major ();
-  let t1' = Unix.gettimeofday () in
+  let t1' = Sys.time () in
   let db = Datalog.Schedule.run graph_new.schedule graph_new.datalog in
-  let t2 = Unix.gettimeofday () in
+  let t2 = Sys.time () in
   Format.eprintf "EXISTING: %f, DATALOG: %f, SPEEDUP: %f@." (t1 -. t0)
     (t2 -. t1')
     ((t1 -. t0) /. (t2 -. t1'));

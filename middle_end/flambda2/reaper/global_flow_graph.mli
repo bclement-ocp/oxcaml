@@ -99,14 +99,10 @@ val add_deps : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 
 val add_use : graph -> Code_id_or_name.t -> unit
 
-val used_pred : (Code_id_or_name.t -> unit, unit) Datalog.Relation.t
+val used_pred : Code_id_or_name.t Datalog.rel1
 
-val used_fields_rel :
-  ( Code_id_or_name.t -> int -> Code_id_or_name.t -> unit,
-    unit )
-  Datalog.Relation.t
+val used_fields_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
 
-val used_fields_top_rel :
-  (Code_id_or_name.t -> int -> unit, unit) Datalog.Relation.t
+val used_fields_top_rel : (Code_id_or_name.t, int) Datalog.rel2
 
 val field_datalog_type : int Datalog.ColumnType.t

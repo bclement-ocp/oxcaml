@@ -1,9 +1,9 @@
 module type Heterogenous = sig
   type 'a t
 
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
+  type _ hlist =
+    | [] : 'a option hlist
+    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 end
 
 module ColumnType : sig
@@ -14,22 +14,32 @@ module ColumnType : sig
   val make : string -> print:(Format.formatter -> int -> unit) -> int t
 end
 
-module Relation : sig
-  type ('k, 'v) t
-
-  val create : name:string -> ('k, unit) ColumnType.hlist -> ('k, 'v) t
-end
-
 module Constant : sig
   include Heterogenous with type 'a t := 'a
 end
 
+(** {2 Facts database} *)
+
 type database
+
+val print : Format.formatter -> database -> unit
 
 val empty : database
 
-val add_fact :
-  ('a, unit) Relation.t -> ('a, unit) Constant.hlist -> database -> database
+type 'k relation
+
+val create_relation :
+  name:string -> ('k -> 'r) ColumnType.hlist -> ('k -> 'r) relation
+
+type 'a rel1 = ('a -> unit option) relation
+
+type ('a, 'b) rel2 = ('a -> 'b -> unit option) relation
+
+type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> unit option) relation
+
+val add_fact : 'k relation -> 'k Constant.hlist -> database -> database
+
+(** {2 Query language} *)
 
 module Variable : sig
   type t = string
@@ -45,36 +55,50 @@ module Term : sig
   val constant : 'a -> 'a t
 end
 
-module Atom : sig
-  type 'a t
+type 'a atom
 
-  val create : ('k, 'v) Relation.t -> ('k, unit) Term.hlist -> 'v t
-end
+val atom : 'k relation -> 'k Term.hlist -> unit atom
 
-module Query : sig
-  type ('p, 'v) t
+module Cursor : sig
+  type ('p, 'v) with_parameters
+
+  type 'v t = (unit option, 'v) with_parameters
 
   val create :
-    parameters:('p, unit) Variable.hlist ->
-    ('v, unit) Variable.hlist ->
-    (('p, unit) Term.hlist -> ('v, unit) Term.hlist -> unit Atom.t list) ->
-    ('p, 'v) t
+    'v Variable.hlist ->
+    ?negate:('v Term.hlist -> unit atom list) ->
+    ('v Term.hlist -> unit atom list) ->
+    'v t
 
   val fold :
-    ('p, 'v) t ->
-    ('p, unit) Constant.hlist ->
+    'v t -> database -> init:'a -> f:('v Constant.hlist -> 'a -> 'a) -> 'a
+
+  val iter : 'v t -> database -> f:('v Constant.hlist -> unit) -> unit
+
+  val create_with_parameters :
+    parameters:'p Variable.hlist ->
+    'v Variable.hlist ->
+    ?negate:('p Term.hlist -> 'v Term.hlist -> unit atom list) ->
+    ('p Term.hlist -> 'v Term.hlist -> unit atom list) ->
+    ('p, 'v) with_parameters
+
+  val fold_with_parameters :
+    ('p, 'v) with_parameters ->
+    'p Constant.hlist ->
     database ->
     init:'a ->
-    f:(('v, unit) Constant.hlist -> 'a -> 'a) ->
+    f:('v Constant.hlist -> 'a -> 'a) ->
     'a
 
-  val iter :
-    ('p, 'v) t ->
-    ('p, unit) Constant.hlist ->
+  val iter_with_parameters :
+    ('p, 'v) with_parameters ->
+    'p Constant.hlist ->
     database ->
-    f:(('v, unit) Constant.hlist -> unit) ->
+    f:('v Constant.hlist -> unit) ->
     unit
 end
+
+(** {2 Inference rules} *)
 
 module Rule : sig
   type t
@@ -82,17 +106,17 @@ module Rule : sig
   val create :
     variables:string list ->
     ?existentials:string list ->
-    unit Atom.t ->
-    ?negate:unit Atom.t list ->
-    unit Atom.t list ->
+    unit atom ->
+    ?negate:unit atom list ->
+    unit atom list ->
     t
 
   val delete :
     variables:string list ->
     ?existentials:string list ->
-    unit Atom.t ->
-    ?negate:unit Atom.t list ->
-    unit Atom.t list ->
+    unit atom ->
+    ?negate:unit atom list ->
+    unit atom list ->
     t
 end
 
@@ -107,5 +131,3 @@ module Schedule : sig
 
   val run : t -> database -> database
 end
-
-val print : Format.formatter -> database -> unit

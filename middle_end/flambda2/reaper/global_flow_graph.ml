@@ -221,47 +221,47 @@ let field =
 let field_datalog_type = field
 
 let alias_rel =
-  Datalog.Relation.create ~name:"alias"
+  Datalog.create_relation ~name:"alias"
     [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
 
 let use_rel =
-  Datalog.Relation.create ~name:"use"
+  Datalog.create_relation ~name:"use"
     [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
 
 let accessor_rel =
-  Datalog.Relation.create ~name:"accessor"
+  Datalog.create_relation ~name:"accessor"
     [ Code_id_or_name.datalog_column_type;
       field;
       Code_id_or_name.datalog_column_type ]
 
 let constructor_rel =
-  Datalog.Relation.create ~name:"constructor"
+  Datalog.create_relation ~name:"constructor"
     [ Code_id_or_name.datalog_column_type;
       field;
       Code_id_or_name.datalog_column_type ]
 
 let propagate_rel =
-  Datalog.Relation.create ~name:"propagate"
+  Datalog.create_relation ~name:"propagate"
     [ Code_id_or_name.datalog_column_type;
       Code_id_or_name.datalog_column_type;
       Code_id_or_name.datalog_column_type ]
 
 let used_pred =
-  Datalog.Relation.create ~name:"used" [Code_id_or_name.datalog_column_type]
+  Datalog.create_relation ~name:"used" [Code_id_or_name.datalog_column_type]
 
 let used_fields_top_rel =
-  Datalog.Relation.create ~name:"used_fields_top"
+  Datalog.create_relation ~name:"used_fields_top"
     [Code_id_or_name.datalog_column_type; field]
 
 let used_fields_rel =
-  Datalog.Relation.create ~name:"used_fields"
+  Datalog.create_relation ~name:"used_fields"
     [ Code_id_or_name.datalog_column_type;
       field;
       Code_id_or_name.datalog_column_type ]
 
 let ( ~$ ) = Datalog.Term.variable
 
-let ( @| ) = Datalog.Atom.create
+let ( @| ) = Datalog.atom
 
 let create () =
   (* propagate *)
@@ -280,9 +280,8 @@ let create () =
       ~negate:
         [ used_pred @| [~$"target"];
           used_pred @| [~$"source"];
-          used_fields_top_rel @| [~$"target"; ~$"field"] ;
-          used_fields_top_rel @| [~$"source"; ~$"field"] ;
-          ]
+          used_fields_top_rel @| [~$"target"; ~$"field"];
+          used_fields_top_rel @| [~$"source"; ~$"field"] ]
       [ alias_rel @| [~$"source"; ~$"target"];
         used_fields_rel @| [~$"source"; ~$"field"; ~$"v"] ]
   in
@@ -406,14 +405,12 @@ let create () =
                  used_from_constructor_used;
                  used_from_constructor_field_used;
                  used_from_used_use ];
-             saturate [
-                 subsumption_rule_used_fields_used_fields_top;
-                 used_fields_top_from_used_fields_alias_top;
-                 used_fields_from_accessor_used;
-             ];
              saturate
-               [ 
-                 used_fields_from_used_fields_alias;
+               [ subsumption_rule_used_fields_used_fields_top;
+                 used_fields_top_from_used_fields_alias_top;
+                 used_fields_from_accessor_used ];
+             saturate
+               [ used_fields_from_used_fields_alias;
                  used_fields_from_accessor_used_fields_top;
                  used_fields_from_accessor_used_fields ] ]))
   in

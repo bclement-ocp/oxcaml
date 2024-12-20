@@ -1,16 +1,19 @@
 [@@@flambda.o3]
 
-module Id = struct
-  module T = struct
-    include Int
+open Datalog_types
 
-    let print = Numbers.Int.print
-  end
-
-  include T
-  module Tree = Patricia_tree.Make (T)
+module Int = struct
+  include Numbers.Int
+  module Tree = Patricia_tree.Make (Numbers.Int)
   module Map = Tree.Map
 end
+
+module type Heterogenous = Heterogenous
+
+module Constant = Constant
+
+let run_handler (type a) (value : a) (handler : a handler) =
+  match handler with Ignore -> () | Set_ref r -> r := value
 
 module Type = struct
   type (_, _) eq = Equal : ('a, 'a) eq
@@ -47,270 +50,12 @@ module Type = struct
   end
 end
 
-type _ handler =
-  | Ignore : 'a handler
-  | Set_ref : 'a ref -> 'a handler
-
-let run_handler (type a) (value : a) (handler : a handler) =
-  match handler with Ignore -> () | Set_ref r -> r := value
-
-module type Iterator = sig
-  type 'a t
-
-  val current : 'a t -> 'a Leapfrog.position
-
-  val advance : 'a t -> unit
-
-  val seek : 'a t -> 'a -> unit
-
-  val init : 'a t -> unit
-
-  val accept : 'a t -> unit
-
-  val equal_key : 'a t -> 'a -> 'a -> bool
-
-  val compare_key : 'a t -> 'a -> 'a -> int
-end
-
-module type Heterogenous = sig
-  type 'a t
-
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
-end
-
-module Constant = struct
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
-end
-
-module Ref = struct
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a ref * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
-
-  let rec get_hlist : type a. (a, unit) hlist -> (a, unit) Constant.hlist =
-    function
-    | [] -> []
-    | r :: rs -> !r :: get_hlist rs
-end
-
-module Trie : sig
-  type ('m, 'k, 'v) is_map
-
-  val is_map : ('v Id.Map.t, int, 'v) is_map
-
-  type ('t, 'k, 'v) is_trie
-
-  val value_is_trie : ('a, unit, 'a) is_trie
-
-  val map_is_trie :
-    ('t, 'a, 's) is_map -> ('s, 'b, 'v) is_trie -> ('t, 'a -> 'b, 'v) is_trie
-
-  val empty : ('t, 'k, 'v) is_trie -> 't
-
-  module Map_iterator : Iterator
-
-  module Iterator : sig
-    type _ t =
-      | [] : unit t
-      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a -> 'b) t
-  end
-
-  type 'k iterator = 'k Iterator.t
-
-  val map_iterator :
-    ('m, 'k, 'v) is_map -> 'm ref -> 'v handler -> 'k Map_iterator.t
-
-  val trie_add :
-    ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 'v -> 't -> 't
-
-  val remove : ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 't -> 't
-
-  val find_opt :
-    ('t, 'k, 'v) is_trie -> ('k, unit) Constant.hlist -> 't -> 'v option
-
-  val find_opt_refs :
-    ('t, 'k, 'v) is_trie -> ('k, unit) Ref.hlist -> 't -> 'v option
-
-  val iterator : ('m, 'k, 'v) is_trie -> 'v handler -> 'm handler * 'k iterator
-
-  val fold :
-    ('t, 'k, 'v) is_trie ->
-    (('k, unit) Constant.hlist -> 'v -> 'a -> 'a) ->
-    't ->
-    'a ->
-    'a
-end = struct
-  type ('m, 'k, 'v) is_map = Is_map : ('v Id.Map.t, int, 'v) is_map
-
-  let is_map = Is_map
-
-  type (_, _, _) is_trie =
-    | Value_is_trie : ('a, unit, 'a) is_trie
-    | Map_is_trie :
-        ('t, 'a, 's) is_map * ('s, 'b, 'v) is_trie
-        -> ('t, 'a -> 'b, 'v) is_trie
-
-  let value_is_trie = Value_is_trie
-
-  let map_is_trie is_map is_trie = Map_is_trie (is_map, is_trie)
-
-  let empty : type t k v. (t, k, v) is_trie -> t = function
-    | Value_is_trie -> invalid_arg "Trie.empty"
-    | Map_is_trie (Is_map, _) -> Id.Map.empty
-
-  module Map_iterator = struct
-    type _ t =
-      | Iterator :
-          { mutable iterator : 'v Id.Map.iterator;
-            map : 'v Id.Map.t ref;
-            handler : 'v handler
-          }
-          -> int t
-
-    let equal_key (type a) (Iterator _ : a t) : a -> a -> bool = Int.equal
-
-    let compare_key (type a) (Iterator _ : a t) : a -> a -> int = Int.compare
-
-    let current (type a) (Iterator i : a t) : a Leapfrog.position =
-      match Id.Map.current i.iterator with
-      | Some (key, _) -> Leapfrog.Key key
-      | None -> Leapfrog.At_end
-
-    let advance (type a) (Iterator i : a t) : unit =
-      i.iterator <- Id.Map.advance i.iterator
-
-    let seek (type a) (Iterator i : a t) (k : a) : unit =
-      i.iterator <- Id.Map.seek i.iterator k
-
-    let init (type a) (Iterator i : a t) : unit =
-      i.iterator <- Id.Map.iterator !(i.map)
-
-    let accept (type a) (Iterator i : a t) : unit =
-      match Id.Map.current i.iterator with
-      | None -> invalid_arg "accept: iterator must have a value"
-      | Some (_, value) -> (
-        match i.handler with Ignore -> () | Set_ref r -> r := value)
-  end
-
-  let make_cell (type m k v) (Is_map : (m, k, v) is_map) : m ref =
-    ref Id.Map.empty
-
-  let map_iterator (type m k v) (Is_map : (m, k, v) is_map) (cell : m ref)
-      (handler : v handler) : k Map_iterator.t =
-    Map_iterator.Iterator
-      { iterator = Id.Map.iterator Id.Map.empty; map = cell; handler }
-
-  module Iterator = struct
-    type _ t =
-      | [] : unit t
-      | ( :: ) : 'a Map_iterator.t * 'b t -> ('a -> 'b) t
-  end
-
-  type 'a iterator = 'a Iterator.t
-
-  let rec iterator :
-      type m k v. (m, k, v) is_trie -> v handler -> m handler * k Iterator.t =
-   fun is_trie handler ->
-    match is_trie with
-    | Value_is_trie -> handler, []
-    | Map_is_trie (is_map, is_trie) ->
-      let next_handler, next_iterators = iterator is_trie handler in
-      let this_cell = make_cell is_map in
-      let this_iterator = map_iterator is_map this_cell next_handler in
-      Set_ref this_cell, this_iterator :: next_iterators
-
-  let rec fold :
-      type t k v a.
-      (t, k, v) is_trie ->
-      ((k, unit) Constant.hlist -> v -> a -> a) ->
-      t ->
-      a ->
-      a =
-   fun w f t acc ->
-    match w with
-    | Value_is_trie -> f [] t acc
-    | Map_is_trie (Is_map, w') ->
-      Id.Map.fold
-        (fun k t acc -> fold w' (fun k' v acc -> f (k :: k') v acc) t acc)
-        t acc
-
-  let rec find_opt :
-      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> t -> v option
-      =
-   fun w k t ->
-    match k, w with
-    | [], Value_is_trie -> Some t
-    | k :: k', Map_is_trie (Is_map, w') -> (
-      match Id.Map.find_opt k t with Some s -> find_opt w' k' s | None -> None)
-
-  let rec find_opt_refs :
-      type t k v. (t, k, v) is_trie -> (k, unit) Ref.hlist -> t -> v option =
-   fun w k t ->
-    match k, w with
-    | [], Value_is_trie -> Some t
-    | k :: k', Map_is_trie (Is_map, w') -> (
-      let k = !k in
-      match Id.Map.find_opt k t with
-      | Some s -> find_opt_refs w' k' s
-      | None -> None)
-
-  let rec singleton :
-      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> v -> t =
-   fun w k v ->
-    match k, w with
-    | [], Value_is_trie -> v
-    | k :: k', Map_is_trie (Is_map, w') ->
-      Id.Map.singleton k (singleton w' k' v)
-
-  let rec trie_add :
-      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> v -> t -> t =
-   fun w inputs output t ->
-    match inputs, w with
-    | [], Value_is_trie -> output
-    | first_input :: other_inputs, Map_is_trie (Is_map, w') -> (
-      match Id.Map.find_opt first_input t with
-      | Some m -> Id.Map.add first_input (trie_add w' other_inputs output m) t
-      | None -> Id.Map.add first_input (singleton w' other_inputs output) t)
-
-  let is_empty : type t k v. (t, k, v) is_trie -> t -> bool =
-   fun w t ->
-    match w with
-    | Value_is_trie -> false
-    | Map_is_trie (Is_map, _) -> Id.Map.is_empty t
-
-  let rec remove0 :
-      type t k v.
-      (t, k, v) is_trie ->
-      t Id.Map.t ->
-      int ->
-      (k, unit) Constant.hlist ->
-      t ->
-      t Id.Map.t =
-   fun w t k k' m ->
-    match k', w with
-    | [], Value_is_trie -> Id.Map.remove k t
-    | a :: b, Map_is_trie (Is_map, w') -> (
-      match Id.Map.find_opt a m with
-      | None -> t
-      | Some m' ->
-        let m' = remove0 w' m a b m' in
-        if is_empty w m' then Id.Map.remove k t else Id.Map.add k m' t)
-
-  let remove :
-      type t k v. (t, k, v) is_trie -> (k, unit) Constant.hlist -> t -> t =
-   fun w k t ->
-    match k, w with
-    | [], Value_is_trie -> t
-    | k :: k', Map_is_trie (Is_map, w') -> (
-      match Id.Map.find_opt k t with None -> t | Some m -> remove0 w' t k k' m)
-end
-
 module ColumnType : sig
-  include Heterogenous
+  type 'a t
+
+  type _ hlist =
+    | [] : 'a option hlist
+    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 
   type 'a column = 'a t
 
@@ -327,15 +72,12 @@ module ColumnType : sig
 
     val create : 'a column -> 'a t
 
-    val set : 'a column -> 'a t -> 'a -> unit
+    val set : 'a t -> 'a -> unit
 
-    val to_iterator : 'a column -> 'a t -> 'a Trie.Map_iterator.t
+    val iterator : 'a t -> 'a Trie.Iterator.t
   end
 
-  type (_, _) any_trie =
-    | Any_trie : ('t, 'k, 'v) Trie.is_trie -> ('k, 'v) any_trie
-
-  val is_trie : ('a, unit) hlist -> ('a, 'b) any_trie
+  val is_trie : 'a hlist -> ('a, 'b) Trie.is_any_trie
 
   val provably_equal : 'a t -> 'b t -> ('a, 'b) Type.eq option
 
@@ -348,11 +90,9 @@ end = struct
       is_int : ('a, int) Type.eq
     }
 
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
-
-  let is_int { is_int; _ } = is_int
+  type _ hlist =
+    | [] : 'a option hlist
+    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 
   let print ppf { id; name; _ } =
     Format.fprintf ppf "%s/%d" name (Type.Id.uid id)
@@ -369,38 +109,24 @@ end = struct
 
   type 'a column = 'a t
 
-  type (_, _) any_trie =
-    | Any_trie : ('t, 'k, 'v) Trie.is_trie -> ('k, 'v) any_trie
-
-  let rec is_trie : type a b. (a, unit) hlist -> (a, b) any_trie =
+  let rec is_trie : type a b. a hlist -> (a, b) Trie.is_any_trie =
    fun s ->
     match s with
-    | [] -> Any_trie Trie.value_is_trie
+    | [] -> Is_trie Trie.value_is_trie
     | { is_int = Equal; _ } :: s' ->
-      let (Any_trie t') = is_trie s' in
-      Any_trie (Trie.map_is_trie Trie.is_map t')
+      let (Is_trie t') = is_trie s' in
+      Is_trie (Trie.map_is_trie Trie.is_map t')
 
-  module Cell : sig
-    type 'a t
+  module Cell = struct
+    type 'a t = Cell : unit Int.Map.t ref -> int t [@@unboxed]
 
-    val create : 'a column -> 'a t
+    let create (type a) ({ is_int = Equal; _ } : a column) : a t =
+      Cell (ref Int.Map.empty)
 
-    val set : 'a column -> 'a t -> 'a -> unit
+    let set (type a) (Cell r : a t) (v : a) : unit = r := Int.Map.singleton v ()
 
-    val to_iterator : 'a column -> 'a t -> 'a Trie.Map_iterator.t
-  end = struct
-    type 'a t = Cell : unit Id.Map.t ref -> 'a t [@@unboxed]
-
-    let create _ = Cell (ref Id.Map.empty)
-
-    let set (type a) (column : a column) (Cell cell : a t) (v : a) : unit =
-      let Equal = is_int column in
-      cell := Id.Map.singleton v ()
-
-    let to_iterator (type a) (column : a column) (Cell cell : a t) :
-        a Trie.Map_iterator.t =
-      let Equal = is_int column in
-      Trie.map_iterator Trie.is_map cell Ignore
+    let iterator (type a) (Cell cell : a t) : a Trie.Iterator.t =
+      Trie.create_iterator Trie.is_map cell Ignore
   end
 end
 
@@ -414,27 +140,25 @@ end = struct
       mutable at_end : bool
     }
 
-  let current (type a) ({ iterators; at_end } : a t) : a Leapfrog.position =
+  let current (type a) ({ iterators; at_end } : a t) : a option =
     if at_end
-    then Leapfrog.At_end
+    then None
     else Iterator.current iterators.(Array.length iterators - 1)
 
-  let rec search : type a. a Iterator.t array -> int -> a -> a Leapfrog.position
-      =
+  let rec search : type a. a Iterator.t array -> int -> a -> a option =
    fun iterators index_of_lowest_key highest_key ->
     let iterator_with_lowest_key = iterators.(index_of_lowest_key) in
     let equal = Iterator.equal_key iterator_with_lowest_key in
     match Iterator.current iterator_with_lowest_key with
-    | At_end -> Leapfrog.At_end
-    | Key lowest_key when equal lowest_key highest_key ->
+    | None -> None
+    | Some lowest_key when equal lowest_key highest_key ->
       (* All iterators are on the same key. *)
-      Leapfrog.Key lowest_key
-    | At_start | Key _ -> (
+      Some lowest_key
+    | Some _ -> (
       Iterator.seek iterator_with_lowest_key highest_key;
       match Iterator.current iterator_with_lowest_key with
-      | At_start -> Misc.fatal_error "Impossibru"
-      | At_end -> Leapfrog.At_end
-      | Key new_highest_key ->
+      | None -> None
+      | Some new_highest_key ->
         search iterators
           ((index_of_lowest_key + 1) mod Array.length iterators)
           new_highest_key)
@@ -445,12 +169,11 @@ end = struct
     then
       let iterator = iterators.(Array.length iterators - 1) in
       match Iterator.current iterator with
-      | At_start -> assert false
-      | At_end -> j.at_end <- true
-      | Key highest_key -> (
+      | None -> j.at_end <- true
+      | Some highest_key -> (
         match search iterators 0 highest_key with
-        | At_end -> j.at_end <- true
-        | At_start | Key _ -> ())
+        | None -> j.at_end <- true
+        | Some _ -> ())
 
   let advance (type a) ({ iterators; at_end } as t : a t) =
     if not at_end
@@ -474,21 +197,20 @@ end = struct
         (fun (it : a Iterator.t) ->
           Iterator.init it;
           match Iterator.current it with
-          | At_end -> raise Empty_iterator
-          | At_start | Key _ -> ())
+          | None -> raise Empty_iterator
+          | Some _ -> ())
         iterators;
       Array.sort
         (fun (it1 : a Iterator.t) (it2 : a Iterator.t) ->
           let compare = Iterator.compare_key it1 in
-          Leapfrog.compare_position compare (Iterator.current it1)
-            (Iterator.current it2))
+          Option.compare compare (Iterator.current it1) (Iterator.current it2))
         iterators;
       j.at_end <- false;
       repair j
     with Empty_iterator -> j.at_end <- true
 
   let accept (type a) ({ iterators; at_end } : a t) =
-    if at_end then invalid_arg "accept";
+    if at_end then invalid_arg "Joined_iterator.accept: iterator is at end";
     Array.iter Iterator.accept iterators
 
   let equal_key { iterators; _ } = Iterator.equal_key iterators.(0)
@@ -497,37 +219,201 @@ end = struct
 
   let create (iterators : _ Iterator.t list) : _ t =
     match iterators with
-    | [] -> invalid_arg "join_iterators"
+    | [] -> invalid_arg "Joined_iterator.create: cannot join an empty list"
     | _ -> { iterators = Array.of_list iterators; at_end = false }
 end
 [@@inline always]
 
-module Table = struct
-  type ('t, 'k, 'v) is_table =
-    { id : ('t -> 'k -> 'v) Type.Id.t;
-      name : string;
-      schema : ('k, unit) ColumnType.hlist;
-      is_trie : ('t, 'k, int) Trie.is_trie
-    }
+module Table : sig
+  module Id : sig
+    type ('t, 'k, 'v) t
 
-  type ('t, 'k, 'v) table =
-    { trie : 't;
-      facts : (('k, unit) Constant.hlist * 'v) Id.Map.t;
-      last_fact_id : int;
-      is_table : ('t, 'k, 'v) is_table
-    }
+    type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
 
-  let is_trie { is_trie; _ } = is_trie
+    val create_trie :
+      name:string -> ('k -> 'r) ColumnType.hlist -> ('k -> 'r, 'v) poly
 
-  let print_is_table ppf is_table =
-    Format.fprintf ppf "%s/%d" is_table.name (Type.Id.uid is_table.id)
+    val schema : ('t, 'k, 'v) t -> 'k ColumnType.hlist
+  end
+
+  val is_empty : ('t, 'k, 'v) Id.t -> 't -> bool
+
+  val add : ('t, 'k, 'v) Id.t -> 'k Constant.hlist -> 'v -> 't -> 't
+
+  val mem_refs : ('t, 'k, 'v) Id.t -> 'k Ref.hlist -> 't -> bool
+
+  val remove_refs : ('t, 'k, 'v) Id.t -> 'k Ref.hlist -> 't -> 't
+
+  type 't binder
+
+  module Iterator : sig
+    include Iterator
+
+    type _ hlist =
+      | [] : 'a option hlist
+      | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
+  end
+
+  val cell_iterator : 'a ColumnType.Cell.t -> 'a Iterator.t
+
+  val iterator : ('t, 'k, 'v) Id.t -> 't binder * 'k Iterator.hlist
+
+  val bind : ('t, 'k, 'v) Id.t -> 't -> 't binder -> unit
+
+  module Map : sig
+    type t
+
+    val print : Format.formatter -> t -> unit
+
+    val empty : t
+
+    val get : t -> ('t, 'k, 'v) Id.t -> 't
+
+    val set : t -> ('t, 'k, 'v) Id.t -> 't -> t
+
+    val current_scope : t -> int Int.Map.t
+
+    val cut : t -> cut_after:int Int.Map.t -> t
+  end
+end = struct
+  module Repr = struct
+    type ('t, 'k, 'v) trie =
+      { trie : 't;
+        facts : ('k Constant.hlist * 'v) Int.Map.t;
+        last_fact_id : int
+      }
+
+    type ('t, 'k, 'v) t =
+      | Trie :
+          ('t, 'k -> 'r, int) Trie.is_trie
+          -> (('t, 'k -> 'r, 'v) trie, 'k -> 'r, 'v) t
+
+    type 't handler_ =
+      | Handler : 't handler -> ('t, 'k -> 'r, 'v) trie handler_
+    [@@unboxed]
+
+    let run_handler (type a k v) (repr : (a, k, v) t) : a -> a handler_ -> unit
+        =
+      match repr with
+      | Trie _ -> fun t (Handler handler) -> run_handler t.trie handler
+
+    let iter (type a k v) (repr : (a, k, v) t)
+        (f : k Constant.hlist -> v -> unit) (t : a) =
+      match repr with
+      | Trie is_trie ->
+        Trie.iter is_trie
+          (fun keys fact_id ->
+            let _, value =
+              try Int.Map.find fact_id t.facts with Not_found -> assert false
+            in
+            f keys value)
+          t.trie
+
+    let print repr ?(pp_sep = Format.pp_print_cut) pp_row ppf table =
+      let first = ref true in
+      iter repr
+        (fun keys value ->
+          if !first then first := false else pp_sep ppf ();
+          pp_row keys value)
+        table
+
+    let iterator (type a k v) (repr : (a, k, v) t) :
+        a handler_ * k Trie.Iterator.hlist =
+      match repr with
+      | Trie is_trie ->
+        let handler, iterator = Trie.iterators is_trie Ignore in
+        Handler handler, iterator
+
+    let empty (type a k v) (repr : (a, k, v) t) : a =
+      match repr with
+      | Trie is_trie ->
+        { trie = Trie.empty is_trie; facts = Int.Map.empty; last_fact_id = -1 }
+
+    let is_empty (type a k v) (repr : (a, k, v) t) : a -> bool =
+      match repr with Trie _ -> fun { facts; _ } -> Int.Map.is_empty facts
+
+    let add (type a k v) (repr : (a, k, v) t) : k Constant.hlist -> v -> a -> a
+        =
+      match repr with
+      | Trie is_trie -> (
+        fun keys value t ->
+          match Trie.find_opt is_trie keys t.trie with
+          | Some _ -> t
+          | None ->
+            let last_fact_id = t.last_fact_id + 1 in
+            let trie = Trie.add_or_replace is_trie keys last_fact_id t.trie in
+            let facts = Int.Map.add last_fact_id (keys, value) t.facts in
+            { last_fact_id; trie; facts })
+
+    let mem_refs (type a k v) (repr : (a, k, v) t) : k Ref.hlist -> a -> bool =
+      match repr with
+      | Trie is_trie ->
+        fun keys t -> Option.is_some (Trie.find_opt_refs is_trie keys t.trie)
+
+    let remove_refs (type a k v) (repr : (a, k, v) t) : k Ref.hlist -> a -> a =
+      match repr with
+      | Trie is_trie -> (
+        fun keys t ->
+          match Trie.find_opt_refs is_trie keys t.trie with
+          | None -> t
+          | Some fact_id ->
+            let trie = Trie.remove_refs is_trie keys t.trie in
+            let facts = Int.Map.remove fact_id t.facts in
+            { last_fact_id = t.last_fact_id; trie; facts })
+
+    let current_scope (type a k v) (repr : (a, k, v) t) : a -> int =
+      match repr with Trie _ -> fun { last_fact_id; _ } -> last_fact_id
+
+    let cut (type a k v) (repr : (a, k, v) t) : a -> cut_after:int -> a =
+      match repr with
+      | Trie is_trie ->
+        fun t ~cut_after ->
+          let _, _, delta_facts = Int.Map.split cut_after t.facts in
+          let trie =
+            Int.Map.fold
+              (fun fact_id (k, _) trie ->
+                Trie.add_or_replace is_trie k fact_id trie)
+              delta_facts (Trie.empty is_trie)
+          in
+          { facts = delta_facts; last_fact_id = t.last_fact_id; trie }
+  end
+
+  module Id = struct
+    type ('t, 'k, 'v) t =
+      { id : 't Type.Id.t;
+        name : string;
+        schema : 'k ColumnType.hlist;
+        repr : ('t, 'k, 'v) Repr.t
+      }
+
+    type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
+
+    let print ppf t = Format.fprintf ppf "%s/%d" t.name (Type.Id.uid t.id)
+
+    let[@inline] create_trie ~name schema =
+      let (Is_trie is_trie) = ColumnType.is_trie schema in
+      Id { id = Type.Id.make (); name; repr = Trie is_trie; schema }
+
+    let[@inline] uid { id; _ } = Type.Id.uid id
+
+    let[@inline] schema { schema; _ } = schema
+
+    let[@inline] provably_equal r1 r2 = Type.Id.provably_equal r1.id r2.id
+  end
+
+  type 't binder = 't Repr.handler_
+
+  module Iterator = Trie.Iterator
+
+  let cell_iterator = ColumnType.Cell.iterator
+
+  let iterator id = Repr.iterator id.Id.repr
+
+  let bind id table binder = Repr.run_handler id.Id.repr table binder
 
   let rec print_row :
-      type a.
-      (a, unit) ColumnType.hlist ->
-      Format.formatter ->
-      (a, unit) Constant.hlist ->
-      unit =
+      type a. a ColumnType.hlist -> Format.formatter -> a Constant.hlist -> unit
+      =
    fun schema ppf ->
     match schema with
     | [] -> fun [] -> ()
@@ -536,178 +422,111 @@ module Table = struct
       fun (x :: y) ->
         Format.fprintf ppf "%a,@ %a" (ColumnType.printer k) x (print_row k') y
 
-  let print_table is_table ppf table =
-    Trie.fold is_table.is_trie
-      (fun keys _ () ->
-        Format.fprintf ppf "@[%a(%a).@]@ " print_is_table is_table
-          (print_row is_table.schema)
-          keys)
-      table.trie ()
+  let print_table id ppf table =
+    Format.fprintf ppf "@[<v>%a@]"
+      (Repr.print id.Id.repr (fun keys _ ->
+           Format.fprintf ppf "@[%a(%a).@]" Id.print id
+             (print_row (Id.schema id))
+             keys))
+      table
 
-  let print is_table ppf table =
-    let header = Format.asprintf "%a" print_is_table is_table in
+  let print id ppf table =
+    let header = Format.asprintf "%a" Id.print id in
     Format.fprintf ppf "@[<v>%s@ %s@ %a@]" header
       (String.make (String.length header) '=')
-      (print_table is_table) table
+      (print_table id) table
 
-  let create ~name is_trie schema =
-    { id = Type.Id.make (); name; is_trie; schema }
+  let is_empty id table = Repr.is_empty id.Id.repr table
 
-  let is_empty _ table = Id.Map.is_empty table.facts
+  let add id keys value table = Repr.add id.Id.repr keys value table
 
-  type ('t, 'k, 'v) t = ('t, 'k, 'v) is_table
+  let mem_refs id args table = Repr.mem_refs id.Id.repr args table
 
-  let[@inline] uid { id; _ } = Type.Id.uid id
+  let remove_refs id keys table = Repr.remove_refs id.Id.repr keys table
 
-  let[@inline] provably_equal r1 r2 = Type.Id.provably_equal r1.id r2.id
+  let empty id = Repr.empty id.Id.repr
 
-  let add keys value table =
-    let is_trie = is_trie table.is_table in
-    match Trie.find_opt is_trie keys table.trie with
-    | Some _ -> table
-    | None ->
-      let last_fact_id = table.last_fact_id + 1 in
-      let trie = Trie.trie_add is_trie keys last_fact_id table.trie in
-      let facts = Id.Map.add last_fact_id (keys, value) table.facts in
-      { last_fact_id; trie; facts; is_table = table.is_table }
+  let current_scope id table = Repr.current_scope id.Id.repr table
 
-  let remove keys table =
-    let is_trie = is_trie table.is_table in
-    match Trie.find_opt is_trie keys table.trie with
-    | None -> table
-    | Some fact_id ->
-      let trie = Trie.remove is_trie keys table.trie in
-      let facts = Id.Map.remove fact_id table.facts in
-      { last_fact_id = table.last_fact_id;
-        trie;
-        facts;
-        is_table = table.is_table
-      }
+  let cut id table ~cut_after = Repr.cut id.Id.repr table ~cut_after
 
-  let _fold { is_trie; _ } f keys acc = Trie.fold is_trie f keys acc
+  module Map = struct
+    type binding = Binding : ('t, 'k, 'v) Id.t * 't -> binding
 
-  let empty id =
-    { trie = Trie.empty id.is_trie;
-      facts = Id.Map.empty;
-      last_fact_id = -1;
-      is_table = id
-    }
+    type t = binding Int.Map.t
 
-  let schema { schema; _ } = schema
+    let print ppf tables =
+      Format.fprintf ppf "@[<v>";
+      Int.Map.iter
+        (fun _ (Binding (id, table)) ->
+          print id ppf table;
+          Format.fprintf ppf "@ ")
+        tables;
+      Format.fprintf ppf "@]"
 
-  let iterator (type m k v) (id : (m, k, v) t) = Trie.iterator id.is_trie
+    let get (type t k v) tables (id : (t, k, v) Id.t) : t =
+      match Int.Map.find_opt (Id.uid id) tables with
+      | Some (Binding (existing_id, table)) -> (
+        match Id.provably_equal id existing_id with
+        | Some Equal -> table
+        | None -> Misc.fatal_error "Inconsistent type for uid.")
+      | None -> empty id
 
-  let cut table ~cut_after =
-    let _, _, delta_facts = Id.Map.split cut_after table.facts in
-    let is_trie = is_trie table.is_table in
-    let trie =
-      Id.Map.fold
-        (fun fact_id (k, _) trie -> Trie.trie_add is_trie k fact_id trie)
-        delta_facts (Trie.empty is_trie)
-    in
-    { facts = delta_facts;
-      last_fact_id = table.last_fact_id;
-      trie;
-      is_table = table.is_table
-    }
-end
-
-module Iterator = Joined_iterator (Trie.Map_iterator)
-
-type (_, _) cells =
-  | No_cells : ('a, 'a) cells
-  | One_cell :
-      'a ColumnType.t * 'a ColumnType.Cell.t * ('b, 'c) cells
-      -> ('a -> 'b, 'c) cells
-
-module Relation = struct
-  type (_, _) t = Table : ('t, 'k, 'v) Table.t -> ('k, 'v) t [@@unboxed]
-
-  let create ~name schema =
-    let (Any_trie is_trie) = ColumnType.is_trie schema in
-    Table (Table.create ~name is_trie schema)
-
-  let add_fact (type t k v) (id : (t, k, v) Table.t)
-      (keys : (k, unit) Constant.hlist) (value : v) table =
-    let is_trie = Table.is_trie id in
-    match Trie.find_opt is_trie keys table.Table.trie with
-    | Some _ -> table
-    | None ->
-      let last_fact_id = table.Table.last_fact_id + 1 in
-      let trie = Trie.trie_add is_trie keys last_fact_id table.Table.trie in
-      let facts = Id.Map.add last_fact_id (keys, value) table.Table.facts in
-      { Table.last_fact_id; trie; facts; is_table = table.Table.is_table }
-end
-
-module Database = struct
-  type binding = Binding : ('t, 'k, 'v) Table.table -> binding [@@unboxed]
-
-  type raw = { tables : binding Id.Map.t } [@@unboxed]
-
-  let print ppf { tables } =
-    Format.fprintf ppf "@[<v>";
-    Id.Map.iter
-      (fun _ (Binding table) ->
-        Table.print table.Table.is_table ppf table;
-        Format.fprintf ppf "@ ")
-      tables;
-    Format.fprintf ppf "@]"
-
-  let empty = { tables = Id.Map.empty }
-
-  let get_table (type t k v) { tables } (id : (t, k, v) Table.t) :
-      (t, k, v) Table.table =
-    match Id.Map.find_opt (Table.uid id) tables with
-    | Some (Binding table) -> (
-      match Table.provably_equal id table.Table.is_table with
-      | Some Equal -> table
-      | None -> invalid_arg "get_table")
-    | None -> Table.empty id
-
-  let set_table (type t k v) ({ tables } as db) (id : (t, k, v) Table.t)
-      (table : (t, k, v) Table.table) =
-    let tables' =
-      if Table.is_empty id table
+    let set (type t k v) tables (id : (t, k, v) Id.t) (table : t) =
+      if is_empty id table
       then
-        if Id.Map.mem (Table.uid id) tables
-        then Id.Map.remove (Table.uid id) tables
+        if Int.Map.mem (Id.uid id) tables
+        then Int.Map.remove (Id.uid id) tables
         else tables
       else
-        match Id.Map.find_opt (Table.uid id) tables with
-        | None -> Id.Map.add (Table.uid id) (Binding table) tables
-        | Some existing ->
-          if Binding table == existing
+        match Int.Map.find_opt (Id.uid id) tables with
+        | None -> Int.Map.add (Id.uid id) (Binding (id, table)) tables
+        | Some (Binding (existing_id, existing_table)) ->
+          if match Id.provably_equal id existing_id with
+             | Some Equal -> table == existing_table
+             | None -> assert false
           then tables
-          else Id.Map.add (Table.uid id) (Binding table) tables
-    in
-    if tables == tables' then db else { tables = tables' }
+          else Int.Map.add (Id.uid id) (Binding (id, table)) tables
 
-  let current_level db =
-    Id.Map.map (fun (Binding table) -> table.last_fact_id) db.tables
+    let current_scope tables =
+      Int.Map.map (fun (Binding (id, table)) -> current_scope id table) tables
 
-  let cut db ~cut_after:level =
-    let tables =
-      Id.Map.mapi
-        (fun tid (Binding table) ->
-          match Id.Map.find_opt tid level with
-          | Some cut_after -> Binding (Table.cut table ~cut_after)
-          | None -> Binding table)
-        db.tables
-    in
-    { tables }
+    let cut tables ~cut_after:level =
+      Int.Map.mapi
+        (fun tid (Binding (id, table) as binding) ->
+          match Int.Map.find_opt tid level with
+          | Some cut_after -> Binding (id, cut id table ~cut_after)
+          | None -> binding)
+        tables
+
+    let empty = Int.Map.empty
+  end
 end
 
-type incremental =
-  { database : Database.raw;
-    new_facts : Database.raw
-  }
+module Iterator = Joined_iterator (Table.Iterator)
+
+module Database = struct
+  type t = { tables : Table.Map.t } [@@unboxed]
+
+  let print ppf { tables } = Table.Map.print ppf tables
+
+  let empty = { tables = Table.Map.empty }
+
+  let get_table { tables } id = Table.Map.get tables id
+
+  let set_table { tables } id table = { tables = Table.Map.set tables id table }
+
+  let current_level { tables } = Table.Map.current_scope tables
+
+  let cut { tables } ~cut_after = { tables = Table.Map.cut tables ~cut_after }
+end
 
 module Variable = struct
   type t = string
 
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : (t * 'a ColumnType.t) * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
+  type _ hlist =
+    | [] : 'a option hlist
+    | ( :: ) : (t * 'a ColumnType.t) * 'b hlist -> ('a -> 'b) hlist
 end
 
 module Term = struct
@@ -719,85 +538,135 @@ module Term = struct
 
   let constant c = Constant c
 
-  type (_, _) hlist =
-    | [] : ('a, 'a) hlist
-    | ( :: ) : 'a t * ('b, 'c) hlist -> ('a -> 'b, 'c) hlist
+  type _ hlist =
+    | [] : 'a option hlist
+    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 
-  let rec variables : type a b. (a, b) Variable.hlist -> (a, b) hlist = function
+  let rec variables : type a. a Variable.hlist -> a hlist = function
     | [] -> []
     | (var, _) :: vars -> Variable var :: variables vars
 end
 
-module Atom = struct
-  type _ t = Atom : ('a, 'b) Relation.t * ('a, unit) Term.hlist -> 'b t
+type _ atom = Atom : ('t, 'k, 'v) Table.Id.t * 'k Term.hlist -> 'v atom
 
-  let create relation args = Atom (relation, args)
-end
+let atom (Table.Id.Id id) args = Atom (id, args)
 
-module Query = struct
+module Cursor = struct
+  type outcome =
+    | Reject
+    | Accept
+
   type _ instruction =
-    | Accept : bool instruction
-    | Reject : bool instruction
-    | Mem : ('a, 'b) Relation.t * ('a, unit) Ref.hlist -> bool instruction
+    | Reject : outcome instruction
+    | Accept : outcome instruction
+    | Mem : ('k, 'v) Table.Id.poly * 'k Ref.hlist -> bool instruction
     | Ite : bool instruction * 'a instruction * 'a instruction -> 'a instruction
 
-  type iterator_ex =
-    | Iterator_ex :
-        'a ColumnType.t
-        * 'a Iterator.t
-        * 'a ColumnType.Cell.t option
-        * 'a ref option
-        * bool instruction
-        -> iterator_ex
-
-  let rec run_instruction db = function
-    | Accept -> true
-    | Reject -> false
-    | Mem (Table is_table, args) ->
-      let table = Database.get_table db is_table in
-      Option.is_some (Trie.find_opt_refs is_table.is_trie args table.trie)
+  let rec run_instruction : type a. Database.t -> a instruction -> a =
+   fun db instruction ->
+    match instruction with
+    | Accept -> Accept
+    | Reject -> Reject
+    | Mem (Id id, args) -> Table.mem_refs id args (Database.get_table db id)
     | Ite (c, t, e) ->
       if run_instruction db c
       then run_instruction db t
       else run_instruction db e
 
-  type binder = Bind : ('t, 'k, 'v) Table.t * 't handler list -> binder
+  type level =
+    | Level :
+        { iterator : 'a Iterator.t;
+          cell : 'a ColumnType.Cell.t option;
+          output : 'a handler;
+          instruction : outcome instruction
+        }
+        -> level
 
-  type ('p, 'v) t =
-    { parameters : ('p, unit) cells;
-      variables : ('v, unit) Ref.hlist;
-      binders : (int, binder) Hashtbl.t;
-      iterators : iterator_ex array;
+  type binder = Bind : ('t, 'k, 'v) Table.Id.t * 't Table.binder -> binder
+
+  type _ cells =
+    | No_cells : 'a option cells
+    | One_cell : 'a ColumnType.Cell.t * 'b cells -> ('a -> 'b) cells
+
+  type ('p, 'v) bound_environment =
+    { parameters : 'p cells;
+      variables : 'v Ref.hlist;
+      binders : binder list
+    }
+
+  type ('p, 'v) with_parameters =
+    { environment : ('p, 'v) bound_environment;
+      iterators : level array;
       last_iterator : int
     }
 
-  let iterator_ex column it = Iterator_ex (column, it, None, None, Accept)
+  type 'v t = (unit option, 'v) with_parameters
 
-  type 'a binding =
-    { column : 'a ColumnType.t option;
-      order : int;
-      name : string option;
-      mutable iterators : 'a Trie.Map_iterator.t list;
-      mutable cell : 'a ColumnType.Cell.t option;
-      mutable output : 'a ref option;
-      mutable extra_bindings : iterator_ex list;
-      mutable instruction : bool instruction
+  let get_variables query = Ref.get_hlist query.environment.variables
+
+  let iterator_ex _column it =
+    Level { iterator = it; cell = None; output = Ignore; instruction = Accept }
+
+  type constant_level =
+    { order : int;
+      mutable extra_bindings : level list
     }
 
-  let print_binding ppf { name; order; _ } =
-    match name with
-    | None -> Format.fprintf ppf "Unnamed variable (with order %d)" order
-    | Some name -> Format.fprintf ppf "Variable '%s' (with order %d)" name order
+  type 'a variable_level =
+    { order : int;
+      mutable extra_bindings : level list;
+      column : 'a ColumnType.t;
+      name : string;
+      mutable iterators : 'a Table.Iterator.t list;
+      mutable cell : 'a ColumnType.Cell.t option;
+      (* [cell] is unused for constant bindings *)
+      mutable output : 'a ref option;
+      (* [output] is only for variable bindings *)
+      mutable instruction : outcome instruction
+    }
 
-  let get_column binding =
-    match binding.column with
-    | Some column -> column
-    | None -> Misc.fatal_errorf "Could not infer the type."
+  type pre_level =
+    | Constant_level of constant_level
+    | Variable_level : 'a variable_level -> pre_level
+
+  let order = function
+    | Constant_level { order; _ } -> order
+    | Variable_level { order; _ } -> order
+
+  let add_extra_binding level binding =
+    match level with
+    | Constant_level level ->
+      level.extra_bindings <- binding :: level.extra_bindings
+    | Variable_level level ->
+      level.extra_bindings <- binding :: level.extra_bindings
+
+  let print_binding ppf { name; order; _ } =
+    Format.fprintf ppf "Variable '%s' (with order %d)" name order
+
+  let to_level = function
+    | Constant_level binding -> binding.extra_bindings
+    | Variable_level binding -> (
+      let levels = binding.extra_bindings in
+      match binding.iterators with
+      | [] ->
+        Misc.fatal_errorf "%a always appears after variables with lower order."
+          print_binding binding
+      | _ :: _ ->
+        let output =
+          match binding.output with None -> Ignore | Some ref -> Set_ref ref
+        in
+        Level
+          { iterator = Iterator.create binding.iterators;
+            cell = binding.cell;
+            output;
+            instruction = binding.instruction
+          }
+        :: levels)
 
   let get_or_create_cell binding =
     match binding.cell with
     | None ->
-      let cell = ColumnType.Cell.create (get_column binding) in
+      let cell = ColumnType.Cell.create binding.column in
       binding.cell <- Some cell;
       cell
     | Some cell -> cell
@@ -805,19 +674,21 @@ module Query = struct
   let get_or_create_output binding =
     match binding.output with
     | None ->
-      let output = ColumnType.create_ref (get_column binding) in
+      let output = ColumnType.create_ref binding.column in
       binding.output <- Some output;
       output
     | Some output -> output
 
-  type binding_info = Binding_info : 'a binding -> binding_info [@@unboxed]
+  type binding_info =
+    | Binding_info : 'a variable_level -> binding_info
+    | Existential of { order : int }
 
   type bindings =
-    { constant_binding_info : binding_info;
+    { constant_binding_info : constant_level;
       all_bindings : (string, binding_info) Hashtbl.t
     }
 
-  let create_empty_binding ?name ~order column =
+  let create_empty_binding ~name ~order column =
     { column;
       order;
       name;
@@ -829,106 +700,66 @@ module Query = struct
     }
 
   let create_bindings () =
-    { constant_binding_info = Binding_info (create_empty_binding ~order:0 None);
+    { constant_binding_info = { order = 0; extra_bindings = [] };
       all_bindings = Hashtbl.create 17
     }
 
   let ordered_bindings bindings =
-    let arr =
-      Array.make
-        (Hashtbl.length bindings.all_bindings + 1)
-        bindings.constant_binding_info
+    let ordered =
+      Hashtbl.fold
+        (fun _ info bindings ->
+          match info with
+          | Binding_info binding -> Variable_level binding :: bindings
+          | Existential _ -> bindings)
+        bindings.all_bindings
+        [Constant_level bindings.constant_binding_info]
     in
-    Hashtbl.iter
-      (fun _ (Binding_info binding) ->
-        arr.(binding.order) <- Binding_info binding)
-      bindings.all_bindings;
-    arr
+    let ordered = Array.of_list ordered in
+    Array.fast_sort (fun b1 b2 -> Int.compare (order b1) (order b2)) ordered;
+    ordered
 
-  let create_binding (type a) ?order bindings var (ty : a ColumnType.t option) :
-      a binding =
+  let create_variable (type a) bindings var (ty : a ColumnType.t) :
+      a variable_level =
     match Hashtbl.find_opt bindings.all_bindings var with
-    | Some (Binding_info _) ->
-      Misc.fatal_errorf "Variable '%s' is already defined" var
+    | Some _ -> Misc.fatal_errorf "Variable '%s' is already defined" var
     | None ->
-      let order =
-        match order with
-        | None -> Hashtbl.length bindings.all_bindings + 1
-        | Some order -> order
-      in
+      let order = Hashtbl.length bindings.all_bindings + 1 in
       let binding = create_empty_binding ~name:var ~order ty in
       Hashtbl.add bindings.all_bindings var (Binding_info binding);
       binding
 
-  let get_binding (type a) bindings var (ty : a ColumnType.t) : a binding =
+  let record_existential bindings var =
+    match Hashtbl.find_opt bindings.all_bindings var with
+    | Some _ -> Misc.fatal_errorf "Variable '%s' is already defined" var
+    | None ->
+      let order = Hashtbl.length bindings.all_bindings + 1 in
+      Hashtbl.add bindings.all_bindings var (Existential { order })
+
+  let get_binding (type a) bindings var (ty : a ColumnType.t) : a variable_level
+      =
     match Hashtbl.find_opt bindings.all_bindings var with
     | Some (Binding_info binding) -> (
-      match binding.column with
+      let column = binding.column in
+      match ColumnType.provably_equal ty column with
+      | Some Equal -> binding
       | None ->
-        let binding =
-          create_empty_binding ?name:binding.name ~order:binding.order (Some ty)
-        in
-        Hashtbl.replace bindings.all_bindings var (Binding_info binding);
-        binding
-      | Some column -> (
-        match ColumnType.provably_equal ty column with
-        | Some Equal -> binding
-        | None ->
-          Misc.fatal_errorf
-            "Incompatible types for variable '%s': '%a' and '%a'" var
-            ColumnType.print ty ColumnType.print column))
+        Misc.fatal_errorf "Incompatible types for variable '%s': '%a' and '%a'"
+          var ColumnType.print ty ColumnType.print column)
+    | Some (Existential { order }) ->
+      let binding = create_empty_binding ~name:var ~order ty in
+      Hashtbl.replace bindings.all_bindings var (Binding_info binding);
+      binding
     | None ->
       Misc.fatal_errorf "Variable '%s' is used (with type '%a') but not bound."
         var ColumnType.print ty
 
-  let rec build_var_order :
-      type a. bindings -> (a, unit) Variable.hlist -> (a, unit) Ref.hlist =
-   fun bindings variables ->
-    match variables with
-    | [] -> []
-    | (var, column) :: other_variables ->
-      let binding = create_binding bindings var (Some column) in
-      get_or_create_output binding :: build_var_order bindings other_variables
-
-  let rec process_parameters :
-      type a b. bindings -> (a, b) Variable.hlist -> (a, b) cells =
-   fun bindings parameters ->
-    match parameters with
-    | [] -> No_cells
-    | (param, ty) :: other_params ->
-      let binding = create_binding bindings param (Some ty) in
-      (* Note: we do not use the cell from [binding] here because it is used to
-         propagate the value of the parameter downwards to other iterators once
-         it has been joined with all its occurrences, whereas the cell here is
-         used to initialize the filter from the toplevel *before* the join. *)
-      let cell = ColumnType.Cell.create ty in
-      let filter = ColumnType.Cell.to_iterator ty cell in
-      binding.iterators <- filter :: binding.iterators;
-      One_cell (ty, cell, process_parameters bindings other_params)
-
-  let rec compile_atom :
+  let rec bind_atom :
       type a.
       bindings ->
-      (a, unit) ColumnType.hlist ->
-      (a, unit) Term.hlist ->
-      (a, unit) Ref.hlist =
-   fun bindings schema vars ->
-    match schema, vars with
-    | [], [] -> []
-    | column :: schema, term :: terms -> (
-      match term with
-      | Constant cte -> ref cte :: compile_atom bindings schema terms
-      | Variable var ->
-        let binding = get_binding bindings var column in
-        get_or_create_output binding :: compile_atom bindings schema terms)
-
-  let rec process_atom :
-      type a.
-      bindings ->
-      binding_info ->
-      (a, unit) ColumnType.hlist ->
-      (a, unit) Term.hlist ->
-      a Trie.iterator ->
+      pre_level ->
+      a ColumnType.hlist ->
+      a Term.hlist ->
+      a Table.Iterator.hlist ->
       unit =
    fun bindings last_binding schema args iterators ->
     match schema, args, iterators with
@@ -939,110 +770,116 @@ module Query = struct
       match this_arg with
       | Constant cte ->
         let cell = ColumnType.Cell.create this_column in
-        ColumnType.Cell.set this_column cell cte;
-        let filter = ColumnType.Cell.to_iterator this_column cell in
+        ColumnType.Cell.set cell cte;
+        let filter = Table.cell_iterator cell in
         let iterator = Iterator.create [this_iterator; filter] in
-        let (Binding_info info) = last_binding in
-        info.extra_bindings
-          <- iterator_ex this_column iterator :: info.extra_bindings;
-        process_atom bindings last_binding other_columns other_args
-          other_iterators
+        add_extra_binding last_binding (iterator_ex this_column iterator);
+        bind_atom bindings last_binding other_columns other_args other_iterators
       | Variable var ->
         let var_info = get_binding bindings var this_column in
-        let (Binding_info last_info) = last_binding in
-        if var_info.order >= last_info.order
+        if var_info.order >= order last_binding
         then (
           var_info.iterators <- this_iterator :: var_info.iterators;
-          process_atom bindings (Binding_info var_info) other_columns other_args
+          bind_atom bindings (Variable_level var_info) other_columns other_args
             other_iterators)
         else
           let cell = get_or_create_cell var_info in
-          let filter = ColumnType.Cell.to_iterator this_column cell in
+          let filter = Table.cell_iterator cell in
           let iterator = Iterator.create [this_iterator; filter] in
-          last_info.extra_bindings
-            <- iterator_ex this_column iterator :: last_info.extra_bindings;
-          process_atom bindings last_binding other_columns other_args
+          add_extra_binding last_binding (iterator_ex this_column iterator);
+          bind_atom bindings last_binding other_columns other_args
             other_iterators)
 
-  let cast (type t1 k1 v1 t2 k2 v2) (t1 : (t1, k1, v1) Table.t)
-      (t2 : (t2, k2, v2) Table.t) (handler : t1 handler) : t2 handler =
-    match Table.provably_equal t1 t2 with
-    | Some Equal -> handler
-    | None -> assert false
-
   type ('p, 'v) raw_query =
-    { parameters : ('p, unit) cells;
-      variables : ('v, unit) Ref.hlist;
-      bindings : bindings;
-      binders : (int, binder) Hashtbl.t
+    { environment : ('p, 'v) bound_environment;
+      bindings : bindings
     }
 
-  let rec process_for_negation :
+  let rec find_last_binding0 :
       type a.
-      bindings ->
-      binding_info ->
-      (a, unit) ColumnType.hlist ->
-      (a, unit) Term.hlist ->
-      binding_info * (a, unit) Ref.hlist =
-   fun bindings last_binding schema args ->
+      bindings -> pre_level -> a ColumnType.hlist -> a Term.hlist -> pre_level =
+   fun bindings last_level schema args ->
     match schema, args with
-    | [], [] -> last_binding, []
+    | [], [] -> last_level
     | column :: schema, arg :: args -> (
       match arg with
-      | Constant cte ->
-        let r = ColumnType.create_ref column in
-        r := cte;
-        let last_binding, refs =
-          process_for_negation bindings last_binding schema args
-        in
-        last_binding, r :: refs
+      | Constant _ -> find_last_binding0 bindings last_level schema args
       | Variable var ->
-        let var_info = get_binding bindings var column in
-        let (Binding_info last_info) = last_binding in
-        let last_binding, refs =
-          if var_info.order >= last_info.order
-          then process_for_negation bindings (Binding_info var_info) schema args
-          else process_for_negation bindings last_binding schema args
-        in
-        last_binding, get_or_create_output var_info :: refs)
+        let binding = get_binding bindings var column in
+        if binding.order >= order last_level
+        then find_last_binding0 bindings (Variable_level binding) schema args
+        else find_last_binding0 bindings last_level schema args)
+
+  let find_last_binding bindings schema args =
+    find_last_binding0 bindings (Constant_level bindings.constant_binding_info)
+      schema args
+
+  let rec process_variables :
+      type a. bindings -> a Variable.hlist -> a Ref.hlist =
+   fun bindings variables ->
+    match variables with
+    | [] -> []
+    | (var, column) :: other_variables ->
+      let binding = create_variable bindings var column in
+      get_or_create_output binding :: process_variables bindings other_variables
+
+  let rec process_parameters : type a. bindings -> a Variable.hlist -> a cells =
+   fun bindings parameters ->
+    match parameters with
+    | [] -> No_cells
+    | (param, ty) :: other_params ->
+      let binding = create_variable bindings param ty in
+      let cell = get_or_create_cell binding in
+      let filter = Table.cell_iterator cell in
+      binding.iterators <- filter :: binding.iterators;
+      One_cell (cell, process_parameters bindings other_params)
 
   let populate_bindings ~parameters ~variables ?(existentials = []) bindings =
     (* Compute the cells in which to pass parameter values. *)
     let parameter_cells = process_parameters bindings parameters in
     (* Create bindings for variables, in order. *)
-    let output = build_var_order bindings variables in
-    List.iter
-      (fun var -> ignore (create_binding bindings var None))
-      existentials;
+    let output = process_variables bindings variables in
+    List.iter (record_existential bindings) existentials;
     parameter_cells, output
 
+  let rec compile_atom :
+      type a. bindings -> a ColumnType.hlist -> a Term.hlist -> a Ref.hlist =
+   fun bindings schema vars ->
+    match schema, vars with
+    | [], [] -> []
+    | column :: schema, term :: terms -> (
+      match term with
+      | Constant cte -> ref cte :: compile_atom bindings schema terms
+      | Variable var ->
+        let binding = get_binding bindings var column in
+        get_or_create_output binding :: compile_atom bindings schema terms)
+
   let create_raw bindings ~parameters:parameter_cells ~variables:output
-      ?(negate = []) (atoms : unit Atom.t list) : _ =
-    let binders = Hashtbl.create 17 in
+      ?(negate = []) (atoms : unit atom list) : _ =
+    let binders =
+      List.fold_left
+        (fun binders (Atom (id, args)) ->
+          let handler, iterators = Table.iterator id in
+          bind_atom bindings (Constant_level bindings.constant_binding_info)
+            (Table.Id.schema id) args iterators;
+          Bind (id, handler) :: binders)
+        [] atoms
+    in
     List.iter
-      (fun (Atom.Atom (Table relation, args)) ->
-        let handler, iterators = Table.iterator relation Ignore in
-        process_atom bindings bindings.constant_binding_info
-          (Table.schema relation) args iterators;
-        let uid = Table.uid relation in
-        match Hashtbl.find_opt binders uid with
-        | None -> Hashtbl.replace binders uid (Bind (relation, [handler]))
-        | Some (Bind (existing, handlers)) ->
-          let handler = cast relation existing handler in
-          Hashtbl.replace binders uid (Bind (existing, handler :: handlers)))
-      atoms;
-    List.iter
-      (fun (Atom.Atom (Table relation, args)) ->
-        let Binding_info last_binding, refs =
-          process_for_negation bindings bindings.constant_binding_info
-            (Table.schema relation) args
-        in
-        (* Weird things would happen with negation of only constants *)
-        assert (last_binding.order > 0);
-        last_binding.instruction
-          <- Ite (Mem (Table relation, refs), Reject, last_binding.instruction))
+      (fun (Atom (id, args)) ->
+        let schema = Table.Id.schema id in
+        let refs = compile_atom bindings schema args in
+        match find_last_binding bindings schema args with
+        | Constant_level _ ->
+          Misc.fatal_error
+            "Negation of terms involving only constants is not supported."
+        | Variable_level level ->
+          level.instruction <- Ite (Mem (Id id, refs), Reject, level.instruction))
       negate;
-    { parameters = parameter_cells; variables = output; bindings; binders }
+    { environment =
+        { parameters = parameter_cells; variables = output; binders };
+      bindings
+    }
 
   exception Last_variable of int
 
@@ -1051,12 +888,14 @@ module Query = struct
     let last_order =
       try
         for i = Array.length ordered - 1 downto 0 do
-          let (Binding_info info) = ordered.(i) in
-          match[@warning "-fragile-match"]
-            info.cell, info.output, info.instruction
-          with
-          | None, None, Accept -> ()
-          | _ -> raise (Last_variable i)
+          match ordered.(i) with
+          | Constant_level _ -> raise (Last_variable i)
+          | Variable_level level -> (
+            match[@warning "-fragile-match"]
+              level.cell, level.output, level.instruction
+            with
+            | None, None, Accept -> ()
+            | _ -> raise (Last_variable i))
         done;
         -1
       with Last_variable i -> i
@@ -1064,205 +903,169 @@ module Query = struct
     let last_iterator = ref (-1) in
     let all_iterators = ref ([] : _ list) in
     Array.iter
-      (fun (Binding_info info) ->
-        (match info.iterators with
-        | [] -> (
-          (* Constants do not have iterators anyways. *)
-          if info.order <> 0
-          then
-            Misc.fatal_errorf
-              "%a always appears after variables with lower order."
-              print_binding info;
-          match[@warning "-fragile-match"] info.instruction with
-          | Accept -> ()
-          | _ -> assert false)
-        | _ :: _ ->
-          let iterator = Iterator.create info.iterators in
-          let column = get_column info in
-          let joe_schmuck =
-            Iterator_ex
-              (column, iterator, info.cell, info.output, info.instruction)
-          in
-          all_iterators := (joe_schmuck :: !all_iterators : _ list));
-        if info.order = last_order
-        then last_iterator := List.length !all_iterators - 1;
-        all_iterators := List.rev_append info.extra_bindings !all_iterators)
+      (fun level ->
+        if order level = last_order
+        then last_iterator := List.length !all_iterators;
+        all_iterators := List.rev_append (to_level level) !all_iterators)
       ordered;
     Array.of_list (List.rev !all_iterators), !last_iterator
 
-  let from_raw { parameters; variables; bindings; binders } =
+  let from_raw { environment; bindings } =
     let iterators, last_iterator = make_iterators bindings in
-    { parameters; variables; binders; iterators; last_iterator }
+    { environment; iterators; last_iterator }
 
-  let _create ~parameters ~variables atoms =
-    let bindings = create_bindings () in
-    let parameters, variables =
-      populate_bindings ~parameters ~variables bindings
-    in
-    from_raw (create_raw bindings ~parameters ~variables atoms)
-
-  let create ~parameters variables f =
+  let create_with_parameters ~parameters variables ?negate f =
     let bindings = create_bindings () in
     let cells, output = populate_bindings ~parameters ~variables bindings in
     let query = f (Term.variables parameters) (Term.variables variables) in
-    from_raw (create_raw bindings ~parameters:cells ~variables:output query)
+    let negate =
+      Option.map
+        (fun f -> f (Term.variables parameters) (Term.variables variables))
+        negate
+    in
+    from_raw
+      (create_raw bindings ~parameters:cells ~variables:output ?negate query)
 
-  let rec bind_parameters :
-      type a. (a, unit) cells -> (a, unit) Constant.hlist -> unit =
+  let create variables ?negate f =
+    create_with_parameters ~parameters:[] variables
+      ?negate:
+        (Option.map (fun f ([] : _ option Term.hlist) vars -> f vars) negate)
+      (fun [] vars -> f vars)
+
+  let rec bind_parameters0 : type a. a cells -> a Constant.hlist -> unit =
    fun cells values ->
     match cells, values with
     | No_cells, [] -> ()
-    | One_cell (column, cell, cells'), value :: values' ->
-      ColumnType.Cell.set column cell value;
-      bind_parameters cells' values'
+    | One_cell (cell, cells'), value :: values' ->
+      ColumnType.Cell.set cell value;
+      bind_parameters0 cells' values'
 
-  let rec compiled_loop db arr depth
-      (Iterator_ex (column, iterator, cell, output, instr) as this_level) =
-    match Iterator.current iterator with
-    | At_start -> assert false
-    | Key current_key ->
-      (match output with Some output -> output := current_key | None -> ());
-      if run_instruction db instr
-      then (
-        (match cell with
-        | Some cell -> ColumnType.Cell.set column cell current_key
+  let bind_parameters environment values =
+    bind_parameters0 environment.parameters values
+
+  let rec advance db arr depth (Level level) =
+    match Iterator.current level.iterator with
+    | Some current_key -> (
+      run_handler current_key level.output;
+      match run_instruction db level.instruction with
+      | Reject ->
+        Iterator.advance level.iterator;
+        advance db arr depth (Level level)
+      | Accept ->
+        (match level.cell with
+        | Some cell -> ColumnType.Cell.set cell current_key
         | None -> ());
-        Iterator.accept iterator;
+        Iterator.accept level.iterator;
         let next_depth = depth + 1 in
         if next_depth = Array.length arr
         then depth
         else
-          let next_level = arr.(next_depth) in
-          let (Iterator_ex (_, next_iterator, _, _, _)) = next_level in
-          Iterator.init next_iterator;
-          compiled_loop db arr next_depth next_level)
-      else (
-        Iterator.advance iterator;
-        compiled_loop db arr depth this_level)
-    | At_end ->
+          let (Level next_level) = arr.(next_depth) in
+          Iterator.init next_level.iterator;
+          advance db arr next_depth (Level next_level))
+    | None ->
       if depth = 0
       then -1
       else
         let prev_depth = depth - 1 in
-        let prev_level = arr.(prev_depth) in
-        let (Iterator_ex (_, prev_iterator, _, _, _)) = prev_level in
-        Iterator.advance prev_iterator;
-        compiled_loop db arr prev_depth prev_level
+        let (Level prev_level) = arr.(prev_depth) in
+        Iterator.advance prev_level.iterator;
+        advance db arr prev_depth (Level prev_level)
 
-  let[@inline] with_naive binders database f acc =
-    Hashtbl.iter
-      (fun _ (Bind (relation, handlers)) ->
-        let table = Database.get_table database relation in
-        List.iter (fun handler -> run_handler table.trie handler) handlers)
-      binders;
+  let bind_environment environment database =
+    List.iter
+      (fun (Bind (id, handler)) ->
+        let table = Database.get_table database id in
+        Table.bind id table handler)
+      environment.binders
+
+  let[@inline] with_naive environment database acc f =
+    bind_environment environment database;
     f acc
 
-  let[@inline] with_seminaive binders { database; new_facts } f acc =
+  let[@inline] with_seminaive ~diff:new_facts environment database f acc =
     let rec loop cnt acc =
       let cnt_this_run = ref 0 in
-      Hashtbl.iter
-        (fun _ (Bind (relation, handlers)) ->
+      List.iter
+        (fun (Bind (relation, handler)) ->
           let table = Database.get_table database relation in
           let diff = Database.get_table new_facts relation in
-          if Table.is_empty diff.Table.is_table diff
-          then
-            List.iter (fun handler -> run_handler table.trie handler) handlers
-          else
-            List.iter
-              (fun handler ->
-                if !cnt_this_run = cnt
-                then run_handler diff.trie handler
-                else run_handler table.trie handler;
-                incr cnt_this_run)
-              handlers)
-        binders;
+          if Table.is_empty relation diff
+          then Table.bind relation table handler
+          else (
+            if !cnt_this_run = cnt
+            then Table.bind relation diff handler
+            else Table.bind relation table handler;
+            incr cnt_this_run))
+        environment.binders;
       if cnt < !cnt_this_run then loop (cnt + 1) (f acc) else acc
     in
     loop 0 acc
 
-  let run_fold db (query : (_, _) t) f init =
-    let first_level = query.iterators.(0) in
-    let (Iterator_ex (_, first_iterator, _, _, _)) = first_level in
-    Iterator.init first_iterator;
+  let[@inline] run_fold db (query : (_, _) with_parameters) f init =
+    let (Level first_level) = query.iterators.(0) in
+    Iterator.init first_level.iterator;
     let last = query.last_iterator in
     let rec loop depth acc =
       if depth < 0
       then acc
       else
-        let acc = f (Ref.get_hlist query.variables) acc in
+        let acc = f (get_variables query) acc in
         if last < 0
         then acc
         else
-          let (Iterator_ex (_, iterator, _, _, _)) = query.iterators.(last) in
-          Iterator.advance iterator;
-          let depth =
-            compiled_loop db query.iterators last query.iterators.(last)
-          in
+          let (Level last_level) = query.iterators.(last) in
+          Iterator.advance last_level.iterator;
+          let depth = advance db query.iterators last (Level last_level) in
           loop depth acc
     in
-    loop (compiled_loop db query.iterators 0 first_level) init
+    loop (advance db query.iterators 0 (Level first_level)) init
 
-  let run_iter db (query : (_, _) t) f =
-    let first_level = query.iterators.(0) in
-    let (Iterator_ex (_, first_iterator, _, _, _)) = first_level in
-    Iterator.init first_iterator;
-    let last = query.last_iterator in
-    let rec loop depth =
-      if depth < 0
-      then ()
-      else (
-        f ();
-        if last < 0
-        then ()
-        else
-          let (Iterator_ex (_, iterator, _, _, _)) = query.iterators.(last) in
-          Iterator.advance iterator;
-          loop (compiled_loop db query.iterators last query.iterators.(last)))
-    in
-    loop (compiled_loop db query.iterators 0 first_level)
+  let run_iter db query f = run_fold db query (fun keys () -> f keys) ()
 
-  let generic_fold db with_ (query : (_, _) t) parameters database ~init ~f =
-    bind_parameters query.parameters parameters;
-    with_ query.binders database (run_fold db query f) init
+  let fold_with_parameters (query : (_, _) with_parameters) parameters database
+      ~init ~f =
+    bind_parameters query.environment parameters;
+    with_naive query.environment database init (run_fold database query f)
 
-  let fold query parameters database ~init ~f =
-    generic_fold database with_naive query parameters database ~init ~f
+  let fold (query : _ t) database ~init ~f =
+    fold_with_parameters query [] database ~init ~f
 
-  let incremental_fold query parameters database ~init ~f =
-    generic_fold database.database with_seminaive query parameters database
-      ~init ~f
+  let iter_with_parameters (query : (_, _) with_parameters) parameters database
+      ~f =
+    bind_parameters query.environment parameters;
+    with_naive query.environment database () (fun () ->
+        run_iter database query f)
 
-  let iter query parameters database ~f =
-    fold query parameters database ~init:() ~f:(fun row () -> f row)
-
-  let _incremental_iter query parameters database ~f =
-    incremental_fold query parameters database ~init:() ~f:(fun row () -> f row)
+  let iter (query : _ t) database ~f = iter_with_parameters query [] database ~f
 end
 
 module Rule = struct
   type t =
     | Rule :
-        { query : (unit, unit) Query.t;
-          relation : ('k, 'v) Relation.t;
-          arguments : ('k, unit) Ref.hlist;
+        { query : unit option Cursor.t;
+          table_id : ('t, 'k, 'v) Table.Id.t;
+          arguments : 'k Ref.hlist;
           value : 'v option
         }
         -> t
 
   let create ~variables ?(existentials = []) conclusion value ?negate hypotheses
       =
-    let bindings = Query.create_bindings () in
+    let bindings = Cursor.create_bindings () in
     let parameters, variables =
-      Query.populate_bindings ~parameters:[] ~variables:[]
+      Cursor.populate_bindings ~parameters:[] ~variables:[]
         ~existentials:(variables @ existentials) bindings
     in
     let raw =
-      Query.create_raw bindings ~parameters ~variables ?negate hypotheses
+      Cursor.create_raw bindings ~parameters ~variables ?negate hypotheses
     in
-    let (Atom.Atom (Table table, args)) = conclusion in
-    let arguments = Query.compile_atom raw.bindings (Table.schema table) args in
-    let query = Query.from_raw raw in
-    Rule { query; relation = Table table; arguments; value }
+    let (Atom (table, args)) = conclusion in
+    let arguments =
+      Cursor.compile_atom raw.bindings (Table.Id.schema table) args
+    in
+    let query = Cursor.from_raw raw in
+    Rule { query; table_id = table; arguments; value }
 
   let delete ~variables ?existentials conclusion ?negate hypotheses =
     create ~variables ?existentials conclusion None ?negate hypotheses
@@ -1270,165 +1073,87 @@ module Rule = struct
   let create ~variables ?existentials conclusion ?negate hypotheses =
     create ~variables ?existentials conclusion (Some ()) ?negate hypotheses
 
-  let rec saturate_seminaive ?(use_naive = false) n rules incremental =
-    let database = ref incremental.database in
-    let[@inline] naive_runner (query : (_, _) Query.t) f =
-      Query.with_naive query.Query.binders incremental.database
-        (fun () -> Query.run_iter incremental.database query f)
-        ()
-    in
-    let[@inline] seminaive_runner (query : (_, _) Query.t) f =
-      Query.with_seminaive query.Query.binders incremental
-        (fun () -> Query.run_iter incremental.database query f)
-        ()
-    in
-    let[@inline] naive_run_step (Rule { relation; arguments; value; query }) =
-      let (Table is_table) = relation in
-      let table = ref (Database.get_table !database is_table) in
+  let rec saturate ?diff rules db =
+    let run_step new_db (Rule { table_id; arguments; value; query }) =
+      let table = ref (Database.get_table new_db table_id) in
+      let env = query.Cursor.environment in
       (match value with
-      | Some value ->
-        naive_runner query (fun () ->
-            let arguments = Ref.get_hlist arguments in
-            table := Table.add arguments value !table)
-      | None ->
-        naive_runner query (fun () ->
-            let arguments = Ref.get_hlist arguments in
-            table := Table.remove arguments !table));
-      database := Database.set_table !database is_table !table
+      | Some value -> (
+        let[@inline] step_add () =
+          Cursor.run_iter db query (fun [] ->
+              table := Table.add table_id (Ref.get_hlist arguments) value !table)
+        in
+        match diff with
+        | None -> Cursor.with_naive env db () step_add
+        | Some diff -> Cursor.with_seminaive ~diff env db step_add ())
+      | None -> (
+        let[@inline] step_remove () =
+          Cursor.run_iter db query (fun [] ->
+              table := Table.remove_refs table_id arguments !table)
+        in
+        match diff with
+        | None -> Cursor.with_naive env db () step_remove
+        | Some diff -> Cursor.with_seminaive ~diff env db step_remove ()));
+      Database.set_table new_db table_id !table
     in
-    let[@inline] seminaive_run_step (Rule { relation; arguments; value; query })
-        =
-      let (Table is_table) = relation in
-      let table = ref (Database.get_table !database is_table) in
-      (match value with
-      | Some value ->
-        seminaive_runner query (fun () ->
-            let arguments = Ref.get_hlist arguments in
-            table := Table.add arguments value !table)
-      | None ->
-        seminaive_runner query (fun () ->
-            let arguments = Ref.get_hlist arguments in
-            table := Table.remove arguments !table));
-      database := Database.set_table !database is_table !table
-    in
-    if use_naive
-    then List.iter naive_run_step rules
-    else List.iter seminaive_run_step rules;
-    if !database == incremental.database
-    then !database
+    let new_db = List.fold_left run_step db rules in
+    if new_db == db
+    then new_db
     else
-      let diff =
-        Database.cut !database
-          ~cut_after:(Database.current_level incremental.database)
-      in
-      saturate_seminaive (n + 1) rules
-        { database = !database; new_facts = diff }
+      let diff = Database.cut new_db ~cut_after:(Database.current_level db) in
+      saturate ~diff rules new_db
 end
 
 module Schedule = struct
   type t =
     | Fixpoint of t
-    | Saturate of Rule.t list * int Id.Map.t
+    | Saturate of Rule.t list * int Int.Map.t
     | List of t list
 
   let fixpoint schedule = Fixpoint schedule
 
   let list schedules = List schedules
 
-  let saturate rules = Saturate (rules, Id.Map.empty)
-
-  (* takes (db, current_level) and creates a new (db, current_level) *)
-  let saturate_seminaive ~use_naive queries incremental =
-    (* List.iter (fun query -> clear_updates query.updates) queries; *)
-    Rule.saturate_seminaive ~use_naive 0 queries incremental
-
-  let do_saturate ~use_naive queries database new_facts =
-    saturate_seminaive ~use_naive queries { database; new_facts }
+  let saturate rules = Saturate (rules, Int.Map.empty)
 
   let rec run db schedule : _ * t =
     match schedule with
     | Saturate (rules, last_ts) ->
-      let use_naive = Id.Map.is_empty last_ts in
-      let new_facts = Database.cut db ~cut_after:last_ts in
-      let db' = do_saturate ~use_naive rules db new_facts in
-      db', Saturate (rules, Database.current_level db')
+      let new_db =
+        if Int.Map.is_empty last_ts
+        then Rule.saturate ?diff:None rules db
+        else Rule.saturate ~diff:(Database.cut db ~cut_after:last_ts) rules db
+      in
+      new_db, Saturate (rules, Database.current_level new_db)
     | Fixpoint schedule ->
-      let db', schedule' = run db schedule in
-      if db' == db
-      then db', Fixpoint schedule'
-      else run db' (Fixpoint schedule')
+      let new_db, schedule = run db schedule in
+      if new_db == db
+      then new_db, Fixpoint schedule
+      else run new_db (Fixpoint schedule)
     | List schedules ->
-      let db, schedules = List.fold_left_map run db schedules in
-      db, List schedules
+      let new_db, schedules = List.fold_left_map run db schedules in
+      new_db, List schedules
 
   let run schedule db =
     let db', _schedule' = run db schedule in
     db'
 end
 
-type database = Database.raw
+type database = Database.t
 
 let empty = Database.empty
 
-let add_fact (Relation.Table id) args db =
-  Database.set_table db id
-    (Relation.add_fact id args () (Database.get_table db id))
+let create_relation = Table.Id.create_trie
 
-let _ = ignore Trie.remove
-
-let () =
-  if false
-  then (
-    let db = Database.empty in
-    let int = ColumnType.int in
-    let p = Relation.create ~name:"p" [int; int] in
-    let q = Relation.create ~name:"q" [int; int] in
-    let r = Relation.create ~name:"r" [int; int; int] in
-    let s = Relation.create ~name:"s" [int; int] in
-    (* p *)
-    let db = add_fact p [0; 1] db in
-    let db = add_fact p [1; 0] db in
-    let db = add_fact p [2; 1] db in
-    let db = add_fact p [7; 3] db in
-    let db = add_fact p [1; 7] db in
-    (* q *)
-    let db = add_fact q [1; 2] db in
-    let db = add_fact q [3; 1] db in
-    (* r *)
-    let db = add_fact r [1; 3; 0] db in
-    let db = add_fact r [7; 12; 1] db in
-    let x = "x" in
-    let y = "y" in
-    let z = "z" in
-    let rule1 =
-      Rule.create ~variables:[z; y; x]
-        (Atom.create r [Variable x; Constant 42; Variable z])
-        [Atom (p, [Variable x; Variable y]); Atom (q, [Variable z; Variable y])]
-    in
-    Format.eprintf "rule 1 compiled@.";
-    let rule2 =
-      Rule.create ~variables:[x; z; y]
-        (Atom.create p [Variable x; Variable y])
-        [Atom (r, [Variable x; Variable z; Variable y])]
-    in
-    Format.eprintf "rule 2 compiled@.";
-    let _rule5 =
-      Rule.create ~variables:[x; y]
-        (Atom.create s [Variable x; Variable y])
-        ~negate:[Atom.create p [Variable y; Variable x]]
-        [Atom.create p [Variable x; Variable y]]
-    in
-    let schedule =
-      let open! Schedule in
-      list
-        [ fixpoint (list [saturate [rule1; rule2] (* ; saturate ([rule3]) *)]);
-          saturate [_rule5] ]
-    in
-    Format.eprintf "@[<v>Before:@ %a@]@." Database.print db;
-    let db = Schedule.run schedule db in
-    (* let db = add_fact db (Fact (p, [| 57; 57 |])) in *)
-    Format.eprintf "doit again@.";
-    (* let db, _schedule = run_schedule db schedule in *)
-    Format.eprintf "@[<v>After:@ %a@]@." Database.print db)
+let add_fact (Table.Id.Id id) args db =
+  Database.set_table db id (Table.add id args () (Database.get_table db id))
 
 let print = Database.print
+
+type 'k relation = ('k, unit) Table.Id.poly
+
+type 'a rel1 = ('a -> unit option) relation
+
+type ('a, 'b) rel2 = ('a -> 'b -> unit option) relation
+
+type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> unit option) relation
