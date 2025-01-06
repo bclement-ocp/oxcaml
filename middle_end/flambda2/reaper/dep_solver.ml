@@ -409,7 +409,7 @@ let pp_result ppf (res : result) =
   in
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
-let db_to_uses db field_id_to_field =
+let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
   let used_pred x = atom Global_flow_graph.used_pred [x] in
@@ -429,7 +429,7 @@ let db_to_uses db field_id_to_field =
   let h = Hashtbl.create 17 in
   Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
   Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
-      let f = Numeric_types.Int.Map.find f field_id_to_field in
+      let f = Field.decode f in
       let[@local] ff fields =
         Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
       in
@@ -440,7 +440,7 @@ let db_to_uses db field_id_to_field =
       | Some (Fields f) -> ff f);
   Cursor.iter query_used_field db ~f:(fun [u; f; v] ->
       let[@local] ff fields =
-        let f = Numeric_types.Int.Map.find f field_id_to_field in
+        let f = Field.decode f in
         let v_top = Hashtbl.find_opt h v = Some Top in
         let fields =
           if v_top
@@ -483,8 +483,6 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
     ((t1 -. t0) /. (t2 -. t1'));
   let result2 =
     db_to_uses db
-      (let _, f, _ = graph_new.field_map in
-       f)
   in
   (* Format.eprintf "OLD:@.%a@.@.NEW:@.%a@.@." pp_result result pp_result
      result2; Format.eprintf "DB:@.%a@." Database.print_database db; *)

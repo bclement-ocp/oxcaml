@@ -37,6 +37,10 @@ module Field : sig
   val print : Format.formatter -> t -> unit
 
   module Map : Container_types.Map with type key = t
+
+  val encode : t -> int
+
+  val decode : int -> t
 end
 
 module Dep : sig
@@ -81,7 +85,6 @@ type graph =
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
     schedule : Datalog.Schedule.t;
-    mutable field_map : int Field.Map.t * Field.t Numeric_types.Int.Map.t * int
   }
 
 val pp_used_graph : Format.formatter -> graph -> unit

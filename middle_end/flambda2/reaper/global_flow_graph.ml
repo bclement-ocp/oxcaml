@@ -107,6 +107,25 @@ module Field = struct
   include M
   module Container = Container_types.Make (M)
   module Map = Container.Map
+
+  let encode, decode =
+    let field_to_int = ref Map.empty in
+    let int_to_field = ref Numeric_types.Int.Map.empty in
+    let first_free = ref 0 in
+    let encode field =
+      match Map.find_opt field !field_to_int with
+      | Some f -> f
+      | None ->
+          let r = !first_free in
+          field_to_int := Map.add field r !field_to_int;
+          int_to_field := Numeric_types.Int.Map.add r field !int_to_field;
+          first_free := r + 1;
+          r
+    in
+    let decode n =
+      Numeric_types.Int.Map.find n !int_to_field
+    in
+    encode, decode
 end
 
 module Dep = struct
@@ -197,7 +216,6 @@ type graph =
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
     schedule : Datalog.Schedule.t;
-    mutable field_map : int Field.Map.t * Field.t Numeric_types.Int.Map.t * int
   }
 
 let pp_used_graph ppf (graph : graph) =
@@ -211,12 +229,8 @@ let pp_used_graph ppf (graph : graph) =
   in
   Format.fprintf ppf "{ %a }" pp elts
 
-let rr = ref (Field.Map.empty, Numeric_types.Int.Map.empty, 0)
-
 let field =
-  Datalog.ColumnType.make "field" ~print:(fun ppf i ->
-      let _, rev_map, _ = !rr in
-      Field.print ppf (Numeric_types.Int.Map.find i rev_map))
+  Datalog.ColumnType.make "field" ~print:(fun ppf i -> Field.print ppf (Field.decode i))
 
 let field_datalog_type = field
 
@@ -394,20 +408,8 @@ let create () =
     used = Hashtbl.create 100;
     datalog = Datalog.empty;
     schedule;
-    field_map = Field.Map.empty, Numeric_types.Int.Map.empty, 0
   }
 
-let get_field t field =
-  let map, rev_map, sz = t.field_map in
-  match Field.Map.find_opt field map with
-  | Some f -> f
-  | None ->
-    t.field_map
-      <- ( Field.Map.add field sz map,
-           Numeric_types.Int.Map.add sz field rev_map,
-           sz + 1 );
-    rr := t.field_map;
-    sz
 
 let add_fact t rel args = t.datalog <- Datalog.add_fact rel args t.datalog
 
@@ -420,10 +422,10 @@ let insert t (k : Code_id_or_name.t) v =
   | Alias { target } -> add_fact t alias_rel [k; Code_id_or_name.name target]
   | Use { target } -> add_fact t use_rel [k; target]
   | Accessor { relation; target } ->
-    let field = get_field t relation in
+    let field = Field.encode relation in
     add_fact t accessor_rel [k; field; Code_id_or_name.name target]
   | Constructor { relation; target } ->
-    let field = get_field t relation in
+    let field = Field.encode relation in
     add_fact t constructor_rel [k; field; target]
   | Alias_if_def _ -> ()
   | Propagate { target; source } ->
