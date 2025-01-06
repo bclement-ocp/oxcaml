@@ -229,53 +229,71 @@ let pp_used_graph ppf (graph : graph) =
   in
   Format.fprintf ppf "{ %a }" pp elts
 
-let field =
-  Datalog.ColumnType.make "field" ~print:(fun ppf i -> Field.print ppf (Field.decode i))
+module FieldT : Datalog.Column.S with type t = int = struct
+  type t = int
 
-let field_datalog_type = field
+  let name = "field"
 
-let alias_rel =
-  Datalog.create_relation ~name:"alias"
-    [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
+  let print ppf i = Field.print ppf (Field.decode i)
+
+  module Tree = Patricia_tree.Make (struct
+    let print = print
+  end)
+
+  module Map = Tree.Map
+
+  let datalog_column_repr = Trie.patricia_tree_repr
+end
+
+let field : _ Datalog.Column.t = (module FieldT)
+
+module Code_id_or_nameT : Datalog.Column.S with type t = Code_id_or_name.t =
+struct
+  type t = Code_id_or_name.t
+
+  let name = "code_id_or_name"
+
+  let print = Code_id_or_name.print
+
+  module Map = Code_id_or_name.Map
+
+  let datalog_column_repr = Code_id_or_name.datalog_column_repr
+end
+
+let code_id_or_name : _ Datalog.Column.t = (module Code_id_or_nameT)
+
+module Alias_rel =
+  Datalog.Schema.Relation2 (Code_id_or_nameT) (Code_id_or_nameT)
+
+let alias_rel = Datalog.Table.Id.create ~name:"alias" (module Alias_rel)
 
 let use_rel =
-  Datalog.create_relation ~name:"use"
-    [Code_id_or_name.datalog_column_type; Code_id_or_name.datalog_column_type]
+  Datalog.create_relation ~name:"use" [code_id_or_name; code_id_or_name]
 
 let accessor_rel =
   Datalog.create_relation ~name:"accessor"
-    [ Code_id_or_name.datalog_column_type;
-      field;
-      Code_id_or_name.datalog_column_type ]
+    [code_id_or_name; field; code_id_or_name]
 
 let constructor_rel =
   Datalog.create_relation ~name:"constructor"
-    [ Code_id_or_name.datalog_column_type;
-      field;
-      Code_id_or_name.datalog_column_type ]
+    [code_id_or_name; field; code_id_or_name]
 
 let propagate_rel =
   Datalog.create_relation ~name:"propagate"
-    [ Code_id_or_name.datalog_column_type;
-      Code_id_or_name.datalog_column_type;
-      Code_id_or_name.datalog_column_type ]
+    [code_id_or_name; code_id_or_name; code_id_or_name]
 
-let used_pred =
-  Datalog.create_relation ~name:"used" [Code_id_or_name.datalog_column_type]
+let used_pred = Datalog.create_relation ~name:"used" [code_id_or_name]
 
 let used_fields_top_rel =
-  Datalog.create_relation ~name:"used_fields_top"
-    [Code_id_or_name.datalog_column_type; field]
+  Datalog.create_relation ~name:"used_fields_top" [code_id_or_name; field]
 
 let used_fields_rel =
   Datalog.create_relation ~name:"used_fields"
-    [ Code_id_or_name.datalog_column_type;
-      field;
-      Code_id_or_name.datalog_column_type ]
+    [code_id_or_name; field; code_id_or_name]
 
 let create () =
   let open Datalog in
-  let alias_rel = atom alias_rel in
+  let alias_rel = atom (Datalog.table_relation alias_rel) in
   let used_pred = atom used_pred in
   let propagate_rel = atom propagate_rel in
   let used_fields_rel = atom used_fields_rel in
@@ -419,7 +437,12 @@ let insert t (k : Code_id_or_name.t) v =
   | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
   | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s));
   match (v : Dep.t) with
-  | Alias { target } -> add_fact t alias_rel [k; Code_id_or_name.name target]
+  | Alias { target } ->
+    let alias_table = Datalog.get_table alias_rel t.datalog in
+    let alias_table =
+      Alias_rel.add_or_replace [k; Code_id_or_name.name target] () alias_table
+    in
+    t.datalog <- Datalog.set_table alias_rel alias_table t.datalog
   | Use { target } -> add_fact t use_rel [k; target]
   | Accessor { relation; target } ->
     let field = Field.encode relation in

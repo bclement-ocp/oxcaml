@@ -15,55 +15,114 @@
 
 (* {2 Reified types} *)
 
-module ColumnType : sig
-  include Heterogenous_list.S
+module Constant : Heterogenous_list.S with type 'a t := 'a
 
-  (** [make name ~print] creates a new column type with the given name and
-      printing function.
+module Column : sig
+  module type S = sig
+    type t
 
-      Note that [make] can only create columns of type [int], but it is intended
-      to also be used to create columns of types that are represented as
-      integers through signature restrictions.
+    val name : string
 
-      {b Example}
+    val print : Format.formatter -> t -> unit
 
-      The following code creates a [node] type to represent the nodes of a
-      graph, internally represented by unique integer identifiers.
+    module Map : Container_types_intf.Map_plus_iterator with type key = t
 
-      {[
-      module Node : sig
-        type t (* = private int *)
+    val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
+  end
 
-        val print : Format.formatter -> t -> unit
+  type 'a t = (module S with type t = 'a)
 
-        val column : t ColumnType.t
-
-        val make : unit -> t
-      end = struct
-        type t = int
-
-        let print ppf n = Format.fprintf ppf "node:%d" n
-
-        let column = ColumnType.make "node" ~print
-
-        let make =
-          let cnt = ref 0 in
-          fun () -> incr cnt; !cnt
-      end
-
-      type node = Node.t
-
-      let node = Node.column
-      ]}
-  *)
-  val make : string -> print:(Format.formatter -> int -> unit) -> int t
-
-  (** [int] is a convenience column for values of type [int], named "int"
-      and printed with [Format.pp_print_int]. *)
-  val int : int t
+  include Heterogenous_list.S with type 'a t := 'a t
 end
 
-module Constant : Heterogenous_list.S with type 'a t := 'a
+module Schema : sig
+  module type Value = sig
+    type t
+
+    val default : t
+  end
+
+  module type S = sig
+    type keys
+
+    module Value : Value
+
+    type t
+
+    val is_trie : (t, keys, Value.t) Trie.is_trie
+
+    val schema : keys Column.hlist
+
+    val empty : t
+
+    val is_empty : t -> bool
+
+    val singleton : keys Constant.hlist -> Value.t -> t
+
+    val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
+
+    val remove : keys Constant.hlist -> t -> t
+
+    val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
+
+    val find_opt : keys Constant.hlist -> t -> Value.t option
+  end
+
+  type ('t, 'k, 'v) t =
+    (module S with type t = 't and type keys = 'k and type Value.t = 'v)
+
+  module Make (C : Column.S) (V : Value) :
+    S
+      with type keys = C.t -> Heterogenous_list.nil
+       and module Value = V
+       and type t = V.t C.Map.t
+
+  module Cons (C : Column.S) (S : S) :
+    S
+      with type keys = C.t -> S.keys
+       and module Value = S.Value
+       and type t = S.t C.Map.t
+
+  module type C = Column.S
+
+  module type Relation = S with type Value.t = unit
+
+  module Relation1 (C1 : C) :
+    Relation
+      with type keys = C1.t -> Heterogenous_list.nil
+       and type t = unit C1.Map.t
+
+  module Relation2 (C1 : C) (C2 : C) :
+    Relation
+      with type keys = C1.t -> Relation1(C2).keys
+       and type t = Relation1(C2).t C1.Map.t
+
+  module Relation3 (C1 : C) (C2 : C) (C3 : C) :
+    Relation
+      with type keys = C1.t -> Relation2(C2)(C3).keys
+       and type t = Relation2(C2)(C3).t C1.Map.t
+
+  module Relation4 (C1 : C) (C2 : C) (C3 : C) (C4 : C) :
+    Relation
+      with type keys = C1.t -> Relation3(C2)(C3)(C4).keys
+       and type t = Relation3(C2)(C3)(C4).t C1.Map.t
+end
+
+module Table : sig
+  module Id : sig
+    type ('t, 'k, 'v) t
+
+    val create : name:string -> ('t, 'k, 'v) Schema.t -> ('t, 'k, 'v) t
+  end
+
+  module Ref : sig
+    type ('k, 'v) t
+
+    val add_or_replace : ('k, 'v) t -> 'k Constant.hlist -> 'v -> unit
+
+    val find_opt : ('k, 'v) t -> 'k Constant.hlist -> 'v option
+  end
+end
 
 (** {2 Facts database} *)
 
@@ -78,6 +137,8 @@ type ('a, 'b) rel2 = ('a -> 'b -> Heterogenous_list.nil) relation
 
 (** Shortcut type for ternary relations. *)
 type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> Heterogenous_list.nil) relation
+
+val table_relation : ('t, 'k, unit) Table.Id.t -> 'k relation
 
 (** [create_relation ~name schema] creates a new relation with name [name] and
     schema [schema].
@@ -105,7 +166,9 @@ type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> Heterogenous_list.nil) relation
       create_relation ~name:"edge" [node; node]
     ]}
 *)
-val create_relation : name:string -> 'k ColumnType.hlist -> 'k relation
+val create_relation : name:string -> 'k Column.hlist -> 'k relation
+
+val create_table_ref : 'k relation -> ('k, unit) Table.Ref.t
 
 (** A database is a collection of {e facts}, i.e. relations applied to constant
     values.
@@ -119,6 +182,9 @@ val print : Format.formatter -> database -> unit
 
 (** [empty] is an empty database which contains no facts. *)
 val empty : database
+
+val add_table_ref :
+  database -> 'k relation -> ('k, unit) Table.Ref.t -> database
 
 (** [add_fact rel args db] records a fact into the database [db].
 
@@ -145,6 +211,10 @@ val empty : database
     ]}
 *)
 val add_fact : 'k relation -> 'k Constant.hlist -> database -> database
+
+val get_table : ('t, 'k, 'v) Table.Id.t -> database -> 't
+
+val set_table : ('t, 'k, 'v) Table.Id.t -> 't -> database -> database
 
 (** {2 Query language} *)
 

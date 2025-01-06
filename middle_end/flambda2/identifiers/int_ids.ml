@@ -913,7 +913,7 @@ module Code_id_or_name = struct
   module Set = Tree.Set
   module Map = Tree.Map
 
-  let datalog_column_type = Datalog.ColumnType.make "code_id_or_name" ~print
+  let datalog_column_repr = Trie.patricia_tree_repr
 end
 
 let initialise () =

@@ -21,41 +21,39 @@ module Int = struct
   module Map = Tree.Map
 end
 
+type ('t, 'k, 'v) repr = Patricia_tree_repr : ('v Int.Map.t, int, 'v) repr
+
+let patricia_tree_repr = Patricia_tree_repr
+
 type (_, _, _) is_trie =
-  | Map_is_trie : ('v Int.Map.t, int -> nil, 'v) is_trie
-  | Nested_trie : ('s, 'b, 'v) is_trie -> ('s Int.Map.t, int -> 'b, 'v) is_trie
+  | Map_is_trie : ('m, 'k, 'v) repr -> ('m, 'k -> nil, 'v) is_trie
+  | Nested_trie :
+      ('m, 'k, 's) repr * ('s, 'b, 'v) is_trie
+      -> ('m, 'k -> 'b, 'v) is_trie
 
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
-let patricia_map = Map_is_trie
+let map_of_value repr = Map_is_trie repr
 
-let patricia_map_of_trie is_trie = Nested_trie is_trie
+let map_of_trie repr is_trie = Nested_trie (repr, is_trie)
 
 let empty : type t k v. (t, k, v) is_trie -> t = function
-  | Map_is_trie -> Int.Map.empty
-  | Nested_trie _ -> Int.Map.empty
+  | Map_is_trie Patricia_tree_repr -> Int.Map.empty
+  | Nested_trie (Patricia_tree_repr, _) -> Int.Map.empty
 
 let is_empty : type t k v. (t, k, v) is_trie -> t -> bool = function
-  | Map_is_trie -> Int.Map.is_empty
-  | Nested_trie _ -> Int.Map.is_empty
-
-let rec iter :
-    type t k v.
-    (t, k, v) is_trie -> (k Constant.hlist -> v -> unit) -> t -> unit =
- fun w f t ->
-  match w with
-  | Map_is_trie -> Int.Map.iter (fun k v -> f [k] v) t
-  | Nested_trie w' ->
-    Int.Map.iter (fun k t -> iter w' (fun k' v -> f (k :: k') v) t) t
+  | Map_is_trie Patricia_tree_repr -> Int.Map.is_empty
+  | Nested_trie (Patricia_tree_repr, _) -> Int.Map.is_empty
 
 let rec find0 :
     type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> v =
  fun w k ks t ->
   match ks, w with
   | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.find k t
-  | k' :: ks', Nested_trie w' -> find0 w' k' ks' (Int.Map.find k t)
+  | [], Map_is_trie Patricia_tree_repr -> Int.Map.find k t
+  | k' :: ks', Nested_trie (Patricia_tree_repr, w') ->
+    find0 w' k' ks' (Int.Map.find k t)
 
 let find : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> v =
  fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> find0 w k ks t
@@ -68,8 +66,9 @@ let rec singleton0 :
  fun w k ks v ->
   match ks, w with
   | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.singleton k v
-  | k' :: ks', Nested_trie w' -> Int.Map.singleton k (singleton0 w' k' ks' v)
+  | [], Map_is_trie Patricia_tree_repr -> Int.Map.singleton k v
+  | k' :: ks', Nested_trie (Patricia_tree_repr, w') ->
+    Int.Map.singleton k (singleton0 w' k' ks' v)
 
 let singleton : type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t =
  fun w k v -> match k, w with [], _ -> . | k :: ks, _ -> singleton0 w k ks v
@@ -80,8 +79,8 @@ let rec add0 :
  fun w k ks v t ->
   match ks, w with
   | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.add k v t
-  | k' :: ks', Nested_trie w' -> (
+  | [], Map_is_trie Patricia_tree_repr -> Int.Map.add k v t
+  | k' :: ks', Nested_trie (Patricia_tree_repr, w') -> (
     match Int.Map.find_opt k t with
     | Some m -> Int.Map.add k (add0 w' k' ks' v m) t
     | None -> Int.Map.add k (singleton0 w' k' ks' v) t)
@@ -95,8 +94,8 @@ let rec remove0 :
  fun w k ks t ->
   match ks, w with
   | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.remove k t
-  | k' :: ks', Nested_trie w' -> (
+  | [], Map_is_trie Patricia_tree_repr -> Int.Map.remove k t
+  | k' :: ks', Nested_trie (Patricia_tree_repr, w') -> (
     match Int.Map.find_opt k t with
     | None -> t
     | Some m ->
@@ -110,8 +109,9 @@ let rec union :
     type t k v. (t, k, v) is_trie -> (v -> v -> v option) -> t -> t -> t =
  fun w f t1 t2 ->
   match w with
-  | Map_is_trie -> Int.Map.union (fun _ left right -> f left right) t1 t2
-  | Nested_trie w' ->
+  | Map_is_trie Patricia_tree_repr ->
+    Int.Map.union (fun _ left right -> f left right) t1 t2
+  | Nested_trie (Patricia_tree_repr, w') ->
     Int.Map.union
       (fun _ left right ->
         let s = union w' f left right in
@@ -130,8 +130,6 @@ module Iterator = struct
   include Heterogenous_list.Make (struct
     type nonrec 'a t = 'a t
   end)
-
-  let _lol = 0
 
   let equal_key (type a) (Iterator _ : a t) : a -> a -> bool = Int.equal
 
@@ -162,9 +160,54 @@ module Iterator = struct
   let rec create : type m k v. (m, k, v) is_trie -> m ref -> v ref -> k hlist =
    fun is_trie this_ref value_handler ->
     match is_trie with
-    | Map_is_trie -> [create_iterator this_ref value_handler]
-    | Nested_trie next_trie ->
+    | Map_is_trie Patricia_tree_repr -> [create_iterator this_ref value_handler]
+    | Nested_trie (Patricia_tree_repr, next_trie) ->
       let next_ref = ref (empty next_trie) in
       create_iterator this_ref next_ref
       :: create next_trie next_ref value_handler
 end
+
+module type Key = sig
+  type t
+
+  module Map : Container_types.Map_plus_iterator with type key = t
+
+  val datalog_column_repr : ('a Map.t, t, 'a) repr
+end
+
+module type S = sig
+  type keys
+
+  type 'a t
+
+  val is_trie : ('a t, keys, 'a) is_trie
+
+  val empty : 'a t
+  (* Put in the signature to work around the value restriction. *)
+end
+
+module Make (X : Key) = struct
+  type keys = X.t -> nil
+
+  type 'a t = 'a X.Map.t
+
+  let is_trie = Map_is_trie X.datalog_column_repr
+
+  let empty = X.Map.empty
+end
+
+module Cons (X : Key) (T : S) = struct
+  type keys = X.t -> T.keys
+
+  type 'a t = 'a T.t X.Map.t
+
+  let is_trie = Nested_trie (X.datalog_column_repr, T.is_trie)
+
+  let empty = X.Map.empty
+end
+
+module Make1 (X1 : Key) = Make (X1)
+module Make2 (X1 : Key) (X2 : Key) = Cons (X1) (Make1 (X2))
+module Make3 (X1 : Key) (X2 : Key) (X3 : Key) = Cons (X1) (Make2 (X2) (X3))
+module Make4 (X1 : Key) (X2 : Key) (X3 : Key) (X4 : Key) =
+  Cons (X1) (Make3 (X2) (X3) (X4))

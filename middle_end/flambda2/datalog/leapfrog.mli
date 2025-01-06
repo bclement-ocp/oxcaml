@@ -63,6 +63,8 @@ module type Iterator = sig
       is hidden. *)
   type 'a t
 
+  include Heterogenous_list.S with type 'a t := 'a t
+
   (** [current it] is the key at the current position of the iterator [it], or
       [None] if the iterator is exhausted. *)
   val current : 'a t -> 'a option
@@ -96,7 +98,7 @@ module type Iterator = sig
   val compare_key : 'a t -> 'a -> 'a -> int
 end
 
-module Make (Iterator : Iterator) : sig
+module Join (Iterator : Iterator) : sig
   include Iterator
 
   (** [create iterators] returns a new imperative iterator that iterates over
@@ -110,4 +112,51 @@ module Make (Iterator : Iterator) : sig
       @raise Invalid_argument if [iterators] is empty.
   *)
   val create : 'a Iterator.t list -> 'a t
+end
+
+type 's refs =
+  | Refs_nil : Heterogenous_list.nil refs
+  | Refs_cons : 'a option ref * 's refs -> ('a -> 's) refs
+
+val get_refs : 'a refs -> 'a Heterogenous_list.Constant.hlist
+
+type outcome =
+  | Accept
+  | Skip
+
+module Cursor (Iterator : Iterator) : sig
+  type ('a, 'y, 's) instruction
+
+  val advance : ('a, 'y, 's) instruction
+
+  val pop : ('a, 'y, 's) instruction -> ('a, 'y, _ -> 's) instruction
+
+  val open_ :
+    'i Iterator.t -> ('a, 'y, 'i -> 's) instruction -> ('a, 'y, 's) instruction
+
+  val seq : 'a -> ('a, 'y, 's) instruction -> ('a, 'y, 's) instruction
+
+  val yield :
+    'y refs ->
+    ('x, 'y Heterogenous_list.Constant.hlist, 's) instruction ->
+    ('x, 'y Heterogenous_list.Constant.hlist, 's) instruction
+
+  val set_output :
+    'o option ref ->
+    ('a, 'y, 'o -> 's) instruction ->
+    ('a, 'y, 'o -> 's) instruction
+
+  type 'a t
+
+  val iterator : 's Iterator.hlist -> 's Heterogenous_list.Constant.hlist t
+
+  val create :
+    evaluate:('a -> 'i -> outcome) ->
+    'i ->
+    ('a, 'y, Heterogenous_list.nil) instruction ->
+    'y t
+
+  val fold : ('y -> 'a -> 'a) -> 'y t -> 'a -> 'a
+
+  val iter : ('y -> unit) -> 'y t -> unit
 end

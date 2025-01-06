@@ -60,41 +60,175 @@ module Type = struct
   end
 end
 
-module ColumnType : sig
-  include Heterogenous_list.S
+module Column = struct
+  module type S = sig
+    type t
 
-  val printer : 'a t -> Format.formatter -> 'a -> unit
+    val name : string
 
-  val make : string -> print:(Format.formatter -> int -> unit) -> int t
+    val print : Format.formatter -> t -> unit
 
-  val int : int t
+    module Map : Container_types_intf.Map_plus_iterator with type key = t
 
-  val is_trie : ('a -> 'c) hlist -> ('a -> 'c, 'b) Trie.is_any_trie
-end = struct
-  type 'a t =
-    { id : 'a Type.Id.t;
-      name : string;
-      print : Format.formatter -> 'a -> unit;
-      is_int : ('a, int) Type.eq
-    }
+    val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
+  end
+
+  type 'a t = (module S with type t = 'a)
 
   include Heterogenous_list.Make (struct
     type nonrec 'a t = 'a t
   end)
+end
 
-  let printer { print; _ } = print
+module Schema = struct
+  let rec print_values :
+      type a. a Column.hlist -> Format.formatter -> a Constant.hlist -> unit =
+   fun schema ppf ->
+    match schema with
+    | [] -> fun [] -> ()
+    | [(module C)] -> fun [x] -> C.print ppf x
+    | (module C) :: k' ->
+      fun (x :: y) -> Format.fprintf ppf "%a,@ %a" C.print x (print_values k') y
 
-  let make name ~print = { id = Type.Id.make (); name; print; is_int = Equal }
+  module type Value = sig
+    type t
 
-  let int = make "int" ~print:Format.pp_print_int
+    val default : t
+  end
 
-  let rec is_trie : type a b c. (a -> c) hlist -> (a -> c, b) Trie.is_any_trie =
-   fun s ->
-    match s with
-    | [{ is_int = Equal; _ }] -> Is_trie Trie.patricia_map
-    | { is_int = Equal; _ } :: (_ :: _ as s') ->
-      let (Is_trie t') = is_trie s' in
-      Is_trie (Trie.patricia_map_of_trie t')
+  module type S = sig
+    type keys
+
+    module Value : Value
+
+    type t
+
+    val is_trie : (t, keys, Value.t) Trie.is_trie
+
+    val schema : keys Column.hlist
+
+    val empty : t
+
+    val is_empty : t -> bool
+
+    val singleton : keys Constant.hlist -> Value.t -> t
+
+    val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
+
+    val remove : keys Constant.hlist -> t -> t
+
+    val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
+
+    val find_opt : keys Constant.hlist -> t -> Value.t option
+  end
+
+  module Make_ops (T : sig
+    type t
+
+    type keys
+
+    type value
+
+    val is_trie : (t, keys, value) Trie.is_trie
+  end) =
+  struct
+    let empty = Trie.empty T.is_trie
+
+    let is_empty trie = Trie.is_empty T.is_trie trie
+
+    let singleton keys value = Trie.singleton T.is_trie keys value
+
+    let add_or_replace keys value trie =
+      Trie.add_or_replace T.is_trie keys value trie
+
+    let remove keys trie = Trie.remove T.is_trie keys trie
+
+    let union f trie1 trie2 = Trie.union T.is_trie f trie1 trie2
+
+    let find_opt keys trie = Trie.find_opt T.is_trie keys trie
+  end
+
+  type ('t, 'k, 'v) t =
+    (module S with type t = 't and type keys = 'k and type Value.t = 'v)
+
+  module Make (C : Column.S) (V : Value) :
+    S with type keys = C.t -> nil and module Value = V and type t = V.t C.Map.t =
+  struct
+    type keys = C.t -> nil
+
+    module Value = V
+
+    type t = V.t C.Map.t
+
+    let is_trie = Trie.map_of_value C.datalog_column_repr
+
+    let schema : keys Column.hlist = [(module C)]
+
+    include Make_ops (struct
+      type nonrec t = t
+
+      type nonrec keys = keys
+
+      type value = Value.t
+
+      let is_trie = is_trie
+    end)
+  end
+
+  module Cons (C : Column.S) (S : S) :
+    S
+      with type keys = C.t -> S.keys
+       and module Value = S.Value
+       and type t = S.t C.Map.t = struct
+    type keys = C.t -> S.keys
+
+    module Value = S.Value
+
+    type t = S.t C.Map.t
+
+    let is_trie = Trie.map_of_trie C.datalog_column_repr S.is_trie
+
+    let schema : keys Column.hlist = (module C) :: S.schema
+
+    include Make_ops (struct
+      type nonrec t = t
+
+      type nonrec keys = keys
+
+      type value = Value.t
+
+      let is_trie = is_trie
+    end)
+  end
+
+  module Unit = struct
+    type t = unit
+
+    let default = ()
+  end
+
+  module type C = Column.S
+
+  module type Relation = S with type Value.t = unit
+
+  module Relation1 (C1 : C) = Make (C1) (Unit)
+  module Relation2 (C1 : C) (C2 : C) = Cons (C1) (Relation1 (C2))
+  module Relation3 (C1 : C) (C2 : C) (C3 : C) = Cons (C1) (Relation2 (C2) (C3))
+  module Relation4 (C1 : C) (C2 : C) (C3 : C) (C4 : C) =
+    Cons (C1) (Relation3 (C2) (C3) (C4))
+
+  type ('k, 'v) any = Any : ('t, 'k, 'v) t -> ('k, 'v) any
+
+  type 'v value = (module Value with type t = 'v)
+
+  let rec dyn : type k v. k Column.hlist -> v value -> (k, v) any =
+   fun keys (module Value) ->
+    match keys with
+    | [] -> invalid_arg "dyn"
+    | [(module C)] -> Any (module Make (C) (Value))
+    | (module C) :: keys ->
+      let (Any (module S)) = dyn keys (module Value) in
+      Any (module Cons (C) (S))
 end
 
 module Table : sig
@@ -114,17 +248,28 @@ module Table : sig
 
   val add_or_replace : ('t, 'k, 'v) repr -> 'k Constant.hlist -> 'v -> 't -> 't
 
-  val iterator : ('t, 'k, 'v) repr -> 'v ref -> 't ref * 'k Iterator.hlist
+  val iterator : ('t, 'k, 'v) repr -> 't ref * 'k Iterator.hlist * 'v ref
 
   module Id : sig
     type ('t, 'k, 'v) t
 
     type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
 
-    val create_trie :
-      name:string -> ('k -> 'r) ColumnType.hlist -> ('k -> 'r, 'v) poly
+    val create : name:string -> ('t, 'k, 'v) Schema.t -> ('t, 'k, 'v) t
 
     val repr : ('t, 'k, 'v) t -> ('t, 'k, 'v) repr
+  end
+
+  module Ref : sig
+    type ('k, 'v) t
+
+    val create : ('t, 'k, 'v) Id.t -> 't -> ('k, 'v) t
+
+    val add_or_replace : ('k, 'v) t -> 'k Constant.hlist -> 'v -> unit
+
+    val find_opt : ('k, 'v) t -> 'k Constant.hlist -> 'v option
+
+    val get : ('t, 'k, 'v) Id.t -> ('k, 'v) t -> 't
   end
 
   module Map : sig
@@ -144,39 +289,49 @@ module Table : sig
   end
 end = struct
   type ('t, 'k, 'v) repr =
-    | Trie : ('t, 'k, 'v) Trie.is_trie -> ('t, 'k, 'v) repr
+    | Trie : ('t, 'k, 'v) Trie.is_trie * 'v -> ('t, 'k, 'v) repr
 
-  let print (Trie is_trie) ?(pp_sep = Format.pp_print_cut) pp_row ppf table =
+  module Cursor = Leapfrog.Cursor (Trie.Iterator)
+
+  let iter (Trie (is_trie, default_value)) f table =
+    let out_ref = ref default_value in
+    let iterator = Trie.Iterator.create is_trie (ref table) out_ref in
+    let cursor = Cursor.iterator iterator in
+    Cursor.iter (fun keys -> f keys !out_ref) cursor
+
+  let print repr ?(pp_sep = Format.pp_print_cut) pp_row ppf table =
     let first = ref true in
-    Trie.iter is_trie
+    iter repr
       (fun keys value ->
         if !first then first := false else pp_sep ppf ();
         pp_row keys value)
       table
 
-  let iterator (Trie is_trie) out =
+  let iterator (Trie (is_trie, default_value)) =
     let handler = ref (Trie.empty is_trie) in
+    let out = ref default_value in
     let iterator = Trie.Iterator.create is_trie handler out in
-    handler, iterator
+    handler, iterator, out
 
-  let empty (Trie is_trie) = Trie.empty is_trie
+  let empty (Trie (is_trie, _)) = Trie.empty is_trie
 
-  let is_empty (Trie is_trie) = Trie.is_empty is_trie
+  let is_empty (Trie (is_trie, _)) = Trie.is_empty is_trie
 
-  let add_or_replace (Trie is_trie) = Trie.add_or_replace is_trie
+  let add_or_replace (Trie (is_trie, _)) = Trie.add_or_replace is_trie
 
-  let find_opt (Trie is_trie) = Trie.find_opt is_trie
+  let find_opt (Trie (is_trie, _)) = Trie.find_opt is_trie
 
-  let mem (Trie is_trie) keys t = Option.is_some (Trie.find_opt is_trie keys t)
+  let mem (Trie (is_trie, _)) keys t =
+    Option.is_some (Trie.find_opt is_trie keys t)
 
-  let concat (Trie is_trie) ~earlier:t1 ~later:t2 =
+  let concat (Trie (is_trie, _)) ~earlier:t1 ~later:t2 =
     Trie.union is_trie (fun _ v -> Some v) t1 t2
 
   module Id = struct
     type ('t, 'k, 'v) t =
       { id : 't Type.Id.t;
         name : string;
-        schema : 'k ColumnType.hlist;
+        schema : 'k Column.hlist;
         repr : ('t, 'k, 'v) repr
       }
 
@@ -186,9 +341,12 @@ end = struct
 
     let print ppf t = Format.fprintf ppf "%s" t.name
 
-    let[@inline] create_trie ~name schema =
-      let (Is_trie is_trie) = ColumnType.is_trie schema in
-      Id { id = Type.Id.make (); name; repr = Trie is_trie; schema }
+    let create (type a b c) ~name ((module Schema) : (a, b, c) Schema.t) =
+      { id = Type.Id.make ();
+        name;
+        schema = Schema.schema;
+        repr = Trie (Schema.is_trie, Schema.Value.default)
+      }
 
     let[@inline] uid { id; _ } = Type.Id.uid id
 
@@ -201,24 +359,31 @@ end = struct
       | None -> Misc.fatal_error "Inconsistent type for uid."
   end
 
-  module Iterator = Trie.Iterator
+  module Ref = struct
+    type ('k, 'v) t =
+      | Ref :
+          { id : ('t, 'k, 'v) Id.t;
+            mutable table : 't
+          }
+          -> ('k, 'v) t
 
-  let rec print_row :
-      type a. a ColumnType.hlist -> Format.formatter -> a Constant.hlist -> unit
-      =
-   fun schema ppf ->
-    match schema with
-    | [] -> fun [] -> ()
-    | [k] -> fun [x] -> ColumnType.printer k ppf x
-    | k :: k' ->
-      fun (x :: y) ->
-        Format.fprintf ppf "%a,@ %a" (ColumnType.printer k) x (print_row k') y
+    let create id table = Ref { id; table }
+
+    let add_or_replace (Ref ({ id; table } as r)) keys value =
+      r.table <- add_or_replace (Id.repr id) keys value table
+
+    let find_opt (Ref { id; table }) keys = find_opt (Id.repr id) keys table
+
+    let get expected (Ref { id; table }) = Id.cast_exn id expected table
+  end
+
+  module Iterator = Trie.Iterator
 
   let print_table id ppf table =
     Format.fprintf ppf "@[<v>%a@]"
       (print id.Id.repr (fun keys _ ->
            Format.fprintf ppf "@[%a(%a).@]" Id.print id
-             (print_row (Id.schema id))
+             (Schema.print_values (Id.schema id))
              keys))
       table
 
@@ -278,345 +443,7 @@ end = struct
   end
 end
 
-type database = Table.Map.t
-
-let empty = Table.Map.empty
-
-(* We could expose the fact that we do not support relations without arguments
-   in the types, but a runtime error here allows us to give a better error
-   message. Plus, we might support constant relations (represented as an option)
-   in the future. *)
-let create_relation (type k) ~name (schema : k ColumnType.hlist) :
-    (k, _) Table.Id.poly =
-  match schema with
-  | [] ->
-    invalid_arg "create_relation: relations with no arguments are unsupported"
-  | _ :: _ -> Table.Id.create_trie ~name schema
-
-let add_fact (Table.Id.Id id) args db =
-  Table.Map.set db id
-    (Table.add_or_replace (Table.Id.repr id) args () (Table.Map.get db id))
-
-let print = Table.Map.print
-
-(* Now we start cursors. *)
-
-module Parameter = struct
-  type 'a t =
-    { name : string;
-      cell : 'a option ref
-    }
-
-  let create name = { name; cell = ref None }
-
-  include Heterogenous_list.Make (struct
-    type nonrec 'a t = 'a t
-  end)
-end
-
-module Join_iterator = Leapfrog.Make (Table.Iterator)
-
-module Cursor = struct
-  type _ vals =
-    | Vals_nil : nil vals
-    | Vals_constant : 'a * 'b vals -> ('a -> 'b) vals
-    | Vals_option : 'a option ref * 'b vals -> ('a -> 'b) vals
-
-  let rec get_vals : type a. a vals -> a Constant.hlist = function
-    | Vals_nil -> []
-    | Vals_constant (v, vs) -> v :: get_vals vs
-    | Vals_option (r, vs) -> Option.get !r :: get_vals vs
-
-  type _ op =
-    | Add_incremental :
-        { repr : ('t, 'k, unit) Table.repr;
-          full : 't ref;
-          diff : 't ref;
-          keys : 'k vals
-        }
-        -> 'y op
-    | Bind_iterator : 'a option ref * 'a Table.Iterator.t -> 'y op
-    | Unless : ('t, 'k, 'v) Table.Id.t * 'k vals -> 'y op
-    | Yield : 'a vals -> 'a Constant.hlist op
-
-  type ('y, 's) instruction =
-    | Advance : ('y, 's) instruction
-    | Pop : ('y, 's) instruction -> ('y, 'a -> 's) instruction
-    | Open : ('a, 'y, 's) level -> ('y, 's) instruction
-    | Seq : 'y op * ('y, 's) instruction -> ('y, 's) instruction
-
-  and ('a, 'y, 's) level =
-    { iterator : 'a Join_iterator.t;
-      output : 'a option ref option;
-      instruction : ('y, 'a -> 's) instruction
-    }
-
-  type ('y, 's) stack =
-    | Stack_nil : ('y, nil) stack
-    | Stack_cons : ('a, 'y, 's) level * ('y, 's) stack -> ('y, 'a -> 's) stack
-
-  type 'y outcome =
-    | Yielded of 'y
-    | Complete
-
-  type 'y suspension =
-    | Suspension :
-        { stack : ('y, 's) stack;
-          instruction : ('y, 's) instruction
-        }
-        -> 'y suspension
-
-  let exhausted = Suspension { stack = Stack_nil; instruction = Advance }
-
-  type 'y state =
-    { input : Table.Map.t;
-      mutable suspension : 'y suspension
-    }
-
-  let[@inline] rec execute :
-      type y s.
-      Table.Map.t ->
-      (y, s) stack ->
-      (y, s) instruction ->
-      y suspension * y outcome =
-   fun input stack instruction ->
-    let[@local] dispatch :
-        type a y s. (y, s) stack -> (a, y, s) level -> y suspension * y outcome
-        =
-     fun stack level ->
-      match Join_iterator.current level.iterator with
-      | Some current_key ->
-        Option.iter (fun r -> r := Some current_key) level.output;
-        Join_iterator.accept level.iterator;
-        execute input (Stack_cons (level, stack)) level.instruction
-      | None -> execute input stack Advance
-    in
-    let[@local] advance : type y s. (y, s) stack -> y suspension * y outcome =
-      function
-      | Stack_nil -> exhausted, Complete
-      | Stack_cons (level, stack) ->
-        Join_iterator.advance level.iterator;
-        dispatch stack level
-    in
-    let[@local] evaluate :
-        type y s.
-        Table.Map.t ->
-        (y, s) stack ->
-        continuation:(y, s) instruction ->
-        y op ->
-        y suspension * y outcome =
-     fun input stack ~continuation -> function
-      | Yield vals ->
-        let suspension = Suspension { stack; instruction = continuation } in
-        suspension, Yielded (get_vals vals)
-      | Add_incremental { repr; full; diff; keys } -> (
-        let table = !full in
-        let keys = get_vals keys in
-        match Table.find_opt repr keys table with
-        | Some _ ->
-          (* CR bclement: support updates for non-unit values. *)
-          execute input stack continuation
-        | None ->
-          diff := Table.add_or_replace repr keys () !diff;
-          full := Table.add_or_replace repr keys () table;
-          execute input stack continuation)
-      | Bind_iterator (value, it) -> (
-        let value = Option.get !value in
-        Table.Iterator.init it;
-        Table.Iterator.seek it value;
-        match Table.Iterator.current it with
-        | Some found when Table.Iterator.equal_key it found value ->
-          Table.Iterator.accept it;
-          execute input stack continuation
-        | None | Some _ -> execute input stack Advance)
-      | Unless (id, args) ->
-        if Table.mem (Table.Id.repr id) (get_vals args) (Table.Map.get input id)
-        then execute input stack Advance
-        else execute input stack continuation
-    in
-    match instruction with
-    | Advance -> advance stack
-    | Open next_level ->
-      Join_iterator.init next_level.iterator;
-      dispatch stack next_level
-    | Pop instruction ->
-      let (Stack_cons (_, stack)) = stack in
-      execute input stack instruction
-    | Seq (op, continuation) -> evaluate input stack ~continuation op
-
-  let execute : type y. y state -> y outcome =
-   fun state ->
-    let (Suspension { stack; instruction }) = state.suspension in
-    let suspension, outcome = execute state.input stack instruction in
-    state.suspension <- suspension;
-    outcome
-
-  let[@inline] run_fold f state init =
-    let rec loop state acc =
-      match execute state with
-      | Yielded output -> loop state (f output acc)
-      | Complete -> acc
-    in
-    loop state init
-
-  let[@inline] run_iter f state = run_fold (fun keys () -> f keys) state ()
-
-  let create_state input instruction =
-    { input; suspension = Suspension { stack = Stack_nil; instruction } }
-
-  type binder = Bind_table : ('t, 'k, 'v) Table.Id.t * 't ref -> binder
-
-  type ('p, 'y) cursor =
-    { parameters : 'p Parameter.hlist;
-      binders : binder list;
-      instruction : ('y, nil) instruction
-    }
-
-  type ('p, 'v) with_parameters = ('p, 'v Constant.hlist) cursor
-
-  type 'v t = (nil, 'v) with_parameters
-
-  let rec bind_parameters0 :
-      type a. a Parameter.hlist -> a Constant.hlist -> unit =
-   fun params values ->
-    match params, values with
-    | [], [] -> ()
-    | param :: params', value :: values' ->
-      param.cell := Some value;
-      bind_parameters0 params' values'
-
-  let bind_parameters cursor values = bind_parameters0 cursor.parameters values
-
-  (* Naive evaluation iterates over all the matching tuples in the [current]
-     database. *)
-  let[@inline] with_naive ~current cursor f acc =
-    List.iter
-      (fun (Bind_table (id, handler)) -> handler := Table.Map.get current id)
-      cursor.binders;
-    f (create_state current cursor.instruction) acc
-
-  (* Seminaive evaluation iterates over all the {b new} tuples in the [diff]
-     database that are not in the [previous] database.
-
-     [current] must be equal to [concat ~earlier:previous ~later:diff]. *)
-  let[@inline] with_seminaive ~previous ~diff ~current cursor f acc =
-    List.iter
-      (fun (Bind_table (relation, handler)) ->
-        handler := Table.Map.get current relation)
-      cursor.binders;
-    let rec loop binders acc =
-      match binders with
-      | [] -> acc
-      | Bind_table (relation, handler) :: binders ->
-        handler := Table.Map.get diff relation;
-        let acc = f (create_state current cursor.instruction) in
-        handler := Table.Map.get previous relation;
-        loop binders acc
-    in
-    loop cursor.binders acc
-
-  let fold_with_parameters cursor parameters database ~init ~f =
-    bind_parameters cursor parameters;
-    with_naive ~current:database cursor (run_fold f) init
-
-  let fold cursor database ~init ~f =
-    fold_with_parameters cursor [] database ~init ~f
-
-  let iter_with_parameters cursor parameters database ~f =
-    bind_parameters cursor parameters;
-    with_naive ~current:database cursor (fun state () -> run_iter f state) ()
-
-  let iter cursor database ~f = iter_with_parameters cursor [] database ~f
-end
-
-type void = |
-
-type rule =
-  | Rule :
-      { cursor : (nil, void) Cursor.cursor;
-        table_id : ('t, 'k, 'v) Table.Id.t;
-        current_table : 't ref;
-        diff_table : 't ref
-      }
-      -> rule
-
-let run_rules rules ~previous ~diff ~current =
-  let run_step (db_new, db_diff)
-      (Rule { table_id; cursor; current_table; diff_table }) =
-    current_table := Table.Map.get db_new table_id;
-    diff_table := Table.Map.get db_diff table_id;
-    let Complete =
-      Cursor.with_seminaive ~previous ~diff ~current cursor Cursor.execute
-        Cursor.Complete
-    in
-    ( Table.Map.set db_new table_id !current_table,
-      Table.Map.set db_diff table_id !diff_table )
-  in
-  List.fold_left run_step (current, Table.Map.empty) rules
-
-let rec saturate_rules ~previous ~diff ~current rules full_diff =
-  let new_db, diff = run_rules ~previous ~diff ~current rules in
-  if Table.Map.is_empty diff
-  then current, full_diff
-  else
-    saturate_rules ~previous:current ~diff rules ~current:new_db
-      (Table.Map.concat ~earlier:full_diff ~later:diff)
-
-let saturate_rules rules ~previous ~diff ~current =
-  saturate_rules rules Table.Map.empty ~previous ~diff ~current
-
-let run_list fns ~previous ~diff ~current =
-  let rec cut ~cut_after result = function
-    | [] -> result
-    | (ts, diff) :: diffs ->
-      if ts > cut_after
-      then cut ~cut_after (Table.Map.concat ~earlier:diff ~later:result) diffs
-      else result
-  in
-  let rec loop (current, diffs, ts, full_diff) fns =
-    let (current, diffs, ts', full_diff), fns =
-      List.fold_left_map
-        (fun (db, diffs, ts, full_diff) (fn, previous, cut_after) ->
-          let diff = cut ~cut_after Table.Map.empty diffs in
-          let new_db, diff = fn ~previous ~diff ~current:db in
-          if Table.Map.is_empty diff
-          then (db, diffs, ts, full_diff), (fn, db, ts)
-          else
-            let ts = ts + 1 in
-            ( ( new_db,
-                (ts, diff) :: diffs,
-                ts,
-                Table.Map.concat ~earlier:full_diff ~later:diff ),
-              (fn, new_db, ts) ))
-        (current, diffs, ts, full_diff)
-        fns
-    in
-    if ts' = ts
-    then current, full_diff
-    else loop (current, diffs, ts', full_diff) fns
-  in
-  loop
-    (current, [0, diff], 0, Table.Map.empty)
-    (List.map (fun fn -> fn, previous, -1) fns)
-
-module Schedule = struct
-  type t =
-    | Saturate of rule list * Table.Map.t * int
-    | Fixpoint of t list
-
-  let fixpoint schedule = Fixpoint schedule
-
-  let saturate rules = Saturate (rules, Table.Map.empty, -999)
-
-  let rec run0 schedule ~previous ~diff ~current =
-    match schedule with
-    | Saturate (rules, _, _) -> saturate_rules rules ~previous ~diff ~current
-    | Fixpoint schedules ->
-      run_list (List.map run0 schedules) ~previous ~diff ~current
-
-  let run schedule db =
-    fst (run0 schedule ~previous:Table.Map.empty ~diff:db ~current:db)
-end
+type binder = Bind_table : ('t, 'k, 'v) Table.Id.t * 't ref -> binder
 
 type 'k relation = ('k, unit) Table.Id.poly
 
@@ -630,7 +457,7 @@ type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> nil) relation
 
 module Variable = struct
   type condition =
-    | Negate : ('t, 'k, 'v) Table.Id.t * 'k Cursor.vals -> condition
+    | Negate : ('t, 'k, 'v) Table.Id.t * 'k Leapfrog.refs -> condition
 
   type set_iterator =
     | Set_iterator : 'a option ref * 'a Table.Iterator.t -> set_iterator
@@ -673,6 +500,19 @@ module Variable = struct
   type elist = Elist : 'a hlist -> elist [@@unboxed]
 end
 
+module Parameter = struct
+  type 'a t =
+    { name : string;
+      cell : 'a option ref
+    }
+
+  let create name = { name; cell = ref None }
+
+  include Heterogenous_list.Make (struct
+    type nonrec 'a t = 'a t
+  end)
+end
+
 module Term = struct
   type 'a t =
     | Variable of 'a Variable.t
@@ -698,24 +538,6 @@ type _ atom = Atom : ('t, 'k, 'v) Table.Id.t * 'k Term.hlist -> 'v atom
 
 let atom (Table.Id.Id id) args = Atom (id, args)
 
-let constant_order = -1
-
-let rec find_last_binding0 :
-    type a.
-    ?order:int -> Variable.post_level -> a Term.hlist -> Variable.post_level =
- fun ?order post_level args ->
-  match args with
-  | [] -> post_level
-  | arg :: args -> (
-    match arg with
-    | Constant _ | Parameter _ -> find_last_binding0 ?order post_level args
-    | Variable var ->
-      if match order with None -> true | Some order -> var.order >= order
-      then find_last_binding0 ~order:var.order var.post_level args
-      else find_last_binding0 ?order post_level args)
-
-let find_last_binding post_level args = find_last_binding0 post_level args
-
 module String = struct
   include Heterogenous_list.Make (struct
     type 'a t = string
@@ -731,7 +553,7 @@ type 'p info =
   { parameters : 'p Parameter.hlist;
     variables : variables;
     post_parameters : Variable.post_level;
-    binders : Cursor.binder list
+    binders : binder list
   }
 
 type ('p, 'a) program = 'p info -> 'a
@@ -803,29 +625,45 @@ let rec bind_atom :
         add_dep post_level (Variable.get_or_create_output var) this_iterator;
         bind_atom ~order post_level other_args other_iterators))
 
-let unit_ref = ref ()
+let constant_order = -1
 
 let where predicates f info =
   let info =
     List.fold_left
       (fun info (Atom (id, args)) ->
-        let handler, iterators = Table.iterator (Table.Id.repr id) unit_ref in
+        let handler, iterators, _ = Table.iterator (Table.Id.repr id) in
         bind_atom ~order:constant_order info.post_parameters args iterators;
         { info with binders = Bind_table (id, handler) :: info.binders })
       info predicates
   in
   f info
 
-let rec compile_terms : type a. a Term.hlist -> a Cursor.vals =
+let rec compile_terms : type a. a Term.hlist -> a Leapfrog.refs =
  fun vars ->
   match vars with
-  | [] -> Vals_nil
+  | [] -> Refs_nil
   | term :: terms -> (
     match term with
-    | Constant cte -> Vals_constant (cte, compile_terms terms)
-    | Parameter param -> Vals_option (param.cell, compile_terms terms)
+    | Constant cte -> Refs_cons (ref (Some cte), compile_terms terms)
+    | Parameter param -> Refs_cons (param.cell, compile_terms terms)
     | Variable var ->
-      Vals_option (Variable.get_or_create_output var, compile_terms terms))
+      Refs_cons (Variable.get_or_create_output var, compile_terms terms))
+
+let rec find_last_binding0 :
+    type a.
+    ?order:int -> Variable.post_level -> a Term.hlist -> Variable.post_level =
+ fun ?order post_level args ->
+  match args with
+  | [] -> post_level
+  | arg :: args -> (
+    match arg with
+    | Constant _ | Parameter _ -> find_last_binding0 ?order post_level args
+    | Variable var ->
+      if match order with None -> true | Some order -> var.order >= order
+      then find_last_binding0 ~order:var.order var.post_level args
+      else find_last_binding0 ?order post_level args)
+
+let find_last_binding post_level args = find_last_binding0 post_level args
 
 let unless predicates f info =
   List.iter
@@ -836,6 +674,70 @@ let unless predicates f info =
         <- Negate (id, refs) :: post_level.rev_conditions)
     predicates;
   f info
+
+let bind_database binders current =
+  List.iter
+    (fun (Bind_table (id, handler)) -> handler := Table.Map.get current id)
+    binders
+
+(* Seminaive evaluation iterates over all the {b new} tuples in the [diff]
+   database that are not in the [previous] database.
+
+   [current] must be equal to [concat ~earlier:previous ~later:diff]. *)
+let[@inline] with_seminaive ~previous ~diff ~current binders f acc =
+  bind_database binders current;
+  let rec loop binders acc =
+    match binders with
+    | [] -> acc
+    | Bind_table (relation, handler) :: binders ->
+      handler := Table.Map.get diff relation;
+      let acc = f acc in
+      handler := Table.Map.get previous relation;
+      loop binders acc
+  in
+  loop binders acc
+
+module Join_iterator = Leapfrog.Join (Table.Iterator)
+module Cursor0 = Leapfrog.Cursor (Join_iterator)
+
+type action =
+  | Add_incremental :
+      { repr : ('t, 'k, unit) Table.repr;
+        full : 't ref;
+        diff : 't ref;
+        keys : 'k Leapfrog.refs
+      }
+      -> action
+  | Bind_iterator : 'a option ref * 'a Table.Iterator.t -> action
+  | Unless : ('t, 'k, 'v) Table.Id.t * 'k Leapfrog.refs -> action
+
+let evaluate op input =
+  match op with
+  | Add_incremental { repr; full; diff; keys } -> (
+    let table = !full in
+    let keys = Leapfrog.get_refs keys in
+    match Table.find_opt repr keys table with
+    | Some _ ->
+      (* CR bclement: support updates for non-unit values. *)
+      Leapfrog.Accept
+    | None ->
+      diff := Table.add_or_replace repr keys () !diff;
+      full := Table.add_or_replace repr keys () table;
+      Leapfrog.Accept)
+  | Bind_iterator (value, it) -> (
+    let value = Option.get !value in
+    Table.Iterator.init it;
+    Table.Iterator.seek it value;
+    match Table.Iterator.current it with
+    | Some found when Table.Iterator.equal_key it found value ->
+      Table.Iterator.accept it;
+      Leapfrog.Accept
+    | None | Some _ -> Leapfrog.Skip)
+  | Unless (id, args) ->
+    if Table.mem (Table.Id.repr id) (Leapfrog.get_refs args)
+         (Table.Map.get input id)
+    then Leapfrog.Skip
+    else Leapfrog.Accept
 
 let postprocess post_level instruction =
   (* Note: conditions only depend on the value of variables, whereas dependences
@@ -848,13 +750,13 @@ let postprocess post_level instruction =
   let instruction =
     List.fold_left
       (fun instruction (Variable.Negate (id, args)) ->
-        Cursor.Seq (Cursor.Unless (id, args), instruction))
+        Cursor0.seq (Unless (id, args)) instruction)
       instruction post_level.Variable.rev_conditions
   in
   let instruction =
     List.fold_left
       (fun instruction (Variable.Set_iterator (value, it)) ->
-        Cursor.Seq (Cursor.Bind_iterator (value, it), instruction))
+        Cursor0.seq (Bind_iterator (value, it)) instruction)
       instruction post_level.Variable.rev_deps
   in
   instruction
@@ -867,56 +769,232 @@ let make_level (var : _ Variable.t) instruction =
        position is binding if it respects variable ordering.@]@]"
       (Variable.name var)
   | _ ->
-    { Cursor.iterator = Join_iterator.create var.iterators;
-      output = var.output;
-      instruction = postprocess var.post_level instruction
-    }
+    let instruction = postprocess var.post_level instruction in
+    Cursor0.open_
+      (Join_iterator.create var.iterators)
+      (match var.output with
+      | Some output -> Cursor0.set_output output instruction
+      | None -> instruction)
 
 let rec push_vars :
     type s y.
-    instruction:(y, s) Cursor.instruction ->
+    instruction:(action, y, s) Cursor0.instruction ->
     s Variable.hlist ->
-    (y, nil) Cursor.instruction =
+    (action, y, nil) Cursor0.instruction =
  fun ~instruction vars ->
   match vars with
   | [] -> instruction
-  | var :: vars ->
-    let level = make_level var instruction in
-    let next = Cursor.Open level in
-    push_vars ~instruction:next vars
+  | var :: vars -> push_vars ~instruction:(make_level var instruction) vars
 
 (* Optimisation: if we do not use the output from the last variable, we only
    need the first matching value of that variable. *)
-let rec pop_vars : type s. s Variable.hlist -> ('y, s) Cursor.instruction =
-  function
-  | [] -> Advance
+let rec pop_vars :
+    type s. s Variable.hlist -> (action, 'y, s) Cursor0.instruction = function
+  | [] -> Cursor0.advance
   | var :: vars -> (
-    match var.output with None -> Pop (pop_vars vars) | _ -> Advance)
+    match var.output with
+    | None -> Cursor0.pop (pop_vars vars)
+    | _ -> Cursor0.advance)
 
-let cursor instruction info =
+module Cursor = struct
+  let rec bind_parameters :
+      type a. a Parameter.hlist -> a Constant.hlist -> unit =
+   fun params values ->
+    match params, values with
+    | [], [] -> ()
+    | param :: params', value :: values' ->
+      param.cell := Some value;
+      bind_parameters params' values'
+
+  let create_state input instruction =
+    Cursor0.create ~evaluate input instruction
+
+  type ('p, 'y) cursor =
+    { parameters : 'p Parameter.hlist;
+      binders : binder list;
+      instruction : (action, 'y, nil) Cursor0.instruction
+    }
+
+  type ('p, 'v) with_parameters = ('p, 'v Constant.hlist) cursor
+
+  type 'v t = (nil, 'v) with_parameters
+
+  let fold_with_parameters cursor parameters database ~init ~f =
+    bind_parameters cursor.parameters parameters;
+    bind_database cursor.binders database;
+    Cursor0.fold f (create_state database cursor.instruction) init
+
+  let fold cursor database ~init ~f =
+    bind_database cursor.binders database;
+    Cursor0.fold f (create_state database cursor.instruction) init
+
+  let iter_with_parameters cursor parameters database ~f =
+    bind_parameters cursor.parameters parameters;
+    bind_database cursor.binders database;
+    Cursor0.iter f (create_state database cursor.instruction)
+
+  let iter cursor database ~f =
+    bind_database cursor.binders database;
+    Cursor0.iter f (create_state database cursor.instruction)
+end
+
+let yield output info =
   let (Elist rev_vars) = info.variables.rev_vars in
-  let instruction = Cursor.Seq (instruction, pop_vars rev_vars) in
+  (* Must compile first because of execution order. *)
+  let instruction = compile_terms output in
+  let instruction = Cursor0.yield instruction (pop_vars rev_vars) in
   let instruction = push_vars ~instruction rev_vars in
   let instruction = postprocess info.post_parameters instruction in
   { Cursor.parameters = info.parameters; binders = info.binders; instruction }
 
-let yield output info = cursor (Yield (compile_terms output)) info
-
 let query variables f =
   compile variables @@ fun variables -> where (f variables) @@ yield variables
 
+type rule =
+  | Rule :
+      { binders : binder list;
+        instruction : (action, nil, nil) Cursor0.instruction;
+        table_id : ('t, 'k, 'v) Table.Id.t;
+        current_table : 't ref;
+        diff_table : 't ref
+      }
+      -> rule
+
 let deduce (Atom (tid, args)) (info : _ info) =
+  let [] = info.parameters in
   let empty = Table.empty (Table.Id.repr tid) in
   let current_table = ref empty in
   let diff_table = ref empty in
-  let cursor =
-    cursor
-      (Add_incremental
-         { repr = Table.Id.repr tid;
-           full = current_table;
-           diff = diff_table;
-           keys = compile_terms args
-         })
-      info
+  let instruction =
+    Add_incremental
+      { repr = Table.Id.repr tid;
+        full = current_table;
+        diff = diff_table;
+        keys = compile_terms args
+      }
   in
-  Rule { cursor; table_id = tid; current_table; diff_table }
+  let instruction =
+    let (Elist rev_vars) = info.variables.rev_vars in
+    let instruction = Cursor0.seq instruction (pop_vars rev_vars) in
+    let instruction = push_vars ~instruction rev_vars in
+    let instruction = postprocess info.post_parameters instruction in
+    instruction
+  in
+  Rule
+    { binders = info.binders;
+      instruction;
+      table_id = tid;
+      current_table;
+      diff_table
+    }
+
+type database = Table.Map.t
+
+let empty = Table.Map.empty
+
+let table_relation table = Table.Id.Id table
+
+(* We could expose the fact that we do not support relations without arguments
+   in the types, but a runtime error here allows us to give a better error
+   message. Plus, we might support constant relations (represented as an option)
+   in the future. *)
+let create_relation (type k) ~name (schema : k Column.hlist) :
+    (k, _) Table.Id.poly =
+  let (Any schema) = Schema.dyn schema (module Schema.Unit) in
+  table_relation (Table.Id.create ~name schema)
+
+let create_table_ref (Table.Id.Id id) =
+  Table.Ref.create id (Table.empty (Table.Id.repr id))
+
+let add_table_ref db (Table.Id.Id id) r =
+  Table.Map.set db id (Table.Ref.get id r)
+
+let add_fact (Table.Id.Id id) args db =
+  Table.Map.set db id
+    (Table.add_or_replace (Table.Id.repr id) args () (Table.Map.get db id))
+
+let get_table id db = Table.Map.get db id
+
+let set_table id table db = Table.Map.set db id table
+
+let print = Table.Map.print
+
+module Schedule = struct
+  type t =
+    | Saturate of rule list * Table.Map.t * int
+    | Fixpoint of t list
+
+  let fixpoint schedule = Fixpoint schedule
+
+  let saturate rules = Saturate (rules, Table.Map.empty, -999)
+
+  let run_rules rules ~previous ~diff ~current =
+    let run_step (db_new, db_diff)
+        (Rule { table_id; binders; instruction; current_table; diff_table }) =
+      current_table := Table.Map.get db_new table_id;
+      diff_table := Table.Map.get db_diff table_id;
+      let () =
+        with_seminaive ~previous ~diff ~current binders
+          (fun () ->
+            Cursor0.iter ignore (Cursor0.create ~evaluate current instruction))
+          ()
+      in
+      ( Table.Map.set db_new table_id !current_table,
+        Table.Map.set db_diff table_id !diff_table )
+    in
+    List.fold_left run_step (current, Table.Map.empty) rules
+
+  let rec saturate_rules ~previous ~diff ~current rules full_diff =
+    let new_db, diff = run_rules ~previous ~diff ~current rules in
+    if Table.Map.is_empty diff
+    then current, full_diff
+    else
+      saturate_rules ~previous:current ~diff rules ~current:new_db
+        (Table.Map.concat ~earlier:full_diff ~later:diff)
+
+  let saturate_rules rules ~previous ~diff ~current =
+    saturate_rules rules Table.Map.empty ~previous ~diff ~current
+
+  let run_list fns ~previous ~diff ~current =
+    let rec cut ~cut_after result = function
+      | [] -> result
+      | (ts, diff) :: diffs ->
+        if ts > cut_after
+        then cut ~cut_after (Table.Map.concat ~earlier:diff ~later:result) diffs
+        else result
+    in
+    let rec loop (current, diffs, ts, full_diff) fns =
+      let (current, diffs, ts', full_diff), fns =
+        List.fold_left_map
+          (fun (db, diffs, ts, full_diff) (fn, previous, cut_after) ->
+            let diff = cut ~cut_after Table.Map.empty diffs in
+            let new_db, diff = fn ~previous ~diff ~current:db in
+            if Table.Map.is_empty diff
+            then (db, diffs, ts, full_diff), (fn, db, ts)
+            else
+              let ts = ts + 1 in
+              ( ( new_db,
+                  (ts, diff) :: diffs,
+                  ts,
+                  Table.Map.concat ~earlier:full_diff ~later:diff ),
+                (fn, new_db, ts) ))
+          (current, diffs, ts, full_diff)
+          fns
+      in
+      if ts' = ts
+      then current, full_diff
+      else loop (current, diffs, ts', full_diff) fns
+    in
+    loop
+      (current, [0, diff], 0, Table.Map.empty)
+      (List.map (fun fn -> fn, previous, -1) fns)
+
+  let rec run0 schedule ~previous ~diff ~current =
+    match schedule with
+    | Saturate (rules, _, _) -> saturate_rules rules ~previous ~diff ~current
+    | Fixpoint schedules ->
+      run_list (List.map run0 schedules) ~previous ~diff ~current
+
+  let run schedule db =
+    fst (run0 schedule ~previous:Table.Map.empty ~diff:db ~current:db)
+end

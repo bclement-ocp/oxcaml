@@ -1162,6 +1162,10 @@ module Map = struct
   let diff_domains = diff
 end
 
+type set = Set.t
+
+type +!'a map = 'a Map.t
+
 module Make (X : sig
   val print : Format.formatter -> key -> unit
 end) =
