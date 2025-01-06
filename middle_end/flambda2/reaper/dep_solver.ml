@@ -411,29 +411,24 @@ let pp_result ppf (res : result) =
 
 let db_to_uses db field_id_to_field =
   (* Format.eprintf "%a@." Database.print_database db; *)
-  let query_uses =
-    Datalog.Cursor.create
-      ["X", Code_id_or_name.datalog_column_type]
-      (fun [x] -> [Datalog.atom Global_flow_graph.used_pred [x]])
+  let open Datalog in
+  let used_pred x = atom Global_flow_graph.used_pred [x] in
+  let used_fields_top_rel x f =
+    atom Global_flow_graph.used_fields_top_rel [x; f]
   in
+  let used_fields_rel x f y =
+    atom Global_flow_graph.used_fields_rel [x; f; y]
+  in
+  let query_uses = query ["X"] (fun [x] -> [used_pred x]) in
   let query_used_field_top =
-    Datalog.Cursor.create
-      [ "X", Code_id_or_name.datalog_column_type;
-        "F", Global_flow_graph.field_datalog_type ]
-      (fun [x; f] ->
-        [Datalog.atom Global_flow_graph.used_fields_top_rel [x; f]])
+    query ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
   in
   let query_used_field =
-    Datalog.Cursor.create
-      [ "X", Code_id_or_name.datalog_column_type;
-        "F", Global_flow_graph.field_datalog_type;
-        "Y", Code_id_or_name.datalog_column_type ]
-      (fun [x; f; y] ->
-        [Datalog.atom Global_flow_graph.used_fields_rel [x; f; y]])
+    query ["X"; "F"; "Y"] (fun [x; f; y] -> [used_fields_rel x f y])
   in
   let h = Hashtbl.create 17 in
-  Datalog.Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
-  Datalog.Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
+  Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
+  Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
       let f = Numeric_types.Int.Map.find f field_id_to_field in
       let[@local] ff fields =
         Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
@@ -443,7 +438,7 @@ let db_to_uses db field_id_to_field =
       | Some Top -> ()
       | None -> ff Field.Map.empty
       | Some (Fields f) -> ff f);
-  Datalog.Cursor.iter query_used_field db ~f:(fun [u; f; v] ->
+  Cursor.iter query_used_field db ~f:(fun [u; f; v] ->
       let[@local] ff fields =
         let f = Numeric_types.Int.Map.find f field_id_to_field in
         let v_top = Hashtbl.find_opt h v = Some Top in

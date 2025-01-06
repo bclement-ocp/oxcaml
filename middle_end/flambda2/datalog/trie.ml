@@ -1,4 +1,19 @@
-open Datalog_types
+(**************************************************************************)
+(*                                                                        *)
+(*                                 OCaml                                  *)
+(*                                                                        *)
+(*                        Basile Clément, OCamlPro                        *)
+(*                                                                        *)
+(*   Copyright 2024 OCamlPro SAS                                          *)
+(*   Copyright 2024 Jane Street Group LLC                                 *)
+(*                                                                        *)
+(*   All rights reserved.  This file is distributed under the terms of    *)
+(*   the GNU Lesser General Public License version 2.1, with the          *)
+(*   special exception on linking described in the file LICENSE.          *)
+(*                                                                        *)
+(**************************************************************************)
+
+open Heterogenous_list
 
 module Int = struct
   include Numbers.Int
@@ -6,25 +21,102 @@ module Int = struct
   module Map = Tree.Map
 end
 
-type ('m, 'k, 'v) is_map = Is_map : ('v Int.Map.t, int, 'v) is_map
-
-let is_map = Is_map
-
 type (_, _, _) is_trie =
-  | Value_is_trie : ('a, 'b option, 'a) is_trie
-  | Map_is_trie :
-      ('t, 'a, 's) is_map * ('s, 'b, 'v) is_trie
-      -> ('t, 'a -> 'b, 'v) is_trie
+  | Map_is_trie : ('v Int.Map.t, int -> nil, 'v) is_trie
+  | Nested_trie : ('s, 'b, 'v) is_trie -> ('s Int.Map.t, int -> 'b, 'v) is_trie
 
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
-let value_is_trie = Value_is_trie
+let patricia_map = Map_is_trie
 
-let map_is_trie is_map is_trie = Map_is_trie (is_map, is_trie)
+let patricia_map_of_trie is_trie = Nested_trie is_trie
 
-let empty : type t k r v. (t, k -> r, v) is_trie -> t = function
-  | Map_is_trie (Is_map, _) -> Int.Map.empty
+let empty : type t k v. (t, k, v) is_trie -> t = function
+  | Map_is_trie -> Int.Map.empty
+  | Nested_trie _ -> Int.Map.empty
+
+let is_empty : type t k v. (t, k, v) is_trie -> t -> bool = function
+  | Map_is_trie -> Int.Map.is_empty
+  | Nested_trie _ -> Int.Map.is_empty
+
+let rec iter :
+    type t k v.
+    (t, k, v) is_trie -> (k Constant.hlist -> v -> unit) -> t -> unit =
+ fun w f t ->
+  match w with
+  | Map_is_trie -> Int.Map.iter (fun k v -> f [k] v) t
+  | Nested_trie w' ->
+    Int.Map.iter (fun k t -> iter w' (fun k' v -> f (k :: k') v) t) t
+
+let rec find0 :
+    type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> v =
+ fun w k ks t ->
+  match ks, w with
+  | [], Nested_trie _ -> .
+  | [], Map_is_trie -> Int.Map.find k t
+  | k' :: ks', Nested_trie w' -> find0 w' k' ks' (Int.Map.find k t)
+
+let find : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> v =
+ fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> find0 w k ks t
+
+let find_opt w k t =
+  match find w k t with exception Not_found -> None | datum -> Some datum
+
+let rec singleton0 :
+    type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> v -> t =
+ fun w k ks v ->
+  match ks, w with
+  | [], Nested_trie _ -> .
+  | [], Map_is_trie -> Int.Map.singleton k v
+  | k' :: ks', Nested_trie w' -> Int.Map.singleton k (singleton0 w' k' ks' v)
+
+let singleton : type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t =
+ fun w k v -> match k, w with [], _ -> . | k :: ks, _ -> singleton0 w k ks v
+
+let rec add0 :
+    type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> v -> t -> t
+    =
+ fun w k ks v t ->
+  match ks, w with
+  | [], Nested_trie _ -> .
+  | [], Map_is_trie -> Int.Map.add k v t
+  | k' :: ks', Nested_trie w' -> (
+    match Int.Map.find_opt k t with
+    | Some m -> Int.Map.add k (add0 w' k' ks' v m) t
+    | None -> Int.Map.add k (singleton0 w' k' ks' v) t)
+
+let add_or_replace :
+    type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t -> t =
+ fun w k v t -> match k, w with [], _ -> . | k :: ks, _ -> add0 w k ks v t
+
+let rec remove0 :
+    type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> t =
+ fun w k ks t ->
+  match ks, w with
+  | [], Nested_trie _ -> .
+  | [], Map_is_trie -> Int.Map.remove k t
+  | k' :: ks', Nested_trie w' -> (
+    match Int.Map.find_opt k t with
+    | None -> t
+    | Some m ->
+      let m' = remove0 w' k' ks' m in
+      if is_empty w' m' then Int.Map.remove k t else Int.Map.add k m' t)
+
+let remove : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> t =
+ fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> remove0 w k ks t
+
+let rec union :
+    type t k v. (t, k, v) is_trie -> (v -> v -> v option) -> t -> t -> t =
+ fun w f t1 t2 ->
+  match w with
+  | Map_is_trie -> Int.Map.union (fun _ left right -> f left right) t1 t2
+  | Nested_trie w' ->
+    Int.Map.union
+      (fun _ left right ->
+        let s = union w' f left right in
+        if is_empty w' s then None else Some s)
+      t1 t2
 
 module Iterator = struct
   type _ t =
@@ -35,9 +127,11 @@ module Iterator = struct
         }
         -> int t
 
-  type _ hlist =
-    | [] : 'a option hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
+  include Heterogenous_list.Make (struct
+    type nonrec 'a t = 'a t
+  end)
+
+  let _lol = 0
 
   let equal_key (type a) (Iterator _ : a t) : a -> a -> bool = Int.equal
 
@@ -59,119 +153,18 @@ module Iterator = struct
 
   let accept (type a) (Iterator i : a t) : unit =
     match Int.Map.current i.iterator with
-    | None -> invalid_arg "accept: iterator must have a value"
+    | None -> invalid_arg "accept: iterator is exhausted"
     | Some (_, value) -> i.handler := value
+
+  let create_iterator cell handler =
+    Iterator { iterator = Int.Map.iterator Int.Map.empty; map = cell; handler }
+
+  let rec create : type m k v. (m, k, v) is_trie -> m ref -> v ref -> k hlist =
+   fun is_trie this_ref value_handler ->
+    match is_trie with
+    | Map_is_trie -> [create_iterator this_ref value_handler]
+    | Nested_trie next_trie ->
+      let next_ref = ref (empty next_trie) in
+      create_iterator this_ref next_ref
+      :: create next_trie next_ref value_handler
 end
-
-let make_ref (type m k v) (Is_map : (m, k, v) is_map) : m ref =
-  ref Int.Map.empty
-
-let create_iterator (type m k v) (Is_map : (m, k, v) is_map) (cell : m ref)
-    (handler : v ref) : k Iterator.t =
-  Iterator.Iterator
-    { iterator = Int.Map.iterator Int.Map.empty; map = cell; handler }
-
-let rec create_iterators :
-    type m k v r.
-    (m, k -> r, v) is_trie -> m ref -> v ref -> (k -> r) Iterator.hlist =
- fun (Map_is_trie (is_map, is_trie)) this_ref value_handler ->
-  match is_trie with
-  | Value_is_trie -> [create_iterator is_map this_ref value_handler]
-  | Map_is_trie (next_map, _) ->
-    let next_ref = make_ref next_map in
-    create_iterator is_map this_ref next_ref
-    :: create_iterators is_trie next_ref value_handler
-
-let iterators :
-    type m k r v.
-    (m, k -> r, v) is_trie -> v ref -> m ref * (k -> r) Iterator.hlist =
- fun is_trie handler ->
-  match is_trie with
-  | Map_is_trie (is_map, _) ->
-    let next_ref = make_ref is_map in
-    next_ref, create_iterators is_trie next_ref handler
-
-let rec iter :
-    type t k v.
-    (t, k, v) is_trie -> (k Constant.hlist -> v -> unit) -> t -> unit =
- fun w f t ->
-  match w with
-  | Value_is_trie -> f [] t
-  | Map_is_trie (Is_map, w') ->
-    Int.Map.iter (fun k t -> iter w' (fun k' v -> f (k :: k') v) t) t
-
-let rec fold :
-    type t k v a.
-    (t, k, v) is_trie -> (k Constant.hlist -> v -> a -> a) -> t -> a -> a =
- fun w f t acc ->
-  match w with
-  | Value_is_trie -> f [] t acc
-  | Map_is_trie (Is_map, w') ->
-    Int.Map.fold
-      (fun k t acc -> fold w' (fun k' v acc -> f (k :: k') v acc) t acc)
-      t acc
-
-let rec find_opt :
-    type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> v option =
- fun w k t ->
-  match k, w with
-  | [], Value_is_trie -> Some t
-  | k :: k', Map_is_trie (Is_map, w') -> (
-    match Int.Map.find_opt k t with Some s -> find_opt w' k' s | None -> None)
-
-let rec find_opt_refs :
-    type t k v. (t, k, v) is_trie -> k Ref.hlist -> t -> v option =
- fun w k t ->
-  match k, w with
-  | [], Value_is_trie -> Some t
-  | k :: k', Map_is_trie (Is_map, w') -> (
-    let k = !k in
-    match Int.Map.find_opt k t with
-    | Some s -> find_opt_refs w' k' s
-    | None -> None)
-
-let rec singleton : type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t
-    =
- fun w k v ->
-  match k, w with
-  | [], Value_is_trie -> v
-  | k :: k', Map_is_trie (Is_map, w') -> Int.Map.singleton k (singleton w' k' v)
-
-let rec add_or_replace :
-    type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t -> t =
- fun w inputs output t ->
-  match inputs, w with
-  | [], Value_is_trie -> output
-  | first_input :: other_inputs, Map_is_trie (Is_map, w') -> (
-    match Int.Map.find_opt first_input t with
-    | Some m ->
-      Int.Map.add first_input (add_or_replace w' other_inputs output m) t
-    | None -> Int.Map.add first_input (singleton w' other_inputs output) t)
-
-let is_empty : type t k v. (t, k, v) is_trie -> t -> bool =
- fun w t ->
-  match w with
-  | Value_is_trie -> false
-  | Map_is_trie (Is_map, _) -> Int.Map.is_empty t
-
-let rec remove0 :
-    type t k v.
-    (t, k, v) is_trie -> t Int.Map.t -> int -> k Ref.hlist -> t -> t Int.Map.t =
- fun w t k k' m ->
-  match k', w with
-  | [], Value_is_trie -> Int.Map.remove k t
-  | a :: b, Map_is_trie (Is_map, w') -> (
-    let a = !a in
-    match Int.Map.find_opt a m with
-    | None -> t
-    | Some m' ->
-      let m' = remove0 w' m a b m' in
-      if is_empty w m' then Int.Map.remove k t else Int.Map.add k m' t)
-
-let remove_refs : type t k v. (t, k, v) is_trie -> k Ref.hlist -> t -> t =
- fun w k t ->
-  match k, w with
-  | [], Value_is_trie -> t
-  | k :: k', Map_is_trie (Is_map, w') -> (
-    let k = !k in
-    match Int.Map.find_opt k t with None -> t | Some m -> remove0 w' t k k' m)

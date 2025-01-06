@@ -259,160 +259,136 @@ let used_fields_rel =
       field;
       Code_id_or_name.datalog_column_type ]
 
-let ( ~$ ) = Datalog.Term.variable
-
-let ( @| ) = Datalog.atom
-
 let create () =
+  let open Datalog in
+  let alias_rel = atom alias_rel in
+  let used_pred = atom used_pred in
+  let propagate_rel = atom propagate_rel in
+  let used_fields_rel = atom used_fields_rel in
+  let used_fields_top_rel = atom used_fields_top_rel in
+  let accessor_rel = atom accessor_rel in
+  let constructor_rel = atom constructor_rel in
+  let use_rel = atom use_rel in
+  let rule ?unless:except h c =
+    let except = match except with None -> [] | Some except -> except in
+    where h (unless except (deduce c))
+  in
+  let ( let$ ) xs f = compile xs f in
+  let ( $:- ) c h = rule h c in
   (* propagate *)
   let alias_from_used_propagate =
-    Datalog.Rule.create
-      ~variables:["if_defined"; "source"; "target"]
-      (alias_rel @| [~$"source"; ~$"target"])
-      [ used_pred @| [~$"if_defined"];
-        propagate_rel @| [~$"if_defined"; ~$"source"; ~$"target"] ]
+    let$ [if_defined; source; target] = ["if_defined"; "source"; "target"] in
+    alias_rel [source; target]
+    $:- [used_pred [if_defined]; propagate_rel [if_defined; source; target]]
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
-    Datalog.Rule.create
-      ~variables:["source"; "target"; "field"; "v"]
-      (used_fields_rel @| [~$"target"; ~$"field"; ~$"v"])
-      ~negate:
-        [ used_pred @| [~$"target"];
-          used_pred @| [~$"source"];
-          used_fields_top_rel @| [~$"target"; ~$"field"];
-          used_fields_top_rel @| [~$"source"; ~$"field"] ]
-      [ alias_rel @| [~$"source"; ~$"target"];
-        used_fields_rel @| [~$"source"; ~$"field"; ~$"v"] ]
+    compile ["source"; "target"; "field"; "v"]
+      (fun [source; target; field; v] ->
+        rule
+          ~unless:
+            [ used_pred [target];
+              used_pred [source];
+              used_fields_top_rel [target; field];
+              used_fields_top_rel [source; field] ]
+          [alias_rel [source; target]; used_fields_rel [source; field; v]]
+          (used_fields_rel [target; field; v]))
   in
   let used_fields_top_from_used_fields_alias_top =
-    Datalog.Rule.create
-      ~variables:["source"; "target"; "field"]
-      (used_fields_top_rel @| [~$"target"; ~$"field"])
-      ~negate:[used_pred @| [~$"target"]; used_pred @| [~$"source"]]
-      [ alias_rel @| [~$"source"; ~$"target"];
-        used_fields_top_rel @| [~$"source"; ~$"field"] ]
+    compile ["source"; "target"; "field"] (fun [source; target; field] ->
+        rule
+          ~unless:[used_pred [target]; used_pred [source]]
+          [alias_rel [source; target]; used_fields_top_rel [source; field]]
+          (used_fields_top_rel [target; field]))
   in
   let used_from_alias_used =
-    Datalog.Rule.create ~variables:["source"; "target"]
-      (used_pred @| [~$"target"])
-      [alias_rel @| [~$"source"; ~$"target"]; used_pred @| [~$"source"]]
+    let$ [source; target] = ["source"; "target"] in
+    used_pred [target] $:- [alias_rel [source; target]; used_pred [source]]
   in
   (* accessor *)
   let used_fields_from_accessor_used =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"]
-      (used_fields_top_rel @| [~$"target"; ~$"field"])
-      ~negate:[used_pred @| [~$"target"]]
-      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
-        used_pred @| [~$"source"] ]
+    compile ["source"; "field"; "target"] (fun [source; field; target] ->
+        rule
+          ~unless:[used_pred [target]]
+          [accessor_rel [source; field; target]; used_pred [source]]
+          (used_fields_top_rel [target; field]))
   in
   let used_fields_from_accessor_used_fields =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"]
-      ~existentials:["anyf"; "anyx"]
-      (used_fields_rel @| [~$"target"; ~$"field"; ~$"source"])
-      ~negate:
-        [ used_pred @| [~$"target"];
-          used_pred @| [~$"source"];
-          used_fields_top_rel @| [~$"target"; ~$"field"] ]
-      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
-        used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"] ]
+    compile ["source"; "field"; "target"; "anyf"; "anyx"]
+      (fun [source; field; target; anyf; anyx] ->
+        rule
+          ~unless:
+            [ used_pred [target];
+              used_pred [source];
+              used_fields_top_rel [target; field] ]
+          [ accessor_rel [source; field; target];
+            used_fields_rel [source; anyf; anyx] ]
+          (used_fields_rel [target; field; source]))
   in
   let used_fields_from_accessor_used_fields_top =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"]
-      ~existentials:["anyf"]
-      (used_fields_rel @| [~$"target"; ~$"field"; ~$"source"])
-      ~negate:
-        [ used_pred @| [~$"target"];
-          used_pred @| [~$"source"];
-          used_fields_top_rel @| [~$"target"; ~$"field"] ]
-      [ accessor_rel @| [~$"source"; ~$"field"; ~$"target"];
-        used_fields_top_rel @| [~$"source"; ~$"anyf"] ]
+    compile ["source"; "field"; "target"; "anyf"]
+      (fun [source; field; target; anyf] ->
+        rule
+          ~unless:
+            [ used_pred [target];
+              used_pred [source];
+              used_fields_top_rel [target; field] ]
+          [ accessor_rel [source; field; target];
+            used_fields_top_rel [source; anyf] ]
+          (used_fields_rel [target; field; source]))
   in
   (* constructor *)
   let alias_from_used_fields_constructor =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"; "v"]
-      (alias_rel @| [~$"v"; ~$"target"])
-      [ used_fields_rel @| [~$"source"; ~$"field"; ~$"v"];
-        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
+    let$ [source; field; target; v] = ["source"; "field"; "target"; "v"] in
+    alias_rel [v; target]
+    $:- [ used_fields_rel [source; field; v];
+          constructor_rel [source; field; target] ]
   in
   let used_from_constructor_field_used =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"]
-      (used_pred @| [~$"target"])
-      [ used_fields_top_rel @| [~$"source"; ~$"field"];
-        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
+    let$ [source; field; target] = ["source"; "field"; "target"] in
+    used_pred [target]
+    $:- [ used_fields_top_rel [source; field];
+          constructor_rel [source; field; target] ]
   in
   let used_from_constructor_used =
-    Datalog.Rule.create
-      ~variables:["source"; "field"; "target"]
-      (used_pred @| [~$"target"])
-      [ used_pred @| [~$"source"];
-        constructor_rel @| [~$"source"; ~$"field"; ~$"target"] ]
+    let$ [source; field; target] = ["source"; "field"; "target"] in
+    used_pred [target]
+    $:- [used_pred [source]; constructor_rel [source; field; target]]
   in
   (* use *)
   let used_from_used_use =
-    Datalog.Rule.create ~variables:["source"; "target"]
-      (used_pred @| [~$"target"])
-      [used_pred @| [~$"source"]; use_rel @| [~$"source"; ~$"target"]]
+    let$ [source; target] = ["source"; "target"] in
+    used_pred [target] $:- [used_pred [source]; use_rel [source; target]]
   in
   let used_from_used_fields_top_use =
-    Datalog.Rule.create ~variables:["source"; "target"] ~existentials:["anyf"]
-      (used_pred @| [~$"target"])
-      [ used_fields_top_rel @| [~$"source"; ~$"anyf"];
-        use_rel @| [~$"source"; ~$"target"] ]
+    let$ [source; target; anyf] = ["source"; "target"; "anyf"] in
+    used_pred [target]
+    $:- [used_fields_top_rel [source; anyf]; use_rel [source; target]]
   in
   let used_from_used_fields_use =
-    Datalog.Rule.create ~variables:["source"; "target"]
-      ~existentials:["anyf"; "anyx"]
-      (used_pred @| [~$"target"])
-      [ used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"];
-        use_rel @| [~$"source"; ~$"target"] ]
-  in
-  let subsumption_rule_used_used_fields =
-    Datalog.Rule.delete ~variables:["source"; "anyf"; "anyx"]
-      (used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"])
-      [ used_fields_rel @| [~$"source"; ~$"anyf"; ~$"anyx"];
-        used_pred @| [~$"source"] ]
-  in
-  let subsumption_rule_used_used_fields_top =
-    Datalog.Rule.delete ~variables:["source"; "anyf"]
-      (used_fields_top_rel @| [~$"source"; ~$"anyf"])
-      [used_fields_top_rel @| [~$"source"; ~$"anyf"]; used_pred @| [~$"source"]]
-  in
-  let subsumption_rule_used_fields_used_fields_top =
-    Datalog.Rule.delete
-      ~variables:["source"; "field"; "anyx"]
-      (used_fields_rel @| [~$"source"; ~$"field"; ~$"anyx"])
-      [ used_fields_rel @| [~$"source"; ~$"field"; ~$"anyx"];
-        used_fields_top_rel @| [~$"source"; ~$"field"] ]
+    let$ [source; target; anyf; anyx] = ["source"; "target"; "anyf"; "anyx"] in
+    used_pred [target]
+    $:- [used_fields_rel [source; anyf; anyx]; use_rel [source; target]]
   in
   let schedule =
     Datalog.Schedule.(
       fixpoint
-        (list
-           [ saturate
-               [ subsumption_rule_used_used_fields;
-                 subsumption_rule_used_used_fields_top;
-                 alias_from_used_propagate;
-                 alias_from_used_fields_constructor;
-                 used_from_used_fields_use;
-                 used_from_used_fields_top_use;
-                 used_from_alias_used;
-                 used_from_constructor_used;
-                 used_from_constructor_field_used;
-                 used_from_used_use ];
-             saturate
-               [ subsumption_rule_used_fields_used_fields_top;
-                 used_fields_top_from_used_fields_alias_top;
-                 used_fields_from_accessor_used ];
-             saturate
-               [ used_fields_from_used_fields_alias;
-                 used_fields_from_accessor_used_fields_top;
-                 used_fields_from_accessor_used_fields ] ]))
+        [ saturate
+            [ alias_from_used_propagate;
+              alias_from_used_fields_constructor;
+              used_from_used_fields_use;
+              used_from_used_fields_top_use;
+              used_from_alias_used;
+              used_from_constructor_used;
+              used_from_constructor_field_used;
+              used_from_used_use ];
+          saturate
+            [ used_fields_top_from_used_fields_alias_top;
+              used_fields_from_accessor_used ];
+          saturate
+            [ used_fields_from_used_fields_alias;
+              used_fields_from_accessor_used_fields_top;
+              used_fields_from_accessor_used_fields ] ])
   in
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;

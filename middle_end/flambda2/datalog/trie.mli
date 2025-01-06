@@ -1,50 +1,68 @@
-open Datalog_types
+(**************************************************************************)
+(*                                                                        *)
+(*                                 OCaml                                  *)
+(*                                                                        *)
+(*                        Basile Clément, OCamlPro                        *)
+(*                                                                        *)
+(*   Copyright 2024 OCamlPro SAS                                          *)
+(*   Copyright 2024 Jane Street Group LLC                                 *)
+(*                                                                        *)
+(*   All rights reserved.  This file is distributed under the terms of    *)
+(*   the GNU Lesser General Public License version 2.1, with the          *)
+(*   special exception on linking described in the file LICENSE.          *)
+(*                                                                        *)
+(**************************************************************************)
 
-(** [('m, 'k, 'v) is_map] is a witness that the type ['m] is a map from keys
-    of type ['k] to values of type ['v]. *)
-type ('m, 'k, 'v) is_map
+open Heterogenous_list
 
-val is_map : ('v Patricia_tree.Make(Numbers.Int).Map.t, int, 'v) is_map
-
+(** [('t, 'k, 'v) is_trie] is a witness that the type ['t] is a trie from keys
+    of type ['k Constant.hlist] to values of type ['v]. *)
 type ('t, 'k, 'v) is_trie
 
-val value_is_trie : ('a, 'b option, 'a) is_trie
+val patricia_map :
+  ('v Patricia_tree.Make(Numbers.Int).Map.t, int -> nil, 'v) is_trie
 
-val map_is_trie :
-  ('t, 'a, 's) is_map -> ('s, 'b, 'v) is_trie -> ('t, 'a -> 'b, 'v) is_trie
+val patricia_map_of_trie :
+  ('s, 'b, 'v) is_trie ->
+  ('s Patricia_tree.Make(Numbers.Int).Map.t, int -> 'b, 'v) is_trie
 
+(** Existential witness for tries of given key and value types.
+
+   {b Note}: This type is currently unused by the [Trie] module, but is provided
+   as a convenience for users that need to create existentially quantified
+   tries. *)
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
-val empty : ('t, 'k -> 'r, 'v) is_trie -> 't
+val empty : ('t, 'k, 'v) is_trie -> 't
+
+val is_empty : ('t, 'k, 'v) is_trie -> 't -> bool
+
+val singleton : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 'v -> 't
 
 val add_or_replace : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 'v -> 't -> 't
 
-val remove_refs : ('t, 'k, 'v) is_trie -> 'k Ref.hlist -> 't -> 't
+val remove : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 't -> 't
+
+val union : ('t, 'k, 'v) is_trie -> ('v -> 'v -> 'v option) -> 't -> 't -> 't
 
 val find_opt : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 't -> 'v option
-
-val find_opt_refs : ('t, 'k, 'v) is_trie -> 'k Ref.hlist -> 't -> 'v option
-
-module Iterator : sig
-  include Iterator
-
-  type _ hlist =
-    | [] : 'a option hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
-end
-
-val create_iterator : ('m, 'k, 'v) is_map -> 'm ref -> 'v ref -> 'k Iterator.t
-
-val iterators :
-  ('m, 'k -> 'r, 'v) is_trie -> 'v ref -> 'm ref * ('k -> 'r) Iterator.hlist
 
 val iter :
   ('t, 'k, 'v) is_trie -> ('k Constant.hlist -> 'v -> unit) -> 't -> unit
 
-val fold :
-  ('t, 'k, 'v) is_trie ->
-  ('k Constant.hlist -> 'v -> 'a -> 'a) ->
-  't ->
-  'a ->
-  'a
+module Iterator : sig
+  include Leapfrog.Iterator
+
+  include Heterogenous_list.S with type 'a t := 'a t
+
+  (** [create is_trie input output] creates a trie iterator.
+
+      The [input] reference is used to initialize the first iterator when [init]
+      is called.
+
+      The [output] reference is set to the corresponding value when [accept] is
+      called on the last iterator.
+  *)
+  val create : ('m, 'k, 'v) is_trie -> 'm ref -> 'v ref -> 'k hlist
+end
