@@ -181,7 +181,8 @@ end = struct
       Iterator.advance highest_iterator;
       repair t)
 
-  let seek (type a) ({ iterators; at_end } as t : a t) (key : a) =
+  let seek (type a) (t : a t) (key : a) =
+    let { iterators; at_end } = t in
     if not at_end
     then (
       let highest_iterator = iterators.(Array.length iterators - 1) in
