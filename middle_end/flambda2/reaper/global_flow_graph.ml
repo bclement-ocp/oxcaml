@@ -306,18 +306,23 @@ let insert t (k : Code_id_or_name.t) v =
 let add_alias t k v =
   add_graph_dep t k (Alias { target = v });
   t.alias_rel
-    <- Alias_rel.add_or_replace
-         [k; Code_id_or_name.name v]
-         () t.alias_rel
+    <- Alias_rel.add_or_replace [k; Code_id_or_name.name v] () t.alias_rel
 
 let add_use_dep t k v =
   add_graph_dep t k (Use { target = v });
   add_fact t use_rel [k; v]
 
 let add_propagate_dep t if_defined ~target ~source =
-  add_graph_dep t (Code_id_or_name.code_id if_defined) (Propagate { target; source });
-  add_graph_dep t (Code_id_or_name.name source) (Alias_if_def { target; if_defined });
-  add_fact t propagate_rel [Code_id_or_name.code_id if_defined; Code_id_or_name.name source; Code_id_or_name.name target]
+  add_graph_dep t
+    (Code_id_or_name.code_id if_defined)
+    (Propagate { target; source });
+  add_graph_dep t
+    (Code_id_or_name.name source)
+    (Alias_if_def { target; if_defined });
+  add_fact t propagate_rel
+    [ Code_id_or_name.code_id if_defined;
+      Code_id_or_name.name source;
+      Code_id_or_name.name target ]
 
 let inserts t k v =
   (*let tbl = t.name_to_dep in match Hashtbl.find_opt tbl k with | None ->
@@ -329,9 +334,7 @@ let add_opaque_let_dependency t bp fv =
   let f () bound_to =
     Name_occurrences.fold_names fv
       ~f:(fun () dep ->
-        add_use_dep t
-          (Code_id_or_name.name bound_to)
-          (Code_id_or_name.name dep))
+        add_use_dep t (Code_id_or_name.name bound_to) (Code_id_or_name.name dep))
       ~init:()
   in
   Name_occurrences.fold_names bound_to ~f ~init:()

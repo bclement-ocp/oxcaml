@@ -121,7 +121,7 @@ let record_deps ~denv:_ code_id_or_name deps t =
 let alias_dep ~denv:_ pat dep t =
   Simple.pattern_match dep
     ~name:(fun name ~coercion:_ ->
-        Graph.add_alias t.deps (Code_id_or_name.var pat) name)
+      Graph.add_alias t.deps (Code_id_or_name.var pat) name)
     ~const:(fun _ -> ())
 
 let root v t = Graph.add_use t.deps (Code_id_or_name.var v)
@@ -263,8 +263,7 @@ let deps t =
             (Code_id_or_name.name param)
             (Graph.Dep.Alias { target = name })
         | Some code_id ->
-          Graph.add_propagate_dep t.deps
-            code_id ~target:name ~source:param
+          Graph.add_propagate_dep t.deps code_id ~target:name ~source:param
       in
       List.iter2
         (fun param arg ->

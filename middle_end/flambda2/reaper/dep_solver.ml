@@ -464,11 +464,10 @@ let db_to_uses db =
       | Some (Fields f) -> ff f);
   h
 
-
-
 let datalog_schedule =
   let open Datalog in
   let open Global_flow_graph in
+  let atom rel l = atom rel l, true in
   let alias_rel = atom (Datalog.table_relation Alias_rel.id) in
   let used_pred = atom used_pred in
   let propagate_rel = atom propagate_rel in
@@ -477,12 +476,18 @@ let datalog_schedule =
   let accessor_rel = atom accessor_rel in
   let constructor_rel = atom constructor_rel in
   let use_rel = atom use_rel in
-  let rule ?unless:except h c =
-    let except = match except with None -> [] | Some except -> except in
-    where h (unless except (deduce c))
-  in
   let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h = rule h c in
+  let ( $:- ) c h =
+    let c, b = c in
+    if not b then invalid_arg "Can only deduce positive occurrences";
+    let positive = List.map fst (List.filter snd h) in
+    let negative = List.map fst (List.filter (fun u -> not (snd u)) h) in
+    where positive (unless negative (deduce c))
+  in
+  let not (x, b) =
+    if not b then invalid_arg "Cannot negate twice";
+    x, not b
+  in
   (* propagate *)
   let alias_from_used_propagate =
     let$ [if_defined; source; target] = ["if_defined"; "source"; "target"] in
@@ -491,23 +496,22 @@ let datalog_schedule =
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
-    compile ["source"; "target"; "field"; "v"]
-      (fun [source; target; field; v] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field];
-              used_fields_top_rel [source; field] ]
-          [alias_rel [source; target]; used_fields_rel [source; field; v]]
-          (used_fields_rel [target; field; v]))
+    let$ [source; target; field; v] = ["source"; "target"; "field"; "v"] in
+    used_fields_rel [target; field; v]
+    $:- [ not (used_pred [target]);
+          not (used_pred [source]);
+          not (used_fields_top_rel [target; field]);
+          not (used_fields_top_rel [source; field]);
+          alias_rel [source; target];
+          used_fields_rel [source; field; v] ]
   in
   let used_fields_top_from_used_fields_alias_top =
-    compile ["source"; "target"; "field"] (fun [source; target; field] ->
-        rule
-          ~unless:[used_pred [target]; used_pred [source]]
-          [alias_rel [source; target]; used_fields_top_rel [source; field]]
-          (used_fields_top_rel [target; field]))
+    let$ [source; target; field] = ["source"; "target"; "field"] in
+    used_fields_top_rel [target; field]
+    $:- [ not (used_pred [target]);
+          not (used_pred [source]);
+          alias_rel [source; target];
+          used_fields_top_rel [source; field] ]
   in
   let used_from_alias_used =
     let$ [source; target] = ["source"; "target"] in
@@ -515,35 +519,31 @@ let datalog_schedule =
   in
   (* accessor *)
   let used_fields_from_accessor_used =
-    compile ["source"; "field"; "target"] (fun [source; field; target] ->
-        rule
-          ~unless:[used_pred [target]]
-          [accessor_rel [source; field; target]; used_pred [source]]
-          (used_fields_top_rel [target; field]))
+    let$ [source; field; target] = ["source"; "field"; "target"] in
+    used_fields_top_rel [target; field]
+    $:- [ not (used_pred [target]);
+          accessor_rel [source; field; target];
+          used_pred [source] ]
   in
   let used_fields_from_accessor_used_fields =
-    compile ["source"; "field"; "target"; "anyf"; "anyx"]
-      (fun [source; field; target; anyf; anyx] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field] ]
-          [ accessor_rel [source; field; target];
-            used_fields_rel [source; anyf; anyx] ]
-          (used_fields_rel [target; field; source]))
+    let$ [source; field; target; _f; _x] =
+      ["source"; "field"; "target"; "_f"; "x"]
+    in
+    used_fields_rel [target; field; source]
+    $:- [ not (used_pred [target]);
+          not (used_pred [source]);
+          not (used_fields_top_rel [target; field]);
+          accessor_rel [source; field; target];
+          used_fields_rel [source; _f; _x] ]
   in
   let used_fields_from_accessor_used_fields_top =
-    compile ["source"; "field"; "target"; "anyf"]
-      (fun [source; field; target; anyf] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field] ]
-          [ accessor_rel [source; field; target];
-            used_fields_top_rel [source; anyf] ]
-          (used_fields_rel [target; field; source]))
+    let$ [source; field; target; _f] = ["source"; "field"; "target"; "_f"] in
+    used_fields_rel [target; field; source]
+    $:- [ not (used_pred [target]);
+          not (used_pred [source]);
+          not (used_fields_top_rel [target; field]);
+          accessor_rel [source; field; target];
+          used_fields_top_rel [source; _f] ]
   in
   (* constructor *)
   let alias_from_used_fields_constructor =
@@ -569,33 +569,33 @@ let datalog_schedule =
     used_pred [target] $:- [used_pred [source]; use_rel [source; target]]
   in
   let used_from_used_fields_top_use =
-    let$ [source; target; anyf] = ["source"; "target"; "anyf"] in
+    let$ [source; target; _f] = ["source"; "target"; "_f"] in
     used_pred [target]
-    $:- [used_fields_top_rel [source; anyf]; use_rel [source; target]]
+    $:- [used_fields_top_rel [source; _f]; use_rel [source; target]]
   in
   let used_from_used_fields_use =
-    let$ [source; target; anyf; anyx] = ["source"; "target"; "anyf"; "anyx"] in
+    let$ [source; target; _f; _x] = ["source"; "target"; "_f"; "_x"] in
     used_pred [target]
-    $:- [used_fields_rel [source; anyf; anyx]; use_rel [source; target]]
+    $:- [used_fields_rel [source; _f; _x]; use_rel [source; target]]
   in
-    Datalog.Schedule.(
-      fixpoint
-        [ saturate
-            [ alias_from_used_propagate;
-              alias_from_used_fields_constructor;
-              used_from_used_fields_use;
-              used_from_used_fields_top_use;
-              used_from_alias_used;
-              used_from_constructor_used;
-              used_from_constructor_field_used;
-              used_from_used_use ];
-          saturate
-            [ used_fields_top_from_used_fields_alias_top;
-              used_fields_from_accessor_used ];
-          saturate
-            [ used_fields_from_used_fields_alias;
-              used_fields_from_accessor_used_fields_top;
-              used_fields_from_accessor_used_fields ] ])
+  Datalog.Schedule.(
+    fixpoint
+      [ saturate
+          [ alias_from_used_propagate;
+            alias_from_used_fields_constructor;
+            used_from_used_fields_use;
+            used_from_used_fields_top_use;
+            used_from_alias_used;
+            used_from_constructor_used;
+            used_from_constructor_field_used;
+            used_from_used_use ];
+        saturate
+          [ used_fields_top_from_used_fields_alias_top;
+            used_fields_from_accessor_used ];
+        saturate
+          [ used_fields_from_used_fields_alias;
+            used_fields_from_accessor_used_fields_top;
+            used_fields_from_accessor_used_fields ] ])
 
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in
