@@ -80,14 +80,13 @@ module Dep : sig
   module Set : Container_types.Set with type elt = t
 end
 
-module Alias_rel : Datalog.Table.S
+module Alias_rel : Datalog.Table.S with type keys = Datalog.Schema.Relation2(Code_id_or_name)(Code_id_or_name).keys and type Value.t = unit
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
-    mutable alias_rel : Alias_rel.t;
-    schedule : Datalog.Schedule.t
+    mutable alias_rel : Alias_rel.t
   }
 
 val pp_used_graph : Format.formatter -> graph -> unit
@@ -101,9 +100,25 @@ val add_opaque_let_dependency :
 
 val add_dep : graph -> Code_id_or_name.t -> Dep.t -> unit
 
+val add_alias : graph -> Code_id_or_name.t -> Name.t -> unit
+
+val add_use_dep : graph -> Code_id_or_name.t -> Code_id_or_name.t -> unit
+
 val add_deps : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 
 val add_use : graph -> Code_id_or_name.t -> unit
+
+val add_propagate_dep : graph -> Code_id.t -> target:Name.t -> source:Name.t -> unit
+
+
+val propagate_rel : (Code_id_or_name.t, Code_id_or_name.t, Code_id_or_name.t) Datalog.rel3
+
+val accessor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
+
+val constructor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
+
+val use_rel : (Code_id_or_name.t, Code_id_or_name.t) Datalog.rel2
+
 
 val used_pred : Code_id_or_name.t Datalog.rel1
 

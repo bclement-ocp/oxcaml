@@ -226,14 +226,11 @@ module Alias_rel =
     end)
     (Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name))
 
-let alias_rel = Alias_rel.id
-
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
-    mutable alias_rel : Alias_rel.t;
-    schedule : Datalog.Schedule.t
+    mutable alias_rel : Alias_rel.t
   }
 
 let pp_used_graph ppf (graph : graph) =
@@ -272,150 +269,22 @@ let used_fields_rel =
     [code_id_or_name; field; code_id_or_name]
 
 let create () =
-  let open Datalog in
-  let alias_rel = atom (Datalog.table_relation alias_rel) in
-  let used_pred = atom used_pred in
-  let propagate_rel = atom propagate_rel in
-  let used_fields_rel = atom used_fields_rel in
-  let used_fields_top_rel = atom used_fields_top_rel in
-  let accessor_rel = atom accessor_rel in
-  let constructor_rel = atom constructor_rel in
-  let use_rel = atom use_rel in
-  let rule ?unless:except h c =
-    let except = match except with None -> [] | Some except -> except in
-    where h (unless except (deduce c))
-  in
-  let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h = rule h c in
-  (* propagate *)
-  let alias_from_used_propagate =
-    let$ [if_defined; source; target] = ["if_defined"; "source"; "target"] in
-    alias_rel [source; target]
-    $:- [used_pred [if_defined]; propagate_rel [if_defined; source; target]]
-  in
-  (* alias *)
-  let used_fields_from_used_fields_alias =
-    compile ["source"; "target"; "field"; "v"]
-      (fun [source; target; field; v] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field];
-              used_fields_top_rel [source; field] ]
-          [alias_rel [source; target]; used_fields_rel [source; field; v]]
-          (used_fields_rel [target; field; v]))
-  in
-  let used_fields_top_from_used_fields_alias_top =
-    compile ["source"; "target"; "field"] (fun [source; target; field] ->
-        rule
-          ~unless:[used_pred [target]; used_pred [source]]
-          [alias_rel [source; target]; used_fields_top_rel [source; field]]
-          (used_fields_top_rel [target; field]))
-  in
-  let used_from_alias_used =
-    let$ [source; target] = ["source"; "target"] in
-    used_pred [target] $:- [alias_rel [source; target]; used_pred [source]]
-  in
-  (* accessor *)
-  let used_fields_from_accessor_used =
-    compile ["source"; "field"; "target"] (fun [source; field; target] ->
-        rule
-          ~unless:[used_pred [target]]
-          [accessor_rel [source; field; target]; used_pred [source]]
-          (used_fields_top_rel [target; field]))
-  in
-  let used_fields_from_accessor_used_fields =
-    compile ["source"; "field"; "target"; "anyf"; "anyx"]
-      (fun [source; field; target; anyf; anyx] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field] ]
-          [ accessor_rel [source; field; target];
-            used_fields_rel [source; anyf; anyx] ]
-          (used_fields_rel [target; field; source]))
-  in
-  let used_fields_from_accessor_used_fields_top =
-    compile ["source"; "field"; "target"; "anyf"]
-      (fun [source; field; target; anyf] ->
-        rule
-          ~unless:
-            [ used_pred [target];
-              used_pred [source];
-              used_fields_top_rel [target; field] ]
-          [ accessor_rel [source; field; target];
-            used_fields_top_rel [source; anyf] ]
-          (used_fields_rel [target; field; source]))
-  in
-  (* constructor *)
-  let alias_from_used_fields_constructor =
-    let$ [source; field; target; v] = ["source"; "field"; "target"; "v"] in
-    alias_rel [v; target]
-    $:- [ used_fields_rel [source; field; v];
-          constructor_rel [source; field; target] ]
-  in
-  let used_from_constructor_field_used =
-    let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred [target]
-    $:- [ used_fields_top_rel [source; field];
-          constructor_rel [source; field; target] ]
-  in
-  let used_from_constructor_used =
-    let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred [target]
-    $:- [used_pred [source]; constructor_rel [source; field; target]]
-  in
-  (* use *)
-  let used_from_used_use =
-    let$ [source; target] = ["source"; "target"] in
-    used_pred [target] $:- [used_pred [source]; use_rel [source; target]]
-  in
-  let used_from_used_fields_top_use =
-    let$ [source; target; anyf] = ["source"; "target"; "anyf"] in
-    used_pred [target]
-    $:- [used_fields_top_rel [source; anyf]; use_rel [source; target]]
-  in
-  let used_from_used_fields_use =
-    let$ [source; target; anyf; anyx] = ["source"; "target"; "anyf"; "anyx"] in
-    used_pred [target]
-    $:- [used_fields_rel [source; anyf; anyx]; use_rel [source; target]]
-  in
-  let schedule =
-    Datalog.Schedule.(
-      fixpoint
-        [ saturate
-            [ alias_from_used_propagate;
-              alias_from_used_fields_constructor;
-              used_from_used_fields_use;
-              used_from_used_fields_top_use;
-              used_from_alias_used;
-              used_from_constructor_used;
-              used_from_constructor_field_used;
-              used_from_used_use ];
-          saturate
-            [ used_fields_top_from_used_fields_alias_top;
-              used_fields_from_accessor_used ];
-          saturate
-            [ used_fields_from_used_fields_alias;
-              used_fields_from_accessor_used_fields_top;
-              used_fields_from_accessor_used_fields ] ])
-  in
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;
     datalog = Datalog.empty;
-    alias_rel = Alias_rel.empty;
-    schedule
+    alias_rel = Alias_rel.empty
   }
 
 let add_fact t rel args = t.datalog <- Datalog.add_fact rel args t.datalog
 
-let insert t (k : Code_id_or_name.t) v =
+let add_graph_dep t k v =
   let tbl = t.name_to_dep in
-  (match Hashtbl.find_opt tbl k with
+  match Hashtbl.find_opt tbl k with
   | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
-  | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s));
+  | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s)
+
+let insert t (k : Code_id_or_name.t) v =
+  add_graph_dep t k v;
   match (v : Dep.t) with
   | Alias { target } ->
     t.alias_rel
@@ -434,6 +303,22 @@ let insert t (k : Code_id_or_name.t) v =
     add_fact t propagate_rel
       [k; Code_id_or_name.name source; Code_id_or_name.name target]
 
+let add_alias t k v =
+  add_graph_dep t k (Alias { target = v });
+  t.alias_rel
+    <- Alias_rel.add_or_replace
+         [k; Code_id_or_name.name v]
+         () t.alias_rel
+
+let add_use_dep t k v =
+  add_graph_dep t k (Use { target = v });
+  add_fact t use_rel [k; v]
+
+let add_propagate_dep t if_defined ~target ~source =
+  add_graph_dep t (Code_id_or_name.code_id if_defined) (Propagate { target; source });
+  add_graph_dep t (Code_id_or_name.name source) (Alias_if_def { target; if_defined });
+  add_fact t propagate_rel [Code_id_or_name.code_id if_defined; Code_id_or_name.name source; Code_id_or_name.name target]
+
 let inserts t k v =
   (*let tbl = t.name_to_dep in match Hashtbl.find_opt tbl k with | None ->
     Hashtbl.add tbl k v | Some s -> Hashtbl.replace tbl k (Dep.Set.union v s) *)
@@ -444,9 +329,9 @@ let add_opaque_let_dependency t bp fv =
   let f () bound_to =
     Name_occurrences.fold_names fv
       ~f:(fun () dep ->
-        insert t
+        add_use_dep t
           (Code_id_or_name.name bound_to)
-          (Dep.Use { target = Code_id_or_name.name dep }))
+          (Code_id_or_name.name dep))
       ~init:()
   in
   Name_occurrences.fold_names bound_to ~f ~init:()

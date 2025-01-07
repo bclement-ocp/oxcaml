@@ -121,7 +121,7 @@ let record_deps ~denv:_ code_id_or_name deps t =
 let alias_dep ~denv:_ pat dep t =
   Simple.pattern_match dep
     ~name:(fun name ~coercion:_ ->
-      Graph.add_dep t.deps (Code_id_or_name.var pat) (Alias { target = name }))
+        Graph.add_alias t.deps (Code_id_or_name.var pat) name)
     ~const:(fun _ -> ())
 
 let root v t = Graph.add_use t.deps (Code_id_or_name.var v)
@@ -132,9 +132,9 @@ let used ~(denv : Env.t) dep t =
       match denv.current_code_id with
       | None -> Graph.add_use t.deps (Code_id_or_name.name name)
       | Some code_id ->
-        Graph.add_dep t.deps
+        Graph.add_use_dep t.deps
           (Code_id_or_name.code_id code_id)
-          (Graph.Dep.Use { target = Code_id_or_name.name name }))
+          (Code_id_or_name.name name))
     ~const:(fun _ -> ())
 
 let used_code_id code_id t =
@@ -144,9 +144,9 @@ let called ~(denv : Env.t) code_id t =
   match denv.current_code_id with
   | None -> used_code_id code_id t
   | Some code_id2 ->
-    Graph.add_dep t.deps
+    Graph.add_use_dep t.deps
       (Code_id_or_name.code_id code_id2)
-      (Graph.Dep.Use { target = Code_id_or_name.code_id code_id })
+      (Code_id_or_name.code_id code_id)
 
 let fixed_arity_continuation t k =
   t.fixed_arity_conts <- Continuation.Set.add k t.fixed_arity_conts
@@ -263,12 +263,8 @@ let deps t =
             (Code_id_or_name.name param)
             (Graph.Dep.Alias { target = name })
         | Some code_id ->
-          Graph.add_dep t.deps
-            (Code_id_or_name.name param)
-            (Graph.Dep.Alias_if_def { target = name; if_defined = code_id });
-          Graph.add_dep t.deps
-            (Code_id_or_name.code_id code_id)
-            (Graph.Dep.Propagate { target = name; source = param })
+          Graph.add_propagate_dep t.deps
+            code_id ~target:name ~source:param
       in
       List.iter2
         (fun param arg ->
