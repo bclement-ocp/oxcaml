@@ -80,11 +80,14 @@ module Dep : sig
   module Set : Container_types.Set with type elt = t
 end
 
+module Alias_rel : Datalog.Table
+
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
-    schedule : Datalog.Schedule.t;
+    mutable alias_rel : Alias_rel.t;
+    schedule : Datalog.Schedule.t
   }
 
 val pp_used_graph : Format.formatter -> graph -> unit

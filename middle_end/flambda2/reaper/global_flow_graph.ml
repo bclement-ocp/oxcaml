@@ -116,15 +116,13 @@ module Field = struct
       match Map.find_opt field !field_to_int with
       | Some f -> f
       | None ->
-          let r = !first_free in
-          field_to_int := Map.add field r !field_to_int;
-          int_to_field := Numeric_types.Int.Map.add r field !int_to_field;
-          first_free := r + 1;
-          r
+        let r = !first_free in
+        field_to_int := Map.add field r !field_to_int;
+        int_to_field := Numeric_types.Int.Map.add r field !int_to_field;
+        first_free := r + 1;
+        r
     in
-    let decode n =
-      Numeric_types.Int.Map.find n !int_to_field
-    in
+    let decode n = Numeric_types.Int.Map.find n !int_to_field in
     encode, decode
 end
 
@@ -211,24 +209,6 @@ module Dep = struct
   module Set = Container.Set
 end
 
-type graph =
-  { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
-    used : (Code_id_or_name.t, unit) Hashtbl.t;
-    mutable datalog : Datalog.database;
-    schedule : Datalog.Schedule.t;
-  }
-
-let pp_used_graph ppf (graph : graph) =
-  let elts = List.of_seq @@ Hashtbl.to_seq graph.used in
-  let pp ppf l =
-    let pp_sep ppf () = Format.pp_print_string ppf "@, " in
-    let pp ppf (name, ()) =
-      Format.fprintf ppf "%a" Code_id_or_name.print name
-    in
-    Format.pp_print_list ~pp_sep pp ppf l
-  in
-  Format.fprintf ppf "{ %a }" pp elts
-
 module FieldT : Datalog.Column.S with type t = int = struct
   type t = int
 
@@ -263,9 +243,32 @@ end
 let code_id_or_name : _ Datalog.Column.t = (module Code_id_or_nameT)
 
 module Alias_rel =
-  Datalog.Schema.Relation2 (Code_id_or_nameT) (Code_id_or_nameT)
+  Datalog.Make_table
+    (struct
+      let name = "alias"
+    end)
+    (Datalog.Schema.Relation2 (Code_id_or_nameT) (Code_id_or_nameT))
 
-let alias_rel = Datalog.Table.Id.create ~name:"alias" (module Alias_rel)
+let alias_rel = Alias_rel.id
+
+type graph =
+  { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
+    used : (Code_id_or_name.t, unit) Hashtbl.t;
+    mutable datalog : Datalog.database;
+    mutable alias_rel : Alias_rel.t;
+    schedule : Datalog.Schedule.t
+  }
+
+let pp_used_graph ppf (graph : graph) =
+  let elts = List.of_seq @@ Hashtbl.to_seq graph.used in
+  let pp ppf l =
+    let pp_sep ppf () = Format.pp_print_string ppf "@, " in
+    let pp ppf (name, ()) =
+      Format.fprintf ppf "%a" Code_id_or_name.print name
+    in
+    Format.pp_print_list ~pp_sep pp ppf l
+  in
+  Format.fprintf ppf "{ %a }" pp elts
 
 let use_rel =
   Datalog.create_relation ~name:"use" [code_id_or_name; code_id_or_name]
@@ -425,9 +428,9 @@ let create () =
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;
     datalog = Datalog.empty;
-    schedule;
+    alias_rel = Alias_rel.empty;
+    schedule
   }
-
 
 let add_fact t rel args = t.datalog <- Datalog.add_fact rel args t.datalog
 
@@ -438,11 +441,10 @@ let insert t (k : Code_id_or_name.t) v =
   | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s));
   match (v : Dep.t) with
   | Alias { target } ->
-    let alias_table = Datalog.get_table alias_rel t.datalog in
-    let alias_table =
-      Alias_rel.add_or_replace [k; Code_id_or_name.name target] () alias_table
-    in
-    t.datalog <- Datalog.set_table alias_rel alias_table t.datalog
+    t.alias_rel
+      <- Alias_rel.add_or_replace
+           [k; Code_id_or_name.name target]
+           () t.alias_rel
   | Use { target } -> add_fact t use_rel [k; target]
   | Accessor { relation; target } ->
     let field = Field.encode relation in

@@ -892,6 +892,22 @@ type database = Table.Map.t
 
 let empty = Table.Map.empty
 
+module type Table = sig
+  include Schema.S
+
+  val id : (t, keys, Value.t) Table.Id.t
+end
+
+module type Name = sig
+  val name : string
+end
+
+module Make_table (N : Name) (S : Schema.S) = struct
+  include S
+
+  let id = Table.Id.create ~name:N.name (module S)
+end
+
 let table_relation table = Table.Id.Id table
 
 (* We could expose the fact that we do not support relations without arguments

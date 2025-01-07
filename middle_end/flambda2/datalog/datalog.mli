@@ -138,6 +138,19 @@ type ('a, 'b) rel2 = ('a -> 'b -> Heterogenous_list.nil) relation
 (** Shortcut type for ternary relations. *)
 type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> Heterogenous_list.nil) relation
 
+module type Table = sig
+  include Schema.S
+
+  val id : (t, keys, Value.t) Table.Id.t
+end
+
+module type Name = sig
+  val name : string
+end
+
+module Make_table (N : Name) (R : Schema.S) :
+  Table with type keys = R.keys and type t = R.t and module Value = R.Value
+
 val table_relation : ('t, 'k, unit) Table.Id.t -> 'k relation
 
 (** [create_relation ~name schema] creates a new relation with name [name] and
