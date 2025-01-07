@@ -21,33 +21,6 @@ module type Name = sig
   val name : string
 end
 
-module Column : sig
-  type ('t, 'k, 'v) id
-
-  module type S = sig
-    type t
-
-    val print : Format.formatter -> t -> unit
-
-    module Set : Container_types.Set with type elt = t
-
-    module Map :
-      Container_types.Map_plus_iterator with type key = t with module Set = Set
-
-    val datalog_column_id : ('a Map.t, t, 'a) id
-  end
-
-  type 'a t = (module S with type t = 'a)
-
-  include Heterogenous_list.S with type 'a t := 'a t
-
-  module Make (_ : sig
-    val name : string
-
-    val print : Format.formatter -> int -> unit
-  end) : S with type t = int
-end
-
 module Schema : sig
   module type Value = sig
     type t
@@ -132,6 +105,10 @@ module Table : sig
     include Schema.S
 
     val id : (t, keys, Value.t) Id.t
+  end
+
+  module type Relation = sig
+    include S with type Value.t = unit
   end
 
   module Make (N : Name) (R : Schema.S) :
@@ -334,55 +311,6 @@ module String : sig
   include Heterogenous_list.S with type 'a t := string
 end
 
-(** The type [('free, 'p, 'v) program] is the type of programs returning
-      values of type ['v] with free parameters ['free] and used parameters
-      ['p].
-
-      Only programs with no free parameters (i.e. ['free] is
-      [Heterogenous_list.nil]) can be compiled, see [compile].
-
-      The output of programs is either queries or rules; the use of a shared
-      types allows writing combinators that work in both cases.
-  *)
-type ('p, 'a) program
-
-(** Compile a program with no free parameters and returns the resulting value.
-
-      {b Note}: As a convenience, [compile] takes a list of variables and binds
-      them immediately with [foreach]. To compile an existing program with no
-      free variables, use [compile [] (fun [] -> program)].
-
-      Repeated compilation of a program building mutable values (such as
-      cursors) create new values each time they are compiled.
-  *)
-val compile :
-  'v String.hlist ->
-  ('v Term.hlist -> (Heterogenous_list.nil, 'a) program) ->
-  'a
-
-(** [with_parameters params f] binds the free parameters [params] in [f].
-
-      {b Note}: We require that the [params] list is non-empty, so
-      [with_parameters] can not be applied repeatedly.
-  *)
-val compile_with_parameters :
-  'p String.hlist -> ('p Term.hlist -> ('p, 'a) program) -> 'a
-
-(** [foreach vars prog] binds the variables [vars] in [prog].
-
-      The order variables are provided in [vars] is the iteration order during
-      (query or rule) evaluation.
-  *)
-val foreach :
-  'a String.hlist -> ('a Term.hlist -> ('p, 'b) program) -> ('p, 'b) program
-
-val where : unit atom list -> ('p, 'a) program -> ('p, 'a) program
-
-val unless : unit atom list -> ('p, 'a) program -> ('p, 'a) program
-
-(** [deduce rel args] adds the fact [rel args] to the database. *)
-val deduce : unit atom -> (Heterogenous_list.nil, rule) program
-
 (** {2 Query language} *)
 
 (** Fact retrieval is supported through a query expressed using (typed) Datalog
@@ -441,9 +369,6 @@ module Cursor : sig
 
   (** Cursors yielding values of type ['v Constant.hlist]. *)
   type 'v t = (Heterogenous_list.nil, 'v) with_parameters
-
-  (** [yield args] is a query program that outputs the tuple [args]. *)
-  val yield : 'v Term.hlist -> ('p, ('p, 'v) with_parameters) program
 
   (** [Cursor.create vars f] creates a low-level [Cursor.t] from a high-level
       query, expressed as a conjunction of atoms.
@@ -600,3 +525,55 @@ module Cursor : sig
     f:('v Constant.hlist -> unit) ->
     unit
 end
+
+(** The type [('free, 'p, 'v) program] is the type of programs returning
+      values of type ['v] with free parameters ['free] and used parameters
+      ['p].
+
+      Only programs with no free parameters (i.e. ['free] is
+      [Heterogenous_list.nil]) can be compiled, see [compile].
+
+      The output of programs is either queries or rules; the use of a shared
+      types allows writing combinators that work in both cases.
+  *)
+type ('p, 'a) program
+
+(** Compile a program with no free parameters and returns the resulting value.
+
+      {b Note}: As a convenience, [compile] takes a list of variables and binds
+      them immediately with [foreach]. To compile an existing program with no
+      free variables, use [compile [] (fun [] -> program)].
+
+      Repeated compilation of a program building mutable values (such as
+      cursors) create new values each time they are compiled.
+  *)
+val compile :
+  'v String.hlist ->
+  ('v Term.hlist -> (Heterogenous_list.nil, 'a) program) ->
+  'a
+
+(** [with_parameters params f] binds the free parameters [params] in [f].
+
+      {b Note}: We require that the [params] list is non-empty, so
+      [with_parameters] can not be applied repeatedly.
+  *)
+val compile_with_parameters :
+  'p String.hlist -> ('p Term.hlist -> ('p, 'a) program) -> 'a
+
+(** [foreach vars prog] binds the variables [vars] in [prog].
+
+      The order variables are provided in [vars] is the iteration order during
+      (query or rule) evaluation.
+  *)
+val foreach :
+  'a String.hlist -> ('a Term.hlist -> ('p, 'b) program) -> ('p, 'b) program
+
+val where : unit atom list -> ('p, 'a) program -> ('p, 'a) program
+
+val unless : unit atom list -> ('p, 'a) program -> ('p, 'a) program
+
+(** [yield args] is a query program that outputs the tuple [args]. *)
+val yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.with_parameters) program
+
+(** [deduce rel args] adds the fact [rel args] to the database. *)
+val deduce : unit atom -> (Heterogenous_list.nil, rule) program

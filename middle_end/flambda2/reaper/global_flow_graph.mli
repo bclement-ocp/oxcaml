@@ -80,7 +80,10 @@ module Dep : sig
   module Set : Container_types.Set with type elt = t
 end
 
-module Alias_rel : Datalog.Table.S with type keys = Datalog.Schema.Relation2(Code_id_or_name)(Code_id_or_name).keys and type Value.t = unit
+module Alias_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
@@ -108,17 +111,17 @@ val add_deps : graph -> Code_id_or_name.t -> Dep.Set.t -> unit
 
 val add_use : graph -> Code_id_or_name.t -> unit
 
-val add_propagate_dep : graph -> Code_id.t -> target:Name.t -> source:Name.t -> unit
+val add_propagate_dep :
+  graph -> Code_id.t -> target:Name.t -> source:Name.t -> unit
 
-
-val propagate_rel : (Code_id_or_name.t, Code_id_or_name.t, Code_id_or_name.t) Datalog.rel3
+val propagate_rel :
+  (Code_id_or_name.t, Code_id_or_name.t, Code_id_or_name.t) Datalog.rel3
 
 val accessor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
 
 val constructor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
 
 val use_rel : (Code_id_or_name.t, Code_id_or_name.t) Datalog.rel2
-
 
 val used_pred : Code_id_or_name.t Datalog.rel1
 

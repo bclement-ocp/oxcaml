@@ -13,8 +13,6 @@
 (*                                                                        *)
 (**************************************************************************)
 
-[@@@warning "-unused-module"]
-
 open Heterogenous_list
 
 (* Needs to be exported. *)
@@ -61,59 +59,6 @@ module Type = struct
     let provably_equal (type a b) ((module A) : a t) ((module B) : b t) :
         (a, b) eq option =
       match A.Id with B.Id -> Some Equal | _ -> None
-  end
-end
-
-module Column = struct
-  type (_, _, _) repr = Patricia_tree_repr : ('a Int.Map.t, int, 'a) repr
-
-  let trie_repr : type a b c. (a, b, c) repr -> (a, b -> nil, c) Trie.is_trie =
-   fun Patricia_tree_repr -> Trie.patricia_tree_is_trie
-
-  let nested_trie_repr :
-      type a b c d e.
-      (a, b, c) repr -> (c, d, e) Trie.is_trie -> (a, b -> d, e) Trie.is_trie =
-   fun Patricia_tree_repr is_trie -> Trie.patricia_tree_of_trie is_trie
-
-  type ('t, 'k, 'v) id =
-    { name : string;
-      repr : ('t, 'k, 'v) repr
-    }
-
-  module type S = sig
-    type t
-
-    val print : Format.formatter -> t -> unit
-
-    module Set : Container_types.Set with type elt = t
-
-    module Map :
-      Container_types.Map_plus_iterator with type key = t with module Set = Set
-
-    val datalog_column_id : ('a Map.t, t, 'a) id
-  end
-
-  type 'a t = (module S with type t = 'a)
-
-  include Heterogenous_list.Make (struct
-    type nonrec 'a t = 'a t
-  end)
-
-  module Make (X : sig
-    val name : string
-
-    val print : Format.formatter -> int -> unit
-  end) =
-  struct
-    type t = int
-
-    let print = X.print
-
-    module Tree = Patricia_tree.Make (X)
-    module Set = Tree.Set
-    module Map = Tree.Map
-
-    let datalog_column_id = { name = X.name; repr = Patricia_tree_repr }
   end
 end
 
@@ -198,7 +143,7 @@ module Schema = struct
     type t = V.t C.Map.t
 
     let is_trie : (t, keys, Value.t) Trie.is_trie =
-      Column.trie_repr C.datalog_column_id.repr
+      Column.trie_repr C.datalog_column_id
 
     let schema : keys Column.hlist = [(module C)]
 
@@ -224,7 +169,7 @@ module Schema = struct
 
     type t = S.t C.Map.t
 
-    let is_trie = Column.nested_trie_repr C.datalog_column_id.repr S.is_trie
+    let is_trie = Column.nested_trie_repr C.datalog_column_id S.is_trie
 
     let schema : keys Column.hlist = (module C) :: S.schema
 
@@ -359,6 +304,10 @@ module Table = struct
     include Schema.S
 
     val id : (t, keys, Value.t) Id.t
+  end
+
+  module type Relation = sig
+    include S with type Value.t = unit
   end
 
   module Make (N : Name) (S : Schema.S) = struct
@@ -759,6 +708,21 @@ let rec pop_vars :
     | None -> Cursor0.pop (pop_vars vars)
     | _ -> Cursor0.advance)
 
+type ('p, 'y) cursor =
+  { parameters : 'p Parameter.hlist;
+    binders : binder list;
+    instruction : (action, 'y, nil) Cursor0.instruction
+  }
+
+let yield output (info : _ info) =
+  let (Elist rev_vars) = info.variables.rev_vars in
+  (* Must compile first because of execution order. *)
+  let instruction = compile_terms output in
+  let instruction = Cursor0.yield instruction (pop_vars rev_vars) in
+  let instruction = push_vars ~instruction rev_vars in
+  let instruction = postprocess info.post_parameters instruction in
+  { parameters = info.parameters; binders = info.binders; instruction }
+
 module Cursor = struct
   let rec bind_parameters :
       type a. a Parameter.hlist -> a Constant.hlist -> unit =
@@ -771,12 +735,6 @@ module Cursor = struct
 
   let create_state input instruction =
     Cursor0.create ~evaluate input instruction
-
-  type ('p, 'y) cursor =
-    { parameters : 'p Parameter.hlist;
-      binders : binder list;
-      instruction : (action, 'y, nil) Cursor0.instruction
-    }
 
   type ('p, 'v) with_parameters = ('p, 'v Constant.hlist) cursor
 
@@ -799,15 +757,6 @@ module Cursor = struct
   let iter cursor database ~f =
     bind_database cursor.binders database;
     Cursor0.iter f (create_state database cursor.instruction)
-
-  let yield output (info : _ info) =
-    let (Elist rev_vars) = info.variables.rev_vars in
-    (* Must compile first because of execution order. *)
-    let instruction = compile_terms output in
-    let instruction = Cursor0.yield instruction (pop_vars rev_vars) in
-    let instruction = push_vars ~instruction rev_vars in
-    let instruction = postprocess info.post_parameters instruction in
-    { parameters = info.parameters; binders = info.binders; instruction }
 
   let create variables f =
     compile variables @@ fun variables -> where (f variables) @@ yield variables
