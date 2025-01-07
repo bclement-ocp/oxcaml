@@ -419,12 +419,12 @@ let db_to_uses db =
   let used_fields_rel x f y =
     atom Global_flow_graph.used_fields_rel [x; f; y]
   in
-  let query_uses = query ["X"] (fun [x] -> [used_pred x]) in
+  let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
   let query_used_field_top =
-    query ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
+    Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
   in
   let query_used_field =
-    query ["X"; "F"; "Y"] (fun [x; f; y] -> [used_fields_rel x f y])
+    Cursor.create ["X"; "F"; "Y"] (fun [x; f; y] -> [used_fields_rel x f y])
   in
   let h = Hashtbl.create 17 in
   Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);

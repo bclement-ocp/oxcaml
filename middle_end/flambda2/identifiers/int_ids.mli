@@ -260,7 +260,7 @@ module Code_id_or_name : sig
 
   include Container_types.S_plus_iterator with type t := t
 
-  val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
+  val datalog_column_id : ('a Map.t, t, 'a) Datalog.Column.id
 
   val code_id : Code_id.t -> t
 

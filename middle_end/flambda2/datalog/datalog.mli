@@ -22,28 +22,30 @@ module type Name = sig
 end
 
 module Column : sig
-  module type ColumnType = sig
+  type ('t, 'k, 'v) id
+
+  module type S = sig
     type t
 
     val print : Format.formatter -> t -> unit
 
-    module Map : Container_types_intf.Map_plus_iterator with type key = t
+    module Set : Container_types.Set with type elt = t
 
-    val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
-  end
+    module Map :
+      Container_types.Map_plus_iterator with type key = t with module Set = Set
 
-  module type S = sig
-    include Name
-
-    include ColumnType
+    val datalog_column_id : ('a Map.t, t, 'a) id
   end
 
   type 'a t = (module S with type t = 'a)
 
   include Heterogenous_list.S with type 'a t := 'a t
 
-  module Make (_ : Name) (C : ColumnType) :
-    S with type t = C.t and module Map = C.Map
+  module Make (_ : sig
+    val name : string
+
+    val print : Format.formatter -> int -> unit
+  end) : S with type t = int
 end
 
 module Schema : sig
@@ -223,218 +225,6 @@ val get_table : ('t, 'k, 'v) Table.Id.t -> database -> 't
 
 val set_table : ('t, 'k, 'v) Table.Id.t -> 't -> database -> database
 
-(** {2 Query language} *)
-
-(** Fact retrieval is supported through a query expressed using (typed) Datalog
-    queries.
-*)
-
-module Cursor : sig
-  (** A cursor represents a query on the database. Cursors provide [iter] and
-      [fold] functions to iterate over the matching facts.
-
-      {b Warning}: Cursors are {b mutable} data structures that are temporarily
-      bound to a database and modified internally by iteration functions such as
-      [iter] or [fold]. Reusing a cursor while it is being iterated over is
-      unspecified behavior.
-
-      {b Binding order}
-
-      The order in which variables are provided to [Cursor.create] and
-      [Cursor.create_with_parameters] is called the {b binding order}. For
-      parameterized queries, the parameters appear before the variables in the
-      binding order.
-
-      This order corresponds to the nesting order of the loop nest that will be
-      used to evaluate the query, so it can have dramatic performance impact and
-      need to be chosen carefully.
-
-      In order for the engine to be able to evaluate the query, variables must
-      appear in the same order in at least one of the atoms constituting the
-      query; for instance, it is not possible to iterate over
-      [[edge [x; y]]] in the [[y; x]] binding order: we are requesting that [y]
-      be bound before [x], but in order to find the set of possible values for
-      [y] from [edge] we need to first know the possible values for [x]. These
-      cases will raise an error.
-
-      It is, however, possible to iterate on the query
-      [[edge [x; y]; edge [y; x]] using the [[y; x]] binding order: we
-      can use the [edge [y; x]] instance to bind the variables for [y] and [x]
-      in this order, then check if [(x, y)] is in the [edge] relation for
-      each [(y, x)] pair that we find. In this case, the occurrences of [y] and
-      [x] in [edge [y; x]] are said to be {b binding}, while their occurrences
-      in [edge [x; y]] are {b non-binding}.
-
-      More precisely, an occurrence of a variable [x] in a positive atom is
-      binding if all the previous arguments of the atom appear before [x] in the
-      binding order; all other occurrences are non-binding. In order to
-      evaluate a query, we require that all variables have at least one binding
-      occurrence in the query.
-
-      Occurrences in negated atoms (with the [?negate] optional parameter) are
-      never binding.
-    *)
-
-  (** Parameterized cursors take an additional argument of type
-          ['p Constant.hlist] that is provided when evaluating the cursor. *)
-  type ('p, 'v) with_parameters
-
-  (** Cursors yielding values of type ['v Constant.hlist]. *)
-  type 'v t = (Heterogenous_list.nil, 'v) with_parameters
-
-  (** [Cursor.create vars f] creates a low-level [Cursor.t] from a high-level
-      query, expressed as a conjunction of atoms.
-
-      Existential variables passed in the [?existentials] optional arguments can
-      be used in the query but are not available in the output.
-
-      {b Warning}: The order of the variables in [vars] is crucial as it
-      dictates the iteration order of the loop nest that will be used to
-      evaluate the query. See the documentation of the {!Cursor} module.
-
-      {b Note}: If you need to perform queries that depend on the value of a
-      variable outside the database, consider using parameterized cursors (see
-      {!Cursor.create_with_parameters}). Reusing a parameterized cursor is more
-      efficient than creating new cursors for each value of the parameters.
-
-      {b Example}
-
-      The following code creates cursors to iterate on the marked nodes
-      ([marked_cursor]), and on all the edge pairs in the graphs
-      ([edge_cursor]), respectively.
-
-      {[
-      let marked_cursor =
-        Cursor.create ["X"] (fun [x] -> [marked [x]])
-
-      let edge_cursor =
-        Cursor.create ["src"; "dst"] (fun [src; dst] -> [edge [src; dst]])
-      ]}
-  *)
-
-  (** [fold cursor db ~init ~f] accumulates [f] over all the variable bindings
-      that match the query associated with [cursor] in [db].
-
-      {b Warning}: [cursor] must not be used from inside [f].
-
-      {b Example}
-
-      The following code computes the list of reversed edges (edges from target
-      to source).
-
-      {[
-      let reverse_edges =
-        Cursor.fold edge_cursor db ~init:[] ~f:(fun [src; dst] acc ->
-            (dst, src) :: acc)
-      ]}
-  *)
-  val fold :
-    'v t -> database -> init:'a -> f:('v Constant.hlist -> 'a -> 'a) -> 'a
-
-  (** [iter cursor db ~f] applies [f] to all the variable bindings that match
-      the query associated with [cursor] in [db].
-
-      {b Warning}: [cursor] must not be used from inside [f].
-
-      {b Example}
-
-      The following code prints all the marked nodes.
-
-      {[
-      let () =
-        Format.eprintf "@[<v 2>Marked nodes:@ ";
-        Cursor.iter marked_cursor db ~f:(fun [n] ->
-            Format.eprintf "- %a@ " Node.print n);
-        Format.eprintf "@]@."
-      ]}
-  *)
-  val iter : 'v t -> database -> f:('v Constant.hlist -> unit) -> unit
-
-  (** Create a parameterized cursor.
-
-      This is a more general version of [Cursor.create] that also takes an
-      additional list of parameters. The
-
-      {b Example}
-
-      The following code creates two parameterized cursors for iterating over
-      the successors or predecessors of a parametric node, which will be
-      provided when evaluating the query.
-
-      Notice that in the [successor_cursor], the parameters appears {e before}
-      the variable in the [edge] relation, while in the [predecessor_cursor], it
-      appears {e after} the variable.
-
-      This means that the [successor_cursor] can be iterated efficiently,
-      because it follows the structure of the relation: internally, the [edge]
-      relation is represented as a map from nodes to their successors, and so
-      evaluating the [successor_cursor] will result in a simple map lookup.
-
-      On the other hand, evaluating [predecessor_cursor] requires iterating over
-      all the (non-terminal) nodes to check whether it contains [p] in its
-      successor map.
-
-      {[
-      let successor_cursor =
-        Cursor.create_with_parameters ~parameters:["P"] ["X"] (fun [p] [x] ->
-            [edge [p; x]])
-
-      let predecessor_cursor =
-        Cursor.create_with_parameters ~parameters:["P"] ["X"] (fun [p] [x] ->
-            [edge [x; p]])
-      ]}
-  *)
-
-  (** [fold_with_parameters cursor params db ~init ~f] accumulates the function
-      [f] over all the variable bindings that match the query in [db]. The
-      values of the parameters are taken from the [params] list.
-
-      {b Warning}: [cursor] must not be used from inside [f].
-
-      {b Example}
-
-      The following code accumulates the successors of node [n2] in a list.
-
-      {[
-      let successors =
-        Cursor.fold_with_parameters successor_cursor [n2] db ~init:[]
-          ~f:(fun [n] acc -> n :: acc)
-      ]}
-  *)
-  val fold_with_parameters :
-    ('p, 'v) with_parameters ->
-    'p Constant.hlist ->
-    database ->
-    init:'a ->
-    f:('v Constant.hlist -> 'a -> 'a) ->
-    'a
-
-  (** [iter_with_parameters cursor params db ~f] applies [f] to all the variable
-      bindings that match the query in [db], where the parameter values are
-      taken from [params].
-
-      {b Warning}: [cursor] must not be used from inside [f].
-
-      {b Example}
-
-      The following code prints the predecessors of node [n2].
-
-      {[
-      let () =
-        Format.eprintf "@[<v 2>Predecessors of %a:@ " Node.print n2;
-        Cursor.iter_with_parameters predecessor_cursor [n2] db ~f:(fun [n] ->
-            Format.eprintf "- %a@ " Node.print n);
-        Format.eprintf "@]@."
-      ]}
-  *)
-  val iter_with_parameters :
-    ('p, 'v) with_parameters ->
-    'p Constant.hlist ->
-    database ->
-    f:('v Constant.hlist -> unit) ->
-    unit
-end
-
 (** {2 Inference rules} *)
 
 (** The type of compiled rules.
@@ -590,17 +380,223 @@ val where : unit atom list -> ('p, 'a) program -> ('p, 'a) program
 
 val unless : unit atom list -> ('p, 'a) program -> ('p, 'a) program
 
-(** [yield args] is a query program that outputs the tuple [args]. *)
-val yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.with_parameters) program
-
-(** [query variables f] is a handy shorthand for:
-
-      {[
-      compile variables @@ fun variables ->
-      where (f variables) @@ yield variables
-      ]}
-  *)
-val query : 'v String.hlist -> ('v Term.hlist -> unit atom list) -> 'v Cursor.t
-
 (** [deduce rel args] adds the fact [rel args] to the database. *)
 val deduce : unit atom -> (Heterogenous_list.nil, rule) program
+
+(** {2 Query language} *)
+
+(** Fact retrieval is supported through a query expressed using (typed) Datalog
+    queries.
+*)
+
+module Cursor : sig
+  (** A cursor represents a query on the database. Cursors provide [iter] and
+      [fold] functions to iterate over the matching facts.
+
+      {b Warning}: Cursors are {b mutable} data structures that are temporarily
+      bound to a database and modified internally by iteration functions such as
+      [iter] or [fold]. Reusing a cursor while it is being iterated over is
+      unspecified behavior.
+
+      {b Binding order}
+
+      The order in which variables are provided to [Cursor.create] and
+      [Cursor.create_with_parameters] is called the {b binding order}. For
+      parameterized queries, the parameters appear before the variables in the
+      binding order.
+
+      This order corresponds to the nesting order of the loop nest that will be
+      used to evaluate the query, so it can have dramatic performance impact and
+      need to be chosen carefully.
+
+      In order for the engine to be able to evaluate the query, variables must
+      appear in the same order in at least one of the atoms constituting the
+      query; for instance, it is not possible to iterate over
+      [[edge [x; y]]] in the [[y; x]] binding order: we are requesting that [y]
+      be bound before [x], but in order to find the set of possible values for
+      [y] from [edge] we need to first know the possible values for [x]. These
+      cases will raise an error.
+
+      It is, however, possible to iterate on the query
+      [[edge [x; y]; edge [y; x]] using the [[y; x]] binding order: we
+      can use the [edge [y; x]] instance to bind the variables for [y] and [x]
+      in this order, then check if [(x, y)] is in the [edge] relation for
+      each [(y, x)] pair that we find. In this case, the occurrences of [y] and
+      [x] in [edge [y; x]] are said to be {b binding}, while their occurrences
+      in [edge [x; y]] are {b non-binding}.
+
+      More precisely, an occurrence of a variable [x] in a positive atom is
+      binding if all the previous arguments of the atom appear before [x] in the
+      binding order; all other occurrences are non-binding. In order to
+      evaluate a query, we require that all variables have at least one binding
+      occurrence in the query.
+
+      Occurrences in negated atoms (with the [?negate] optional parameter) are
+      never binding.
+    *)
+
+  (** Parameterized cursors take an additional argument of type
+          ['p Constant.hlist] that is provided when evaluating the cursor. *)
+  type ('p, 'v) with_parameters
+
+  (** Cursors yielding values of type ['v Constant.hlist]. *)
+  type 'v t = (Heterogenous_list.nil, 'v) with_parameters
+
+  (** [yield args] is a query program that outputs the tuple [args]. *)
+  val yield : 'v Term.hlist -> ('p, ('p, 'v) with_parameters) program
+
+  (** [Cursor.create vars f] creates a low-level [Cursor.t] from a high-level
+      query, expressed as a conjunction of atoms.
+
+      {b Warning}: The order of the variables in [vars] is crucial as it
+      dictates the iteration order of the loop nest that will be used to
+      evaluate the query. See the documentation of the {!Cursor} module.
+
+      {b Note}: If you need to perform queries that depend on the value of a
+      variable outside the database, consider using parameterized cursors (see
+      {!Cursor.create_with_parameters}). Reusing a parameterized cursor is more
+      efficient than creating new cursors for each value of the parameters.
+
+      {b Example}
+
+      The following code creates cursors to iterate on the marked nodes
+      ([marked_cursor]), and on all the edge pairs in the graphs
+      ([edge_cursor]), respectively.
+
+      {[
+      let marked_cursor =
+        Cursor.create ["X"] (fun [x] -> [marked [x]])
+
+      let edge_cursor =
+        Cursor.create ["src"; "dst"] (fun [src; dst] -> [edge [src; dst]])
+      ]}
+  *)
+  val create : 'v String.hlist -> ('v Term.hlist -> unit atom list) -> 'v t
+
+  (** Create a parameterized cursor.
+
+      This is a more general version of [Cursor.create] that also takes an
+      additional list of parameters. The
+
+      {b Example}
+
+      The following code creates two parameterized cursors for iterating over
+      the successors or predecessors of a parametric node, which will be
+      provided when evaluating the query.
+
+      Notice that in the [successor_cursor], the parameters appears {e before}
+      the variable in the [edge] relation, while in the [predecessor_cursor], it
+      appears {e after} the variable.
+
+      This means that the [successor_cursor] can be iterated efficiently,
+      because it follows the structure of the relation: internally, the [edge]
+      relation is represented as a map from nodes to their successors, and so
+      evaluating the [successor_cursor] will result in a simple map lookup.
+
+      On the other hand, evaluating [predecessor_cursor] requires iterating over
+      all the (non-terminal) nodes to check whether it contains [p] in its
+      successor map.
+
+      {[
+      let successor_cursor =
+        Cursor.create_with_parameters ~parameters:["P"] ["X"] (fun [p] [x] ->
+            [edge [p; x]])
+
+      let predecessor_cursor =
+        Cursor.create_with_parameters ~parameters:["P"] ["X"] (fun [p] [x] ->
+            [edge [x; p]])
+      ]}
+  *)
+  val create_with_parameters :
+    parameters:'p String.hlist ->
+    'v String.hlist ->
+    ('p Term.hlist -> 'v Term.hlist -> unit atom list) ->
+    ('p, 'v) with_parameters
+
+  (** [fold cursor db ~init ~f] accumulates [f] over all the variable bindings
+      that match the query associated with [cursor] in [db].
+
+      {b Warning}: [cursor] must not be used from inside [f].
+
+      {b Example}
+
+      The following code computes the list of reversed edges (edges from target
+      to source).
+
+      {[
+      let reverse_edges =
+        Cursor.fold edge_cursor db ~init:[] ~f:(fun [src; dst] acc ->
+            (dst, src) :: acc)
+      ]}
+  *)
+  val fold :
+    'v t -> database -> init:'a -> f:('v Constant.hlist -> 'a -> 'a) -> 'a
+
+  (** [iter cursor db ~f] applies [f] to all the variable bindings that match
+      the query associated with [cursor] in [db].
+
+      {b Warning}: [cursor] must not be used from inside [f].
+
+      {b Example}
+
+      The following code prints all the marked nodes.
+
+      {[
+      let () =
+        Format.eprintf "@[<v 2>Marked nodes:@ ";
+        Cursor.iter marked_cursor db ~f:(fun [n] ->
+            Format.eprintf "- %a@ " Node.print n);
+        Format.eprintf "@]@."
+      ]}
+  *)
+  val iter : 'v t -> database -> f:('v Constant.hlist -> unit) -> unit
+
+  (** [fold_with_parameters cursor params db ~init ~f] accumulates the function
+      [f] over all the variable bindings that match the query in [db]. The
+      values of the parameters are taken from the [params] list.
+
+      {b Warning}: [cursor] must not be used from inside [f].
+
+      {b Example}
+
+      The following code accumulates the successors of node [n2] in a list.
+
+      {[
+      let successors =
+        Cursor.fold_with_parameters successor_cursor [n2] db ~init:[]
+          ~f:(fun [n] acc -> n :: acc)
+      ]}
+  *)
+  val fold_with_parameters :
+    ('p, 'v) with_parameters ->
+    'p Constant.hlist ->
+    database ->
+    init:'a ->
+    f:('v Constant.hlist -> 'a -> 'a) ->
+    'a
+
+  (** [iter_with_parameters cursor params db ~f] applies [f] to all the variable
+      bindings that match the query in [db], where the parameter values are
+      taken from [params].
+
+      {b Warning}: [cursor] must not be used from inside [f].
+
+      {b Example}
+
+      The following code prints the predecessors of node [n2].
+
+      {[
+      let () =
+        Format.eprintf "@[<v 2>Predecessors of %a:@ " Node.print n2;
+        Cursor.iter_with_parameters predecessor_cursor [n2] db ~f:(fun [n] ->
+            Format.eprintf "- %a@ " Node.print n);
+        Format.eprintf "@]@."
+      ]}
+  *)
+  val iter_with_parameters :
+    ('p, 'v) with_parameters ->
+    'p Constant.hlist ->
+    database ->
+    f:('v Constant.hlist -> unit) ->
+    unit
+end

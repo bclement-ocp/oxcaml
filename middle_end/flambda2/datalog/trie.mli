@@ -15,19 +15,14 @@
 
 open Heterogenous_list
 
-type ('m, 'k, 'v) repr
-
-val patricia_tree_repr :
-  ('a Patricia_tree.Make(Numbers.Int).Map.t, int, 'a) repr
-
 (** [('t, 'k, 'v) is_trie] is a witness that the type ['t] is a trie from keys
     of type ['k Constant.hlist] to values of type ['v]. *)
 type ('t, 'k, 'v) is_trie
 
-val map_of_value : ('m, 'k, 'v) repr -> ('m, 'k -> nil, 'v) is_trie
+val patricia_tree_is_trie : ('v Patricia_tree.map, int -> nil, 'v) is_trie
 
-val map_of_trie :
-  ('m, 'k, 's) repr -> ('s, 'b, 'v) is_trie -> ('m, 'k -> 'b, 'v) is_trie
+val patricia_tree_of_trie :
+  ('s, 'b, 'v) is_trie -> ('s Patricia_tree.map, int -> 'b, 'v) is_trie
 
 (** Existential witness for tries of given key and value types.
 

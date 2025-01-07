@@ -65,20 +65,32 @@ module Type = struct
 end
 
 module Column = struct
-  module type ColumnType = sig
+  type (_, _, _) repr = Patricia_tree_repr : ('a Int.Map.t, int, 'a) repr
+
+  let trie_repr : type a b c. (a, b, c) repr -> (a, b -> nil, c) Trie.is_trie =
+   fun Patricia_tree_repr -> Trie.patricia_tree_is_trie
+
+  let nested_trie_repr :
+      type a b c d e.
+      (a, b, c) repr -> (c, d, e) Trie.is_trie -> (a, b -> d, e) Trie.is_trie =
+   fun Patricia_tree_repr is_trie -> Trie.patricia_tree_of_trie is_trie
+
+  type ('t, 'k, 'v) id =
+    { name : string;
+      repr : ('t, 'k, 'v) repr
+    }
+
+  module type S = sig
     type t
 
     val print : Format.formatter -> t -> unit
 
-    module Map : Container_types_intf.Map_plus_iterator with type key = t
+    module Set : Container_types.Set with type elt = t
 
-    val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
-  end
+    module Map :
+      Container_types.Map_plus_iterator with type key = t with module Set = Set
 
-  module type S = sig
-    include Name
-
-    include ColumnType
+    val datalog_column_id : ('a Map.t, t, 'a) id
   end
 
   type 'a t = (module S with type t = 'a)
@@ -87,11 +99,21 @@ module Column = struct
     type nonrec 'a t = 'a t
   end)
 
-  module Make (N : Name) (C : ColumnType) :
-    S with type t = C.t and module Map = C.Map = struct
-    include C
+  module Make (X : sig
+    val name : string
 
-    let name = N.name
+    val print : Format.formatter -> int -> unit
+  end) =
+  struct
+    type t = int
+
+    let print = X.print
+
+    module Tree = Patricia_tree.Make (X)
+    module Set = Tree.Set
+    module Map = Tree.Map
+
+    let datalog_column_id = { name = X.name; repr = Patricia_tree_repr }
   end
 end
 
@@ -175,7 +197,8 @@ module Schema = struct
 
     type t = V.t C.Map.t
 
-    let is_trie = Trie.map_of_value C.datalog_column_repr
+    let is_trie : (t, keys, Value.t) Trie.is_trie =
+      Column.trie_repr C.datalog_column_id.repr
 
     let schema : keys Column.hlist = [(module C)]
 
@@ -201,7 +224,7 @@ module Schema = struct
 
     type t = S.t C.Map.t
 
-    let is_trie = Trie.map_of_trie C.datalog_column_repr S.is_trie
+    let is_trie = Column.nested_trie_repr C.datalog_column_id.repr S.is_trie
 
     let schema : keys Column.hlist = (module C) :: S.schema
 
@@ -236,12 +259,12 @@ module Schema = struct
 
   type 'v value = (module Value with type t = 'v)
 
-  let rec dyn : type k v. k Column.hlist -> v value -> (k, v) any =
+  let rec dyn : type k r v. (k -> r) Column.hlist -> v value -> (k -> r, v) any
+      =
    fun keys (module Value) ->
     match keys with
-    | [] -> invalid_arg "dyn"
     | [(module C)] -> Any (module Make (C) (Value))
-    | (module C) :: keys ->
+    | (module C) :: (_ :: _ as keys) ->
       let (Any (module S)) = dyn keys (module Value) in
       Any (module Cons (C) (S))
 end
@@ -273,8 +296,6 @@ module Table = struct
     handler, iterator, out
 
   let empty (Trie (is_trie, _)) = Trie.empty is_trie
-
-  let is_empty (Trie (is_trie, _)) = Trie.is_empty is_trie
 
   let add_or_replace (Trie (is_trie, _)) = Trie.add_or_replace is_trie
 
@@ -367,18 +388,7 @@ module Table = struct
       | None -> empty (Id.repr id)
 
     let set (type t k v) tables (id : (t, k, v) Id.t) (table : t) =
-      if is_empty (Id.repr id) table
-      then
-        if Int.Map.mem (Id.uid id) tables
-        then Int.Map.remove (Id.uid id) tables
-        else tables
-      else
-        match Int.Map.find_opt (Id.uid id) tables with
-        | None -> Int.Map.add (Id.uid id) (Binding (id, table)) tables
-        | Some (Binding (existing_id, existing_table)) ->
-          if table == Id.cast_exn existing_id id existing_table
-          then tables
-          else Int.Map.add (Id.uid id) (Binding (id, table)) tables
+      Int.Map.add (Id.uid id) (Binding (id, table)) tables
 
     let empty = Int.Map.empty
 
@@ -789,19 +799,24 @@ module Cursor = struct
   let iter cursor database ~f =
     bind_database cursor.binders database;
     Cursor0.iter f (create_state database cursor.instruction)
+
+  let yield output (info : _ info) =
+    let (Elist rev_vars) = info.variables.rev_vars in
+    (* Must compile first because of execution order. *)
+    let instruction = compile_terms output in
+    let instruction = Cursor0.yield instruction (pop_vars rev_vars) in
+    let instruction = push_vars ~instruction rev_vars in
+    let instruction = postprocess info.post_parameters instruction in
+    { parameters = info.parameters; binders = info.binders; instruction }
+
+  let create variables f =
+    compile variables @@ fun variables -> where (f variables) @@ yield variables
+
+  let create_with_parameters ~parameters variables f =
+    compile variables (fun variables ->
+        with_parameters parameters (fun parameters ->
+            where (f parameters variables) @@ yield variables))
 end
-
-let yield output info =
-  let (Elist rev_vars) = info.variables.rev_vars in
-  (* Must compile first because of execution order. *)
-  let instruction = compile_terms output in
-  let instruction = Cursor0.yield instruction (pop_vars rev_vars) in
-  let instruction = push_vars ~instruction rev_vars in
-  let instruction = postprocess info.post_parameters instruction in
-  { Cursor.parameters = info.parameters; binders = info.binders; instruction }
-
-let query variables f =
-  compile variables @@ fun variables -> where (f variables) @@ yield variables
 
 type rule =
   | Rule :
@@ -853,8 +868,11 @@ let table_relation table = Table.Id.Id table
    in the future. *)
 let create_relation (type k) ~name (schema : k Column.hlist) :
     (k, _) Table.Id.poly =
-  let (Any schema) = Schema.dyn schema (module Schema.Unit) in
-  table_relation (Table.Id.create ~name schema)
+  match schema with
+  | [] -> Misc.fatal_error "Cannot create relations with no arguments."
+  | _ :: _ ->
+    let (Any schema) = Schema.dyn schema (module Schema.Unit) in
+    table_relation (Table.Id.create ~name schema)
 
 let add_fact (Table.Id.Id id) args db =
   Table.Map.set db id
@@ -878,16 +896,21 @@ module Schedule = struct
   let run_rules rules ~previous ~diff ~current =
     let run_step (db_new, db_diff)
         (Rule { table_id; binders; instruction; current_table; diff_table }) =
-      current_table := Table.Map.get db_new table_id;
-      diff_table := Table.Map.get db_diff table_id;
+      let table_new = Table.Map.get db_new table_id in
+      let table_diff = Table.Map.get db_diff table_id in
+      current_table := table_new;
+      diff_table := table_diff;
       let () =
         with_seminaive ~previous ~diff ~current binders
           (fun () ->
             Cursor0.iter ignore (Cursor0.create ~evaluate current instruction))
           ()
       in
-      ( Table.Map.set db_new table_id !current_table,
-        Table.Map.set db_diff table_id !diff_table )
+      let set_if_changed db ~before ~after =
+        if after == before then db else Table.Map.set db table_id after
+      in
+      ( set_if_changed db_new ~before:table_new ~after:!current_table,
+        set_if_changed db_diff ~before:table_diff ~after:!diff_table )
     in
     List.fold_left run_step (current, Table.Map.empty) rules
 
