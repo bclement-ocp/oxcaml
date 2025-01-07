@@ -209,41 +209,38 @@ module Dep = struct
   module Set = Container.Set
 end
 
-module FieldT : Datalog.Column.S with type t = int = struct
-  type t = int
+module FieldT =
+  Datalog.Column.Make
+    (struct
+      let name = "field"
+    end)
+    (struct
+      type t = int
 
-  let name = "field"
+      let print ppf i = Field.print ppf (Field.decode i)
 
-  let print ppf i = Field.print ppf (Field.decode i)
+      module Tree = Patricia_tree.Make (struct
+        let print = print
+      end)
 
-  module Tree = Patricia_tree.Make (struct
-    let print = print
-  end)
+      module Map = Tree.Map
 
-  module Map = Tree.Map
-
-  let datalog_column_repr = Trie.patricia_tree_repr
-end
+      let datalog_column_repr = Trie.patricia_tree_repr
+    end)
 
 let field : _ Datalog.Column.t = (module FieldT)
 
-module Code_id_or_nameT : Datalog.Column.S with type t = Code_id_or_name.t =
-struct
-  type t = Code_id_or_name.t
-
-  let name = "code_id_or_name"
-
-  let print = Code_id_or_name.print
-
-  module Map = Code_id_or_name.Map
-
-  let datalog_column_repr = Code_id_or_name.datalog_column_repr
-end
+module Code_id_or_nameT =
+  Datalog.Column.Make
+    (struct
+      let name = "code_id_or_name"
+    end)
+    (Code_id_or_name)
 
 let code_id_or_name : _ Datalog.Column.t = (module Code_id_or_nameT)
 
 module Alias_rel =
-  Datalog.Make_table
+  Datalog.Table.Make
     (struct
       let name = "alias"
     end)

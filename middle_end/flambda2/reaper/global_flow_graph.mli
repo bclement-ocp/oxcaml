@@ -80,7 +80,7 @@ module Dep : sig
   module Set : Container_types.Set with type elt = t
 end
 
-module Alias_rel : Datalog.Table
+module Alias_rel : Datalog.Table.S
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;

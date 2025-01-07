@@ -17,11 +17,13 @@
 
 module Constant : Heterogenous_list.S with type 'a t := 'a
 
-module Column : sig
-  module type S = sig
-    type t
+module type Name = sig
+  val name : string
+end
 
-    val name : string
+module Column : sig
+  module type ColumnType = sig
+    type t
 
     val print : Format.formatter -> t -> unit
 
@@ -30,9 +32,18 @@ module Column : sig
     val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
   end
 
+  module type S = sig
+    include Name
+
+    include ColumnType
+  end
+
   type 'a t = (module S with type t = 'a)
 
   include Heterogenous_list.S with type 'a t := 'a t
+
+  module Make (_ : Name) (C : ColumnType) :
+    S with type t = C.t and module Map = C.Map
 end
 
 module Schema : sig
@@ -115,13 +126,14 @@ module Table : sig
     val create : name:string -> ('t, 'k, 'v) Schema.t -> ('t, 'k, 'v) t
   end
 
-  module Ref : sig
-    type ('k, 'v) t
+  module type S = sig
+    include Schema.S
 
-    val add_or_replace : ('k, 'v) t -> 'k Constant.hlist -> 'v -> unit
-
-    val find_opt : ('k, 'v) t -> 'k Constant.hlist -> 'v option
+    val id : (t, keys, Value.t) Id.t
   end
+
+  module Make (N : Name) (R : Schema.S) :
+    S with type keys = R.keys and type t = R.t and module Value = R.Value
 end
 
 (** {2 Facts database} *)
@@ -137,19 +149,6 @@ type ('a, 'b) rel2 = ('a -> 'b -> Heterogenous_list.nil) relation
 
 (** Shortcut type for ternary relations. *)
 type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> Heterogenous_list.nil) relation
-
-module type Table = sig
-  include Schema.S
-
-  val id : (t, keys, Value.t) Table.Id.t
-end
-
-module type Name = sig
-  val name : string
-end
-
-module Make_table (N : Name) (R : Schema.S) :
-  Table with type keys = R.keys and type t = R.t and module Value = R.Value
 
 val table_relation : ('t, 'k, unit) Table.Id.t -> 'k relation
 
@@ -181,8 +180,6 @@ val table_relation : ('t, 'k, unit) Table.Id.t -> 'k relation
 *)
 val create_relation : name:string -> 'k Column.hlist -> 'k relation
 
-val create_table_ref : 'k relation -> ('k, unit) Table.Ref.t
-
 (** A database is a collection of {e facts}, i.e. relations applied to constant
     values.
 *)
@@ -195,9 +192,6 @@ val print : Format.formatter -> database -> unit
 
 (** [empty] is an empty database which contains no facts. *)
 val empty : database
-
-val add_table_ref :
-  database -> 'k relation -> ('k, unit) Table.Ref.t -> database
 
 (** [add_fact rel args db] records a fact into the database [db].
 

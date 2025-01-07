@@ -26,6 +26,10 @@ module Int = struct
   module Map = Tree.Map
 end
 
+module type Name = sig
+  val name : string
+end
+
 (* This is the [Type] module from OCaml 5's Stdlib *)
 module Type = struct
   type (_, _) eq = Equal : ('a, 'a) eq
@@ -61,10 +65,8 @@ module Type = struct
 end
 
 module Column = struct
-  module type S = sig
+  module type ColumnType = sig
     type t
-
-    val name : string
 
     val print : Format.formatter -> t -> unit
 
@@ -73,11 +75,24 @@ module Column = struct
     val datalog_column_repr : ('a Map.t, t, 'a) Trie.repr
   end
 
+  module type S = sig
+    include Name
+
+    include ColumnType
+  end
+
   type 'a t = (module S with type t = 'a)
 
   include Heterogenous_list.Make (struct
     type nonrec 'a t = 'a t
   end)
+
+  module Make (N : Name) (C : ColumnType) :
+    S with type t = C.t and module Map = C.Map = struct
+    include C
+
+    let name = N.name
+  end
 end
 
 module Schema = struct
@@ -231,63 +246,7 @@ module Schema = struct
       Any (module Cons (C) (S))
 end
 
-module Table : sig
-  module Iterator : sig
-    include Leapfrog.Iterator
-
-    include Heterogenous_list.S with type 'a t := 'a t
-  end
-
-  type ('t, 'k, 'v) repr
-
-  val empty : ('t, 'k, 'v) repr -> 't
-
-  val find_opt : ('t, 'k, 'v) repr -> 'k Constant.hlist -> 't -> 'v option
-
-  val mem : ('t, 'k, 'v) repr -> 'k Constant.hlist -> 't -> bool
-
-  val add_or_replace : ('t, 'k, 'v) repr -> 'k Constant.hlist -> 'v -> 't -> 't
-
-  val iterator : ('t, 'k, 'v) repr -> 't ref * 'k Iterator.hlist * 'v ref
-
-  module Id : sig
-    type ('t, 'k, 'v) t
-
-    type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
-
-    val create : name:string -> ('t, 'k, 'v) Schema.t -> ('t, 'k, 'v) t
-
-    val repr : ('t, 'k, 'v) t -> ('t, 'k, 'v) repr
-  end
-
-  module Ref : sig
-    type ('k, 'v) t
-
-    val create : ('t, 'k, 'v) Id.t -> 't -> ('k, 'v) t
-
-    val add_or_replace : ('k, 'v) t -> 'k Constant.hlist -> 'v -> unit
-
-    val find_opt : ('k, 'v) t -> 'k Constant.hlist -> 'v option
-
-    val get : ('t, 'k, 'v) Id.t -> ('k, 'v) t -> 't
-  end
-
-  module Map : sig
-    type t
-
-    val print : Format.formatter -> t -> unit
-
-    val empty : t
-
-    val is_empty : t -> bool
-
-    val get : t -> ('t, 'k, 'v) Id.t -> 't
-
-    val set : t -> ('t, 'k, 'v) Id.t -> 't -> t
-
-    val concat : earlier:t -> later:t -> t
-  end
-end = struct
+module Table = struct
   type ('t, 'k, 'v) repr =
     | Trie : ('t, 'k, 'v) Trie.is_trie * 'v -> ('t, 'k, 'v) repr
 
@@ -359,24 +318,6 @@ end = struct
       | None -> Misc.fatal_error "Inconsistent type for uid."
   end
 
-  module Ref = struct
-    type ('k, 'v) t =
-      | Ref :
-          { id : ('t, 'k, 'v) Id.t;
-            mutable table : 't
-          }
-          -> ('k, 'v) t
-
-    let create id table = Ref { id; table }
-
-    let add_or_replace (Ref ({ id; table } as r)) keys value =
-      r.table <- add_or_replace (Id.repr id) keys value table
-
-    let find_opt (Ref { id; table }) keys = find_opt (Id.repr id) keys table
-
-    let get expected (Ref { id; table }) = Id.cast_exn id expected table
-  end
-
   module Iterator = Trie.Iterator
 
   let print_table id ppf table =
@@ -392,6 +333,18 @@ end = struct
     Format.fprintf ppf "@[<v>%s@ %s@ %a@]" header
       (String.make (String.length header) '=')
       (print_table id) table
+
+  module type S = sig
+    include Schema.S
+
+    val id : (t, keys, Value.t) Id.t
+  end
+
+  module Make (N : Name) (S : Schema.S) = struct
+    include S
+
+    let id = Id.create ~name:N.name (module S)
+  end
 
   module Map = struct
     type binding = Binding : ('t, 'k, 'v) Id.t * 't -> binding
@@ -892,22 +845,6 @@ type database = Table.Map.t
 
 let empty = Table.Map.empty
 
-module type Table = sig
-  include Schema.S
-
-  val id : (t, keys, Value.t) Table.Id.t
-end
-
-module type Name = sig
-  val name : string
-end
-
-module Make_table (N : Name) (S : Schema.S) = struct
-  include S
-
-  let id = Table.Id.create ~name:N.name (module S)
-end
-
 let table_relation table = Table.Id.Id table
 
 (* We could expose the fact that we do not support relations without arguments
@@ -918,12 +855,6 @@ let create_relation (type k) ~name (schema : k Column.hlist) :
     (k, _) Table.Id.poly =
   let (Any schema) = Schema.dyn schema (module Schema.Unit) in
   table_relation (Table.Id.create ~name schema)
-
-let create_table_ref (Table.Id.Id id) =
-  Table.Ref.create id (Table.empty (Table.Id.repr id))
-
-let add_table_ref db (Table.Id.Id id) r =
-  Table.Map.set db id (Table.Ref.get id r)
 
 let add_fact (Table.Id.Id id) args db =
   Table.Map.set db id
