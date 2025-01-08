@@ -80,16 +80,58 @@ module Dep : sig
   module Set : Container_types.Set with type elt = t
 end
 
+module FieldC : Datalog.Column.S with type t = int
+
 module Alias_rel :
   Datalog.Table.Relation
     with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
      and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t
 
+module Use_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t
+
+module Accessor_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+
+module Constructor_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+
+module Propagate_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t Code_id_or_name.Map.t
+
+module Used_pred :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t
+
+module Used_fields_top_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> int -> Datalog.nil
+     and type t = unit FieldC.Map.t Code_id_or_name.Map.t
+
+module Used_fields_rel :
+  Datalog.Table.Relation
+    with type keys = Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
+     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
     mutable datalog : Datalog.database;
-    mutable alias_rel : Alias_rel.t
+    mutable alias_rel : Alias_rel.t;
+    mutable use_rel : Use_rel.t;
+    mutable accessor_rel : Accessor_rel.t;
+    mutable constructor_rel : Constructor_rel.t;
+    mutable propagate_rel : Propagate_rel.t;
+    mutable used_pred : Used_pred.t
   }
 
 val pp_used_graph : Format.formatter -> graph -> unit
@@ -114,17 +156,3 @@ val add_use : graph -> Code_id_or_name.t -> unit
 val add_propagate_dep :
   graph -> Code_id.t -> target:Name.t -> source:Name.t -> unit
 
-val propagate_rel :
-  (Code_id_or_name.t, Code_id_or_name.t, Code_id_or_name.t) Datalog.rel3
-
-val accessor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
-
-val constructor_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
-
-val use_rel : (Code_id_or_name.t, Code_id_or_name.t) Datalog.rel2
-
-val used_pred : Code_id_or_name.t Datalog.rel1
-
-val used_fields_rel : (Code_id_or_name.t, int, Code_id_or_name.t) Datalog.rel3
-
-val used_fields_top_rel : (Code_id_or_name.t, int) Datalog.rel2

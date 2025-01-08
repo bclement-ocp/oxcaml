@@ -412,12 +412,12 @@ let pp_result ppf (res : result) =
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
-  let used_pred x = atom Global_flow_graph.used_pred [x] in
+  let used_pred x = atom (Datalog.table_relation Global_flow_graph.Used_pred.id) [x] in
   let used_fields_top_rel x f =
-    atom Global_flow_graph.used_fields_top_rel [x; f]
+    atom (Datalog.table_relation Global_flow_graph.Used_fields_top_rel.id) [x; f]
   in
   let used_fields_rel x f y =
-    atom Global_flow_graph.used_fields_rel [x; f; y]
+    atom (Datalog.table_relation Global_flow_graph.Used_fields_rel.id) [x; f; y]
   in
   let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
   let query_used_field_top =
@@ -467,15 +467,15 @@ let db_to_uses db =
 let datalog_schedule =
   let open Datalog in
   let open Global_flow_graph in
-  let atom rel l = atom rel l, true in
-  let alias_rel = atom (Datalog.table_relation Alias_rel.id) in
-  let used_pred = atom used_pred in
-  let propagate_rel = atom propagate_rel in
-  let used_fields_rel = atom used_fields_rel in
-  let used_fields_top_rel = atom used_fields_top_rel in
-  let accessor_rel = atom accessor_rel in
-  let constructor_rel = atom constructor_rel in
-  let use_rel = atom use_rel in
+  let atom rel l = atom (Datalog.table_relation rel) l, true in
+  let alias_rel = atom Alias_rel.id in
+  let used_pred = atom Used_pred.id in
+  let propagate_rel = atom Propagate_rel.id in
+  let used_fields_rel = atom Used_fields_rel.id in
+  let used_fields_top_rel = atom Used_fields_top_rel.id in
+  let accessor_rel = atom Accessor_rel.id in
+  let constructor_rel = atom Constructor_rel.id in
+  let use_rel = atom Use_rel.id in
   let ( let$ ) xs f = compile xs f in
   let ( $:- ) c h =
     let c, b = c in
@@ -527,7 +527,7 @@ let datalog_schedule =
   in
   let used_fields_from_accessor_used_fields =
     let$ [source; field; target; _f; _x] =
-      ["source"; "field"; "target"; "_f"; "x"]
+      ["source"; "field"; "target"; "_f"; "_x"]
     in
     used_fields_rel [target; field; source]
     $:- [ not (used_pred [target]);
@@ -611,7 +611,13 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   let t1' = Sys.time () in
   let datalog = graph_new.datalog in
   let datalog =
-    Datalog.set_table Global_flow_graph.Alias_rel.id graph_new.alias_rel datalog
+    Datalog.set_table Global_flow_graph.Alias_rel.id graph_new.alias_rel @@
+    Datalog.set_table Global_flow_graph.Use_rel.id graph_new.use_rel @@
+    Datalog.set_table Global_flow_graph.Accessor_rel.id graph_new.accessor_rel @@
+    Datalog.set_table Global_flow_graph.Constructor_rel.id graph_new.constructor_rel @@
+    Datalog.set_table Global_flow_graph.Propagate_rel.id graph_new.propagate_rel @@
+    Datalog.set_table Global_flow_graph.Used_pred.id graph_new.used_pred @@
+    datalog
   in
   let db = Datalog.Schedule.run datalog_schedule datalog in
   let t2 = Sys.time () in
