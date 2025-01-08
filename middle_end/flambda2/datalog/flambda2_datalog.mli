@@ -21,10 +21,14 @@ module Datalog : sig
   module Column : sig
     type ('t, 'k, 'v) id
 
+    type (_, _, _) hlist =
+      | [] : ('v, nil, 'v) hlist
+      | ( :: ) :
+          ('t, 'k, 's) id * ('s, 'ks, 'v) hlist
+          -> ('t, 'k -> 'ks, 'v) hlist
+
     module type S = sig
       type t
-
-      val print : Format.formatter -> t -> unit
 
       module Set : Container_types.Set with type elt = t
 
@@ -36,73 +40,66 @@ module Datalog : sig
       val datalog_column_id : ('a Map.t, t, 'a) id
     end
 
-    module Make (_ : sig
+    module Make (X : sig
       val name : string
 
       val print : Format.formatter -> int -> unit
     end) : S with type t = int
-
-    type 'a t = (module S with type t = 'a)
-
-    include Heterogenous_list.S with type 'a t := 'a t
   end
-
-  module type Value = sig
-    type t
-
-    val default : t
-  end
-
-  module Unit : Value with type t = unit
 
   module Schema : sig
     module type S = sig
       type keys
 
-      val print_keys : Format.formatter -> keys Constant.hlist -> unit
-
-      module Value : Value
+      type value
 
       type t
 
-      val is_trie : (t, keys, Value.t) Trie.is_trie
+      val columns : (t, keys, value) Column.hlist
+
+      val default_value : value
+
+      val empty : t
+
+      val is_empty : t -> bool
+
+      val singleton : keys Constant.hlist -> value -> t
+
+      val add_or_replace : keys Constant.hlist -> value -> t -> t
+
+      val remove : keys Constant.hlist -> t -> t
+
+      val union : (value -> value -> value option) -> t -> t -> t
+
+      val find_opt : keys Constant.hlist -> t -> value option
     end
-
-    type ('t, 'k, 'v) t =
-      (module S with type t = 't and type keys = 'k and type Value.t = 'v)
-
-    module Make (C : Column.S) (V : Value) :
-      S
-        with type keys = C.t -> Heterogenous_list.nil
-         and module Value = V
-         and type t = V.t C.Map.t
 
     module Cons (C : Column.S) (S : S) :
       S
         with type keys = C.t -> S.keys
-         and module Value = S.Value
          and type t = S.t C.Map.t
+         and type value = S.value
 
-    module type C = Column.S
+    module type Relation = S with type value = unit
 
-    module type Relation = S with type Value.t = unit
+    module Relation1 (C : Column.S) :
+      Relation with type keys = C.t -> nil and type t = unit C.Map.t
 
-    module Relation1 (C1 : C) :
-      Relation
-        with type keys = C1.t -> Heterogenous_list.nil
-         and type t = unit C1.Map.t
-
-    module Relation2 (C1 : C) (C2 : C) :
+    module Relation2 (C1 : Column.S) (C2 : Column.S) :
       Relation
         with type keys = C1.t -> Relation1(C2).keys
          and type t = Relation1(C2).t C1.Map.t
 
-    module Relation3 (C1 : C) (C2 : C) (C3 : C) :
+    module Relation3 (C1 : Column.S) (C2 : Column.S) (C3 : Column.S) :
       Relation
         with type keys = C1.t -> Relation2(C2)(C3).keys
          and type t = Relation2(C2)(C3).t C1.Map.t
 
-    module Relation4 (C1 : C) (C2 : C) (C3 : C) (C4 : C) :
+    module Relation4
+        (C1 : Column.S)
+        (C2 : Column.S)
+        (C3 : Column.S)
+        (C4 : Column.S) :
       Relation
         with type keys = C1.t -> Relation3(C2)(C3)(C4).keys
          and type t = Relation3(C2)(C3)(C4).t C1.Map.t
@@ -113,109 +110,37 @@ module Datalog : sig
       type ('t, 'k, 'v) t
     end
 
-    module type S = sig
-      include Schema.S
+    (** [create_relation ~name schema] creates a new relation with name [name] and
+              schema [schema].
 
-      val empty : t
+              The schema is given as a heterogenous list of column types, and the relation
+              is represented in memory as a series of nested maps following this list. If
+              the schema [ty1; ty2; ty3] is provided, the relation will be represented as
+              a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
+              arguments provided to a relation thus have profound implication for the
+              performance of iterations on the relation, and needs to be chosen carefully.
 
-      val is_empty : t -> bool
+              @raise Invalid_argument if [schema] is empty.
 
-      val singleton : keys Constant.hlist -> Value.t -> t
+              {b Example}
 
-      val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
+              The following code defines a binary edge relationship between nodes,
+              represented as a map from a node to its successors, and an unary predicate
+              to distinguish some sort of {e marked} nodes.
 
-      val remove : keys Constant.hlist -> t -> t
+              {[
+              let marked_pred : node rel1 =
+                create_relation ~name:"marked" [node]
 
-      val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
-
-      val find_opt : keys Constant.hlist -> t -> Value.t option
-
-      val id : (t, keys, Value.t) Id.t
-    end
-
-    module Make (_ : sig
-      val name : string
-    end)
-    (R : Schema.S) :
-      S with type keys = R.keys and type t = R.t and module Value = R.Value
-
-    module type Relation = S with module Value = Unit
-
-    module Relation1 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S) : S with type keys = C1.t -> nil and type t = unit C1.Map.t
-
-    module Relation2 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S) :
-      S
-        with type keys = C1.t -> Schema.Relation1(C2).keys
-         and type t = Schema.Relation1(C2).t C1.Map.t
-
-    module Relation3 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S)
-    (C3 : Column.S) :
-      S
-        with type keys = C1.t -> Schema.Relation2(C2)(C3).keys
-         and type t = Schema.Relation2(C2)(C3).t C1.Map.t
-
-    module Relation4 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S)
-    (C3 : Column.S)
-    (C4 : Column.S) :
-      S
-        with type keys = C1.t -> Schema.Relation3(C2)(C3)(C4).keys
-         and type t = Schema.Relation3(C2)(C3)(C4).t C1.Map.t
+              let edge_rel : (node, node) rel2 =
+                create_relation ~name:"edge" [node; node]
+              ]}
+          *)
+    val create_relation :
+      name:string -> ('t, 'k, unit) Column.hlist -> ('t, 'k, unit) Id.t
   end
 
-  type 'k relation
-
-  type 'a rel1 = ('a -> nil) relation
-
-  type ('a, 'b) rel2 = ('a -> 'b -> nil) relation
-
-  type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> nil) relation
-
-  type ('a, 'b, 'c, 'd) rel4 = ('a -> 'b -> 'c -> 'd -> nil) relation
-
-  val table_relation : ('t, 'k, unit) Table.Id.t -> 'k relation
-
-  (** [create_relation ~name schema] creates a new relation with name [name] and
-      schema [schema].
-
-      The schema is given as a heterogenous list of column types, and the relation
-      is represented in memory as a series of nested maps following this list. If
-      the schema [ty1; ty2; ty3] is provided, the relation will be represented as
-      a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
-      arguments provided to a relation thus have profound implication for the
-      performance of iterations on the relation, and needs to be chosen carefully.
-
-      @raise Invalid_argument if [schema] is empty.
-
-      {b Example}
-
-      The following code defines a binary edge relationship between nodes,
-      represented as a map from a node to its successors, and an unary predicate
-      to distinguish some sort of {e marked} nodes.
-
-      {[
-      let marked_pred : node rel1 =
-        create_relation ~name:"marked" [node]
-
-      let edge_rel : (node, node) rel2 =
-        create_relation ~name:"edge" [node; node]
-      ]}
-  *)
-  val create_relation : name:string -> 'k Column.hlist -> 'k relation
+  type ('t, 'k) relation = ('t, 'k, unit) Table.Id.t
 
   module Term : sig
     include Heterogenous_list.S
@@ -242,7 +167,7 @@ module Datalog : sig
       let edge = atom edge_rel
       ]}
   *)
-  val atom : 'k relation -> 'k Term.hlist -> [> `Atom of atom]
+  val atom : ('t, 'k) relation -> 'k Term.hlist -> [> `Atom of atom]
 
   val not : [< `Atom of atom] -> [> `Not_atom of atom]
 
@@ -280,7 +205,7 @@ module Datalog : sig
         @@ empty
       ]}
   *)
-  val add_fact : 'k relation -> 'k Constant.hlist -> database -> database
+  val add_fact : ('t, 'k) relation -> 'k Constant.hlist -> database -> database
 
   module String : sig
     (** Pseudo-heterogenous lists of strings.

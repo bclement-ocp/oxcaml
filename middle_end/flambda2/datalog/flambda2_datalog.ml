@@ -20,41 +20,48 @@ module Datalog = struct
 
   module Constant = Constant
 
-  module type Value = sig
-    type t
-
-    val default : t
-  end
-
-  module Unit = struct
-    type t = unit
-
-    let default = ()
-  end
-
   module Column = struct
     type (_, _, _) repr =
       | Patricia_tree_repr : ('a Patricia_tree.map, int, 'a) repr
 
-    let trie_repr : type a b c. (a, b, c) repr -> (a, b -> nil, c) Trie.is_trie
-        =
-     fun Patricia_tree_repr -> Trie.patricia_tree_is_trie
-
-    let nested_trie_repr :
-        type a b c d e.
-        (a, b, c) repr -> (c, d, e) Trie.is_trie -> (a, b -> d, e) Trie.is_trie
-        =
-     fun Patricia_tree_repr is_trie -> Trie.patricia_tree_of_trie is_trie
-
     type ('t, 'k, 'v) id =
       { name : string;
+        print : Format.formatter -> 'k -> unit;
         repr : ('t, 'k, 'v) repr
       }
 
+    let print_key { print; _ } = print
+
+    type (_, _, _) hlist =
+      | [] : ('v, nil, 'v) hlist
+      | ( :: ) :
+          ('t, 'k, 's) id * ('s, 'ks, 'v) hlist
+          -> ('t, 'k -> 'ks, 'v) hlist
+
+    let rec print_keys :
+        type t k v.
+        (t, k, v) hlist -> Format.formatter -> k Constant.hlist -> unit =
+     fun columns ppf keys ->
+      match columns, keys with
+      | [], [] -> ()
+      | [column], [key] -> print_key column ppf key
+      | column :: (_ :: _ as columns), key :: keys ->
+        Format.fprintf ppf "%a,@ %a" (print_key column) key (print_keys columns)
+          keys
+
+    (* We could expose the fact that we do not support relations without
+       arguments in the types, but a runtime error here allows us to give a
+       better error message. Plus, we might support constant relations
+       (represented as an option) in the future. *)
+    let rec is_trie : type t k v. (t, k, v) hlist -> (t, k, v) Trie.is_trie =
+      function
+      | [] -> Misc.fatal_error "Cannot create relation with no arguments"
+      | [{ repr = Patricia_tree_repr; _ }] -> Trie.patricia_tree_is_trie
+      | { repr = Patricia_tree_repr; _ } :: (_ :: _ as columns) ->
+        Trie.patricia_tree_of_trie (is_trie columns)
+
     module type S = sig
       type t
-
-      val print : Format.formatter -> t -> unit
 
       module Set : Container_types.Set with type elt = t
 
@@ -65,12 +72,6 @@ module Datalog = struct
 
       val datalog_column_id : ('a Map.t, t, 'a) id
     end
-
-    type 'a t = (module S with type t = 'a)
-
-    include Heterogenous_list.Make (struct
-      type nonrec 'a t = 'a t
-    end)
 
     module Make (X : sig
       val name : string
@@ -86,103 +87,117 @@ module Datalog = struct
       module Set = Tree.Set
       module Map = Tree.Map
 
-      let datalog_column_id = { name = X.name; repr = Patricia_tree_repr }
+      let datalog_column_id =
+        { name = X.name; print; repr = Patricia_tree_repr }
+    end
+
+    module type Columns = sig
+      type keys
+
+      type value
+
+      type t
+
+      val empty : t
+
+      val is_trie : (t, keys, value) Trie.is_trie
+    end
+
+    module Make_operations (C : Columns) = struct
+      let empty = C.empty
+
+      let is_empty trie = Trie.is_empty C.is_trie trie
+
+      let singleton keys value = Trie.singleton C.is_trie keys value
+
+      let add_or_replace keys value trie =
+        Trie.add_or_replace C.is_trie keys value trie
+
+      let remove keys trie = Trie.remove C.is_trie keys trie
+
+      let union f trie1 trie2 = Trie.union C.is_trie f trie1 trie2
+
+      let find_opt keys trie = Trie.find_opt C.is_trie keys trie
     end
   end
 
   include Datalog
 
   module Schema = struct
-    module type S = sig
+    type ('t, 'k, 'v) t =
+      { columns : ('t, 'k, 'v) Column.hlist;
+        default_value : 'v
+      }
+
+    module type S0 = sig
       type keys
 
-      val print_keys : Format.formatter -> keys Constant.hlist -> unit
-
-      module Value : Value
+      type value
 
       type t
 
-      val is_trie : (t, keys, Value.t) Trie.is_trie
+      val columns : (t, keys, value) Column.hlist
+
+      val default_value : value
     end
 
-    module Make_ops (T : S) = struct
-      let empty = Trie.empty T.is_trie
+    module type S = sig
+      include S0
 
-      let is_empty trie = Trie.is_empty T.is_trie trie
+      val empty : t
 
-      let singleton keys value = Trie.singleton T.is_trie keys value
+      val is_empty : t -> bool
 
-      let add_or_replace keys value trie =
-        Trie.add_or_replace T.is_trie keys value trie
+      val singleton : keys Constant.hlist -> value -> t
 
-      let remove keys trie = Trie.remove T.is_trie keys trie
+      val add_or_replace : keys Constant.hlist -> value -> t -> t
 
-      let union f trie1 trie2 = Trie.union T.is_trie f trie1 trie2
+      val remove : keys Constant.hlist -> t -> t
 
-      let find_opt keys trie = Trie.find_opt T.is_trie keys trie
+      val union : (value -> value -> value option) -> t -> t -> t
+
+      val find_opt : keys Constant.hlist -> t -> value option
     end
 
-    type ('t, 'k, 'v) t =
-      (module S with type t = 't and type keys = 'k and type Value.t = 'v)
-
-    module Make (C : Column.S) (V : Value) :
-      S
-        with type keys = C.t -> nil
-         and module Value = V
-         and type t = V.t C.Map.t = struct
-      type keys = C.t -> nil
-
-      let print_keys ppf ([key] : keys Constant.hlist) = C.print ppf key
-
-      module Value = V
-
-      type t = V.t C.Map.t
-
-      let is_trie : (t, keys, Value.t) Trie.is_trie =
-        Column.trie_repr C.datalog_column_id.repr
-    end
-
-    module Cons (C : Column.S) (S : S) :
-      S
-        with type keys = C.t -> S.keys
-         and module Value = S.Value
-         and type t = S.t C.Map.t = struct
-      type keys = C.t -> S.keys
-
-      let print_keys ppf (key :: keys : keys Constant.hlist) =
-        Format.fprintf ppf "%a,@ %a" C.print key S.print_keys keys
-
-      module Value = S.Value
-
-      type t = S.t C.Map.t
-
-      let is_trie = Column.nested_trie_repr C.datalog_column_id.repr S.is_trie
-    end
-
-    module Unit = struct
-      type t = unit
-
-      let default = ()
-    end
-
-    type ('k, 'v) any = Any : ('t, 'k, 'v) t -> ('k, 'v) any [@@unboxed]
-
-    type 'v value = (module Value with type t = 'v)
-
-    let rec dyn :
-        type k r v. (k -> r) Column.hlist -> v value -> (k -> r, v) any =
-     fun keys (module Value) ->
-      match keys with
-      | [(module C)] -> Any (module Make (C) (Value))
-      | (module C) :: (_ :: _ as keys) ->
-        let (Any (module S)) = dyn keys (module Value) in
-        Any (module Cons (C) (S))
-
-    module type Relation = S with type Value.t = unit
+    module type Relation = S with type value = unit
 
     module type C = Column.S
 
-    module Relation1 (C1 : C) = Make (C1) (Unit)
+    module Nil = struct
+      type keys = nil
+
+      type value = unit
+
+      type t = value
+
+      let columns : (t, keys, value) Column.hlist = []
+
+      let default_value = ()
+    end
+
+    module Cons (C : C) (S : S0) = struct
+      module T = struct
+        type keys = C.t -> S.keys
+
+        type t = S.t C.Map.t
+
+        type value = S.value
+
+        let columns : (t, keys, value) Column.hlist =
+          C.datalog_column_id :: S.columns
+
+        let default_value = S.default_value
+
+        let is_trie = Column.is_trie columns
+
+        let empty = C.Map.empty
+      end
+
+      include T
+      include Column.Make_operations (T)
+    end
+
+    module Relation1 (C1 : C) = Cons (C1) (Nil)
     module Relation2 (C1 : C) (C2 : C) = Cons (C1) (Relation1 (C2))
     module Relation3 (C1 : C) (C2 : C) (C3 : C) =
       Cons (C1) (Relation2 (C2) (C3))
@@ -193,96 +208,19 @@ module Datalog = struct
   module Table = struct
     include Table
 
-    module type S = sig
-      include Schema.S
+    let create_trie ~name (schema : (_, _, _) Schema.t) =
+      Id.create ~name
+        ~is_trie:(Column.is_trie schema.columns)
+        ~print_keys:(Column.print_keys schema.columns)
+        ~default_value:schema.default_value
 
-      val empty : t
-
-      val is_empty : t -> bool
-
-      val singleton : keys Constant.hlist -> Value.t -> t
-
-      val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
-
-      val remove : keys Constant.hlist -> t -> t
-
-      val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
-
-      val find_opt : keys Constant.hlist -> t -> Value.t option
-
-      val id : (t, keys, Value.t) Id.t
-    end
-
-    module Make (N : sig
-      val name : string
-    end)
-    (S : Schema.S) =
-    struct
-      include S
-      include Schema.Make_ops (S)
-
-      let id =
-        Id.create ~name:N.name ~is_trie:S.is_trie ~print_keys:S.print_keys
-          ~default_value:S.Value.default
-    end
-
-    module type Relation = S with module Value = Schema.Unit
-
-    module Relation1 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S) =
-      Make (N) (Schema.Relation1 (C1))
-    module Relation2 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S) =
-      Make (N) (Schema.Relation2 (C1) (C2))
-    module Relation3 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S)
-    (C3 : Column.S) =
-      Make (N) (Schema.Relation3 (C1) (C2) (C3))
-    module Relation4 (N : sig
-      val name : string
-    end)
-    (C1 : Column.S)
-    (C2 : Column.S)
-    (C3 : Column.S)
-    (C4 : Column.S) =
-      Make (N) (Schema.Relation4 (C1) (C2) (C3) (C4))
+    let create_relation ~name columns =
+      create_trie ~name { columns; default_value = () }
   end
 
-  type 'k relation = ('k, unit) Table.Id.poly
+  type ('t, 'k) relation = ('t, 'k, unit) Table.Id.t
 
-  type 'a rel1 = ('a -> nil) relation
-
-  type ('a, 'b) rel2 = ('a -> 'b -> nil) relation
-
-  type ('a, 'b, 'c) rel3 = ('a -> 'b -> 'c -> nil) relation
-
-  type ('a, 'b, 'c, 'd) rel4 = ('a -> 'b -> 'c -> 'd -> nil) relation
-
-  let table_relation table = Table.Id.Id table
-
-  (* We could expose the fact that we do not support relations without arguments
-     in the types, but a runtime error here allows us to give a better error
-     message. Plus, we might support constant relations (represented as an
-     option) in the future. *)
-  let create_relation (type k) ~name (schema : k Column.hlist) :
-      (k, _) Table.Id.poly =
-    match schema with
-    | [] -> Misc.fatal_error "Cannot create relations with no arguments."
-    | _ :: _ ->
-      let (Any (module Schema)) = Schema.dyn schema (module Schema.Unit) in
-      table_relation
-        (Table.Id.create ~name ~is_trie:Schema.is_trie
-           ~default_value:Schema.Value.default ~print_keys:Schema.print_keys)
-
-  let add_fact (Table.Id.Id id) args db =
+  let add_fact id args db =
     Table.Map.set id
       (Trie.add_or_replace (Table.Id.is_trie id) args () (Table.Map.get id db))
       db
@@ -312,7 +250,7 @@ module Datalog = struct
     [ `Atom of atom
     | `Not_atom of atom ]
 
-  let atom (Table.Id.Id id) args = `Atom (Atom (id, args))
+  let atom id args = `Atom (Atom (id, args))
 
   let not (`Atom atom) = `Not_atom atom
 

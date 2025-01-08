@@ -409,16 +409,42 @@ let pp_result ppf (res : result) =
   in
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
+let alias_rel =
+  Datalog.Table.create_relation ~name:"alias"
+    Global_flow_graph.Alias_rel.columns
+
+let use_rel =
+  Datalog.Table.create_relation ~name:"use" Global_flow_graph.Use_rel.columns
+
+let accessor_rel =
+  Datalog.Table.create_relation ~name:"accessor"
+    Global_flow_graph.Accessor_rel.columns
+
+let constructor_rel =
+  Datalog.Table.create_relation ~name:"constructor"
+    Global_flow_graph.Constructor_rel.columns
+
+let propagate_rel =
+  Datalog.Table.create_relation ~name:"propagate"
+    Global_flow_graph.Propagate_rel.columns
+
+let used_pred =
+  Datalog.Table.create_relation ~name:"used" Global_flow_graph.Used_pred.columns
+
+let used_fields_top_rel =
+  Datalog.Table.create_relation ~name:"used_fields_top"
+    Global_flow_graph.Used_fields_top_rel.columns
+
+let used_fields_rel =
+  Datalog.Table.create_relation ~name:"used_fields_rel"
+    Global_flow_graph.Used_fields_rel.columns
+
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
-  let used_pred x = atom (Datalog.table_relation Global_flow_graph.Used_pred.id) [x] in
-  let used_fields_top_rel x f =
-    atom (Datalog.table_relation Global_flow_graph.Used_fields_top_rel.id) [x; f]
-  in
-  let used_fields_rel x f y =
-    atom (Datalog.table_relation Global_flow_graph.Used_fields_rel.id) [x; f; y]
-  in
+  let used_pred x = atom used_pred [x] in
+  let used_fields_top_rel x f = atom used_fields_top_rel [x; f] in
+  let used_fields_rel x f y = atom used_fields_rel [x; f; y] in
   let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
   let query_used_field_top =
     Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
@@ -466,17 +492,15 @@ let db_to_uses db =
 
 let datalog_schedule =
   let open Datalog in
-  let open Global_flow_graph in
   let not = Datalog.not in
-  let atom rel args = atom (Datalog.table_relation rel) args in
-  let alias_rel = atom Alias_rel.id in
-  let used_pred key = atom Used_pred.id [key] in
-  let propagate_rel = atom Propagate_rel.id in
-  let used_fields_rel = atom Used_fields_rel.id in
-  let used_fields_top_rel = atom Used_fields_top_rel.id in
-  let accessor_rel = atom Accessor_rel.id in
-  let constructor_rel = atom Constructor_rel.id in
-  let use_rel = atom Use_rel.id in
+  let alias_rel = atom alias_rel in
+  let used_pred key = atom used_pred [key] in
+  let propagate_rel = atom propagate_rel in
+  let used_fields_rel = atom used_fields_rel in
+  let used_fields_top_rel = atom used_fields_top_rel in
+  let accessor_rel = atom accessor_rel in
+  let constructor_rel = atom constructor_rel in
+  let use_rel = atom use_rel in
   let ( let$ ) xs f = compile xs f in
   let ( $:- ) c h = where h (deduce c) in
   (* propagate *)
@@ -600,15 +624,15 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   let t1 = Sys.time () in
   Gc.full_major ();
   let t1' = Sys.time () in
-  let datalog = graph_new.datalog in
+  let datalog = Datalog.empty in
   let datalog =
-    Datalog.set_table Global_flow_graph.Alias_rel.id graph_new.alias_rel @@
-    Datalog.set_table Global_flow_graph.Use_rel.id graph_new.use_rel @@
-    Datalog.set_table Global_flow_graph.Accessor_rel.id graph_new.accessor_rel @@
-    Datalog.set_table Global_flow_graph.Constructor_rel.id graph_new.constructor_rel @@
-    Datalog.set_table Global_flow_graph.Propagate_rel.id graph_new.propagate_rel @@
-    Datalog.set_table Global_flow_graph.Used_pred.id graph_new.used_pred @@
-    datalog
+    Datalog.set_table alias_rel graph_new.alias_rel
+    @@ Datalog.set_table use_rel graph_new.use_rel
+    @@ Datalog.set_table accessor_rel graph_new.accessor_rel
+    @@ Datalog.set_table constructor_rel graph_new.constructor_rel
+    @@ Datalog.set_table propagate_rel graph_new.propagate_rel
+    @@ Datalog.set_table used_pred graph_new.used_pred
+    @@ datalog
   in
   let db = Datalog.Schedule.run datalog_schedule datalog in
   let t2 = Sys.time () in

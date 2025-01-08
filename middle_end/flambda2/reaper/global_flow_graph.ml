@@ -215,52 +215,22 @@ module FieldC = Datalog.Column.Make (struct
   let print ppf i = Field.print ppf (Field.decode i)
 end)
 
-module Alias_rel =
-  Datalog.Table.Make
-    (struct
-      let name = "alias"
-    end)
-    (Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name))
-
-module Use_rel =
-  Datalog.Table.Make
-    (struct let name = "use" end)
-    (Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name))
-
+module Alias_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
+module Use_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
 module Accessor_rel =
-  Datalog.Table.Make
-    (struct let name = "accessor" end)
-    (Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name))
-
+  Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name)
 module Constructor_rel =
-  Datalog.Table.Make
-    (struct let name = "constructor" end)
-    (Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name))
-
+  Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name)
 module Propagate_rel =
-  Datalog.Table.Make
-    (struct let name = "propagate" end)
-    (Datalog.Schema.Relation3 (Code_id_or_name) (Code_id_or_name) (Code_id_or_name))
-
-module Used_pred =
-  Datalog.Table.Make
-    (struct let name = "used" end)
-    (Datalog.Schema.Relation1 (Code_id_or_name))
-
-module Used_fields_top_rel =
-  Datalog.Table.Make
-    (struct let name = "used_fields_top" end)
-    (Datalog.Schema.Relation2 (Code_id_or_name) (FieldC))
-
+  Datalog.Schema.Relation3 (Code_id_or_name) (Code_id_or_name) (Code_id_or_name)
+module Used_pred = Datalog.Schema.Relation1 (Code_id_or_name)
+module Used_fields_top_rel = Datalog.Schema.Relation2 (Code_id_or_name) (FieldC)
 module Used_fields_rel =
-  Datalog.Table.Make
-    (struct let name = "used_fields" end)
-    (Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name))
+  Datalog.Schema.Relation3 (Code_id_or_name) (FieldC) (Code_id_or_name)
 
 type graph =
   { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
     used : (Code_id_or_name.t, unit) Hashtbl.t;
-    mutable datalog : Datalog.database;
     mutable alias_rel : Alias_rel.t;
     mutable use_rel : Use_rel.t;
     mutable accessor_rel : Accessor_rel.t;
@@ -283,7 +253,6 @@ let pp_used_graph ppf (graph : graph) =
 let create () =
   { name_to_dep = Hashtbl.create 100;
     used = Hashtbl.create 100;
-    datalog = Datalog.empty;
     alias_rel = Alias_rel.empty;
     use_rel = Use_rel.empty;
     accessor_rel = Accessor_rel.empty;
@@ -310,15 +279,20 @@ let insert t (k : Code_id_or_name.t) v =
     t.use_rel <- Use_rel.add_or_replace [k; target] () t.use_rel
   | Accessor { relation; target } ->
     let field = Field.encode relation in
-    t.accessor_rel <- Accessor_rel.add_or_replace [k; field; Code_id_or_name.name target] () t.accessor_rel
+    t.accessor_rel
+      <- Accessor_rel.add_or_replace
+           [k; field; Code_id_or_name.name target]
+           () t.accessor_rel
   | Constructor { relation; target } ->
     let field = Field.encode relation in
-    t.constructor_rel <- Constructor_rel.add_or_replace [k; field; target] () t.constructor_rel
+    t.constructor_rel
+      <- Constructor_rel.add_or_replace [k; field; target] () t.constructor_rel
   | Alias_if_def _ -> ()
   | Propagate { target; source } ->
-    t.propagate_rel <- Propagate_rel.add_or_replace
-      [k; Code_id_or_name.name source; Code_id_or_name.name target]
-      () t.propagate_rel
+    t.propagate_rel
+      <- Propagate_rel.add_or_replace
+           [k; Code_id_or_name.name source; Code_id_or_name.name target]
+           () t.propagate_rel
 
 let add_alias t k v =
   add_graph_dep t k (Alias { target = v });
@@ -336,11 +310,12 @@ let add_propagate_dep t if_defined ~target ~source =
   add_graph_dep t
     (Code_id_or_name.name source)
     (Alias_if_def { target; if_defined });
-  t.propagate_rel <- Propagate_rel.add_or_replace
-    [ Code_id_or_name.code_id if_defined;
-      Code_id_or_name.name source;
-      Code_id_or_name.name target ]
-    () t.propagate_rel
+  t.propagate_rel
+    <- Propagate_rel.add_or_replace
+         [ Code_id_or_name.code_id if_defined;
+           Code_id_or_name.name source;
+           Code_id_or_name.name target ]
+         () t.propagate_rel
 
 let inserts t k v =
   (*let tbl = t.name_to_dep in match Hashtbl.find_opt tbl k with | None ->
