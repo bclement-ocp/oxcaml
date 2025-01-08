@@ -47,15 +47,15 @@ module Datalog : sig
     include Heterogenous_list.S with type 'a t := 'a t
   end
 
+  module type Value = sig
+    type t
+
+    val default : t
+  end
+
+  module Unit : Value with type t = unit
+
   module Schema : sig
-    module type Value = sig
-      type t
-
-      val default : t
-    end
-
-    module Unit : Value with type t = unit
-
     module type S = sig
       type keys
 
@@ -66,20 +66,6 @@ module Datalog : sig
       type t
 
       val is_trie : (t, keys, Value.t) Trie.is_trie
-
-      val empty : t
-
-      val is_empty : t -> bool
-
-      val singleton : keys Constant.hlist -> Value.t -> t
-
-      val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
-
-      val remove : keys Constant.hlist -> t -> t
-
-      val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
-
-      val find_opt : keys Constant.hlist -> t -> Value.t option
     end
 
     type ('t, 'k, 'v) t =
@@ -130,6 +116,20 @@ module Datalog : sig
     module type S = sig
       include Schema.S
 
+      val empty : t
+
+      val is_empty : t -> bool
+
+      val singleton : keys Constant.hlist -> Value.t -> t
+
+      val add_or_replace : keys Constant.hlist -> Value.t -> t -> t
+
+      val remove : keys Constant.hlist -> t -> t
+
+      val union : (Value.t -> Value.t -> Value.t option) -> t -> t -> t
+
+      val find_opt : keys Constant.hlist -> t -> Value.t option
+
       val id : (t, keys, Value.t) Id.t
     end
 
@@ -139,7 +139,42 @@ module Datalog : sig
     (R : Schema.S) :
       S with type keys = R.keys and type t = R.t and module Value = R.Value
 
-    module type Relation = S with module Value = Schema.Unit
+    module type Relation = S with module Value = Unit
+
+    module Relation1 (N : sig
+      val name : string
+    end)
+    (C1 : Column.S) : S with type keys = C1.t -> nil and type t = unit C1.Map.t
+
+    module Relation2 (N : sig
+      val name : string
+    end)
+    (C1 : Column.S)
+    (C2 : Column.S) :
+      S
+        with type keys = C1.t -> Schema.Relation1(C2).keys
+         and type t = Schema.Relation1(C2).t C1.Map.t
+
+    module Relation3 (N : sig
+      val name : string
+    end)
+    (C1 : Column.S)
+    (C2 : Column.S)
+    (C3 : Column.S) :
+      S
+        with type keys = C1.t -> Schema.Relation2(C2)(C3).keys
+         and type t = Schema.Relation2(C2)(C3).t C1.Map.t
+
+    module Relation4 (N : sig
+      val name : string
+    end)
+    (C1 : Column.S)
+    (C2 : Column.S)
+    (C3 : Column.S)
+    (C4 : Column.S) :
+      S
+        with type keys = C1.t -> Schema.Relation3(C2)(C3)(C4).keys
+         and type t = Schema.Relation3(C2)(C3)(C4).t C1.Map.t
   end
 
   type 'k relation
