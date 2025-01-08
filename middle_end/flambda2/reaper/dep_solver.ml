@@ -467,9 +467,10 @@ let db_to_uses db =
 let datalog_schedule =
   let open Datalog in
   let open Global_flow_graph in
-  let atom rel l = atom (Datalog.table_relation rel) l, true in
+  let not = Datalog.not in
+  let atom rel args = atom (Datalog.table_relation rel) args in
   let alias_rel = atom Alias_rel.id in
-  let used_pred = atom Used_pred.id in
+  let used_pred key = atom Used_pred.id [key] in
   let propagate_rel = atom Propagate_rel.id in
   let used_fields_rel = atom Used_fields_rel.id in
   let used_fields_top_rel = atom Used_fields_top_rel.id in
@@ -477,29 +478,19 @@ let datalog_schedule =
   let constructor_rel = atom Constructor_rel.id in
   let use_rel = atom Use_rel.id in
   let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h =
-    let c, b = c in
-    if not b then invalid_arg "Can only deduce positive occurrences";
-    let positive = List.map fst (List.filter snd h) in
-    let negative = List.map fst (List.filter (fun u -> not (snd u)) h) in
-    where positive (unless negative (deduce c))
-  in
-  let not (x, b) =
-    if not b then invalid_arg "Cannot negate twice";
-    x, not b
-  in
+  let ( $:- ) c h = where h (deduce c) in
   (* propagate *)
   let alias_from_used_propagate =
     let$ [if_defined; source; target] = ["if_defined"; "source"; "target"] in
     alias_rel [source; target]
-    $:- [used_pred [if_defined]; propagate_rel [if_defined; source; target]]
+    $:- [used_pred if_defined; propagate_rel [if_defined; source; target]]
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
     let$ [source; target; field; v] = ["source"; "target"; "field"; "v"] in
     used_fields_rel [target; field; v]
-    $:- [ not (used_pred [target]);
-          not (used_pred [source]);
+    $:- [ not (used_pred target);
+          not (used_pred source);
           not (used_fields_top_rel [target; field]);
           not (used_fields_top_rel [source; field]);
           alias_rel [source; target];
@@ -508,30 +499,30 @@ let datalog_schedule =
   let used_fields_top_from_used_fields_alias_top =
     let$ [source; target; field] = ["source"; "target"; "field"] in
     used_fields_top_rel [target; field]
-    $:- [ not (used_pred [target]);
-          not (used_pred [source]);
+    $:- [ not (used_pred target);
+          not (used_pred source);
           alias_rel [source; target];
           used_fields_top_rel [source; field] ]
   in
   let used_from_alias_used =
     let$ [source; target] = ["source"; "target"] in
-    used_pred [target] $:- [alias_rel [source; target]; used_pred [source]]
+    used_pred target $:- [alias_rel [source; target]; used_pred source]
   in
   (* accessor *)
   let used_fields_from_accessor_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
     used_fields_top_rel [target; field]
-    $:- [ not (used_pred [target]);
+    $:- [ not (used_pred target);
           accessor_rel [source; field; target];
-          used_pred [source] ]
+          used_pred source ]
   in
   let used_fields_from_accessor_used_fields =
     let$ [source; field; target; _f; _x] =
       ["source"; "field"; "target"; "_f"; "_x"]
     in
     used_fields_rel [target; field; source]
-    $:- [ not (used_pred [target]);
-          not (used_pred [source]);
+    $:- [ not (used_pred target);
+          not (used_pred source);
           not (used_fields_top_rel [target; field]);
           accessor_rel [source; field; target];
           used_fields_rel [source; _f; _x] ]
@@ -539,8 +530,8 @@ let datalog_schedule =
   let used_fields_from_accessor_used_fields_top =
     let$ [source; field; target; _f] = ["source"; "field"; "target"; "_f"] in
     used_fields_rel [target; field; source]
-    $:- [ not (used_pred [target]);
-          not (used_pred [source]);
+    $:- [ not (used_pred target);
+          not (used_pred source);
           not (used_fields_top_rel [target; field]);
           accessor_rel [source; field; target];
           used_fields_top_rel [source; _f] ]
@@ -554,28 +545,28 @@ let datalog_schedule =
   in
   let used_from_constructor_field_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred [target]
+    used_pred target
     $:- [ used_fields_top_rel [source; field];
           constructor_rel [source; field; target] ]
   in
   let used_from_constructor_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred [target]
-    $:- [used_pred [source]; constructor_rel [source; field; target]]
+    used_pred target
+    $:- [used_pred source; constructor_rel [source; field; target]]
   in
   (* use *)
   let used_from_used_use =
     let$ [source; target] = ["source"; "target"] in
-    used_pred [target] $:- [used_pred [source]; use_rel [source; target]]
+    used_pred target $:- [used_pred source; use_rel [source; target]]
   in
   let used_from_used_fields_top_use =
     let$ [source; target; _f] = ["source"; "target"; "_f"] in
-    used_pred [target]
+    used_pred target
     $:- [used_fields_top_rel [source; _f]; use_rel [source; target]]
   in
   let used_from_used_fields_use =
     let$ [source; target; _f; _x] = ["source"; "target"; "_f"; "_x"] in
-    used_pred [target]
+    used_pred target
     $:- [used_fields_rel [source; _f; _x]; use_rel [source; target]]
   in
   Datalog.Schedule.(

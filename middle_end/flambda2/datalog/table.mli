@@ -13,44 +13,36 @@
 (*                                                                        *)
 (**************************************************************************)
 
-type nil = Nil
+module Id : sig
+  type ('t, 'k, 'v) t
 
-module type S = sig
-  type 'a t
+  val is_trie : ('t, 'k, 'v) t -> ('t, 'k, 'v) Trie.is_trie
 
-  type _ hlist =
-    | [] : nil hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
+  type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
+
+  val create :
+    name:string ->
+    is_trie:('t, 'k, 'v) Trie.is_trie ->
+    print_keys:(Format.formatter -> 'k Heterogenous_list.Constant.hlist -> unit) ->
+    default_value:'v ->
+    ('t, 'k, 'v) t
+
+  val create_iterator :
+    ('t, 'k, 'v) t -> 't ref * 'k Trie.Iterator.hlist * 'v ref
 end
 
-module Make (X : sig
-  type 'a t
-end) : S with type 'a t := 'a X.t = struct
-  type 'a t = 'a X.t
+module Map : sig
+  type t
 
-  type _ hlist =
-    | [] : nil hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
-end
+  val print : Format.formatter -> t -> unit
 
-module Constant = Make (struct
-  type 'a t = 'a
-end)
+  val empty : t
 
-module Option_ref = struct
-  include Make (struct
-    type 'a t = 'a option ref
-  end)
+  val is_empty : t -> bool
 
-  let rec get : type s. s hlist -> s Constant.hlist = function
-    | [] -> []
-    | r :: rs -> Option.get !r :: get rs
+  val get : ('t, 'k, 'v) Id.t -> t -> 't
 
-  let rec set : type s. s hlist -> s Constant.hlist -> unit =
-   fun refs values ->
-    match refs, values with
-    | [], [] -> ()
-    | r :: rs, v :: vs ->
-      r := Some v;
-      set rs vs
+  val set : ('t, 'k, 'v) Id.t -> 't -> t -> t
+
+  val concat : earlier:t -> later:t -> t
 end

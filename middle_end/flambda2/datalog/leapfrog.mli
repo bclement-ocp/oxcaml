@@ -4,8 +4,8 @@
 (*                                                                        *)
 (*                        Basile Clément, OCamlPro                        *)
 (*                                                                        *)
-(*   Copyright 2024 OCamlPro SAS                                          *)
-(*   Copyright 2024 Jane Street Group LLC                                 *)
+(*   Copyright 2024--2025 OCamlPro SAS                                    *)
+(*   Copyright 2024--2025 Jane Street Group LLC                           *)
 (*                                                                        *)
 (*   All rights reserved.  This file is distributed under the terms of    *)
 (*   the GNU Lesser General Public License version 2.1, with the          *)
@@ -114,12 +114,6 @@ module Join (Iterator : Iterator) : sig
   val create : 'a Iterator.t list -> 'a t
 end
 
-type 's refs =
-  | Refs_nil : Heterogenous_list.nil refs
-  | Refs_cons : 'a option ref * 's refs -> ('a -> 's) refs
-
-val get_refs : 'a refs -> 'a Heterogenous_list.Constant.hlist
-
 type outcome =
   | Accept
   | Skip
@@ -134,10 +128,10 @@ module Cursor (Iterator : Iterator) : sig
   val open_ :
     'i Iterator.t -> ('a, 'y, 'i -> 's) instruction -> ('a, 'y, 's) instruction
 
-  val seq : 'a -> ('a, 'y, 's) instruction -> ('a, 'y, 's) instruction
+  val action : 'a -> ('a, 'y, 's) instruction -> ('a, 'y, 's) instruction
 
   val yield :
-    'y refs ->
+    'y Heterogenous_list.Option_ref.hlist ->
     ('x, 'y Heterogenous_list.Constant.hlist, 's) instruction ->
     ('x, 'y Heterogenous_list.Constant.hlist, 's) instruction
 

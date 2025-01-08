@@ -13,44 +13,14 @@
 (*                                                                        *)
 (**************************************************************************)
 
-type nil = Nil
+type rule
 
-module type S = sig
-  type 'a t
+val create_rule : ('t, 'k, unit) Table.Id.t -> 'k Cursor.t -> rule
 
-  type _ hlist =
-    | [] : nil hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
-end
+type t
 
-module Make (X : sig
-  type 'a t
-end) : S with type 'a t := 'a X.t = struct
-  type 'a t = 'a X.t
+val saturate : rule list -> t
 
-  type _ hlist =
-    | [] : nil hlist
-    | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
-end
+val fixpoint : t list -> t
 
-module Constant = Make (struct
-  type 'a t = 'a
-end)
-
-module Option_ref = struct
-  include Make (struct
-    type 'a t = 'a option ref
-  end)
-
-  let rec get : type s. s hlist -> s Constant.hlist = function
-    | [] -> []
-    | r :: rs -> Option.get !r :: get rs
-
-  let rec set : type s. s hlist -> s Constant.hlist -> unit =
-   fun refs values ->
-    match refs, values with
-    | [], [] -> ()
-    | r :: rs, v :: vs ->
-      r := Some v;
-      set rs vs
-end
+val run : t -> Table.Map.t -> Table.Map.t

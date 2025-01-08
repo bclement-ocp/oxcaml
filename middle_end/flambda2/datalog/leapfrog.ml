@@ -4,8 +4,8 @@
 (*                                                                        *)
 (*                        Basile Clément, OCamlPro                        *)
 (*                                                                        *)
-(*   Copyright 2024 OCamlPro SAS                                          *)
-(*   Copyright 2024 Jane Street Group LLC                                 *)
+(*   Copyright 2024--2025 OCamlPro SAS                                    *)
+(*   Copyright 2024--2025 Jane Street Group LLC                           *)
 (*                                                                        *)
 (*   All rights reserved.  This file is distributed under the terms of    *)
 (*   the GNU Lesser General Public License version 2.1, with the          *)
@@ -88,7 +88,7 @@ end = struct
       repair t)
 
   let seek (type a) (t : a t) (key : a) =
-    let { iterators; at_end } = t in 
+    let { iterators; at_end } = t in
     if not at_end
     then (
       let highest_iterator = iterators.(Array.length iterators - 1) in
@@ -132,14 +132,6 @@ end
 
 open Heterogenous_list
 
-type 's refs =
-  | Refs_nil : nil refs
-  | Refs_cons : 'a option ref * 's refs -> ('a -> 's) refs
-
-let rec get_refs : type s. s refs -> s Constant.hlist = function
-  | Refs_nil -> []
-  | Refs_cons (r, rs) -> Option.get !r :: get_refs rs
-
 type outcome =
   | Accept
   | Skip
@@ -151,9 +143,9 @@ module Cursor (Iterator : Iterator) = struct
     | Open :
         'b Iterator.t * ('a, 'y, 'b -> 's) instruction
         -> ('a, 'y, 's) instruction
-    | Seq : 'a * ('a, 'y, 's) instruction -> ('a, 'y, 's) instruction
+    | Action : 'a * ('a, 'y, 's) instruction -> ('a, 'y, 's) instruction
     | Yield :
-        'y refs * ('a, 'y Constant.hlist, 's) instruction
+        'y Option_ref.hlist * ('a, 'y Constant.hlist, 's) instruction
         -> ('a, 'y Constant.hlist, 's) instruction
     | Set_output :
         'a option ref * ('x, 'y, 'a -> 's) instruction
@@ -165,7 +157,7 @@ module Cursor (Iterator : Iterator) = struct
 
   let open_ i a = Open (i, a)
 
-  let seq a i = Seq (a, i)
+  let action a i = Action (a, i)
 
   let yield y i = Yield (y, i)
 
@@ -186,38 +178,36 @@ module Cursor (Iterator : Iterator) = struct
 
   let exhausted = Suspension { stack = Stack_nil; instruction = Advance }
 
-  let rec refs : type s. s Iterator.hlist -> s refs = function
-    | [] -> Refs_nil
-    | _ :: iterators -> Refs_cons (ref None, refs iterators)
+  let rec refs : type s. s Iterator.hlist -> s Option_ref.hlist = function
+    | [] -> []
+    | _ :: iterators -> ref None :: refs iterators
 
-  type erev = Erev : 's Iterator.hlist * 's refs -> erev
+  type erev = Erev : 's Iterator.hlist * 's Option_ref.hlist -> erev
 
   let iterate :
       type x s. s Iterator.hlist -> (x, s Constant.hlist, nil) instruction =
    fun iterators ->
-    let rec rev0 : type s. s Iterator.hlist -> s refs -> erev -> erev =
+    let rec rev0 :
+        type s. s Iterator.hlist -> s Option_ref.hlist -> erev -> erev =
      fun iterators refs acc ->
       match iterators, refs with
-      | [], Refs_nil -> acc
-      | iterator :: iterators, Refs_cons (r, refs) ->
+      | [], [] -> acc
+      | iterator :: iterators, r :: refs ->
         let (Erev (rev_iterators, rev_refs)) = acc in
-        rev0 iterators refs
-          (Erev (iterator :: rev_iterators, Refs_cons (r, rev_refs)))
+        rev0 iterators refs (Erev (iterator :: rev_iterators, r :: rev_refs))
     in
     let rs = refs iterators in
-    let (Erev (rev_iterators, rev_refs)) =
-      rev0 iterators rs (Erev ([], Refs_nil))
-    in
+    let (Erev (rev_iterators, rev_refs)) = rev0 iterators rs (Erev ([], [])) in
     let rec loop :
         type y s.
         s Iterator.hlist ->
-        s refs ->
+        s Option_ref.hlist ->
         (x, y Constant.hlist, s) instruction ->
         (x, y Constant.hlist, nil) instruction =
      fun iterators refs instruction ->
       match iterators, refs with
-      | [], Refs_nil -> instruction
-      | iterator :: iterators, Refs_cons (r, refs) ->
+      | [], [] -> instruction
+      | iterator :: iterators, r :: refs ->
         loop iterators refs (Open (iterator, Set_output (r, instruction)))
     in
     loop rev_iterators rev_refs (Yield (rs, Advance))
@@ -283,8 +273,8 @@ module Cursor (Iterator : Iterator) = struct
         r := Some v;
         execute input stack instruction
       | Yield (rs, instruction) ->
-        Suspension { stack; instruction }, Some (get_refs rs)
-      | Seq (op, instruction) -> (
+        Suspension { stack; instruction }, Some (Option_ref.get rs)
+      | Action (op, instruction) -> (
         match (A.evaluate [@inlined hint]) op input with
         | Accept -> execute input stack instruction
         | Skip -> execute input stack Advance)
