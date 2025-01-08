@@ -239,6 +239,70 @@ type graph =
     mutable used_pred : Used_pred.t
   }
 
+let alias_rel = Datalog.Table.create_relation ~name:"alias" Alias_rel.columns
+
+let use_rel = Datalog.Table.create_relation ~name:"use" Use_rel.columns
+
+let accessor_rel =
+  Datalog.Table.create_relation ~name:"accessor" Accessor_rel.columns
+
+let constructor_rel =
+  Datalog.Table.create_relation ~name:"constructor" Constructor_rel.columns
+
+let propagate_rel =
+  Datalog.Table.create_relation ~name:"propagate" Propagate_rel.columns
+
+let used_pred = Datalog.Table.create_relation ~name:"used" Used_pred.columns
+
+let used_fields_top_rel =
+  Datalog.Table.create_relation ~name:"used_fields_top"
+    Used_fields_top_rel.columns
+
+let used_fields_rel =
+  Datalog.Table.create_relation ~name:"used_fields_rel" Used_fields_rel.columns
+
+let name_to_dep { name_to_dep; _ } = name_to_dep
+
+let used { used; _ } = used
+
+let to_datalog graph =
+  Datalog.set_table alias_rel graph.alias_rel
+  @@ Datalog.set_table use_rel graph.use_rel
+  @@ Datalog.set_table accessor_rel graph.accessor_rel
+  @@ Datalog.set_table constructor_rel graph.constructor_rel
+  @@ Datalog.set_table propagate_rel graph.propagate_rel
+  @@ Datalog.set_table used_pred graph.used_pred
+  @@ Datalog.empty
+
+type 'a rel0 = [> `Atom of Datalog.atom] as 'a
+
+type ('a, 'b) rel1 = 'a Datalog.Term.t -> 'b rel0
+
+type ('a, 'b, 'c) rel2 = 'a Datalog.Term.t -> ('b, 'c) rel1
+
+type ('a, 'b, 'c, 'd) rel3 = 'a Datalog.Term.t -> ('b, 'c, 'd) rel2
+
+let alias_rel source target = Datalog.atom alias_rel [source; target]
+
+let use_rel source target = Datalog.atom use_rel [source; target]
+
+let accessor_rel source field target =
+  Datalog.atom accessor_rel [source; field; target]
+
+let constructor_rel source field target =
+  Datalog.atom constructor_rel [source; field; target]
+
+let propagate_rel if_defined source target =
+  Datalog.atom propagate_rel [if_defined; source; target]
+
+let used_pred var = Datalog.atom used_pred [var]
+
+let used_fields_top_rel source field =
+  Datalog.atom used_fields_top_rel [source; field]
+
+let used_fields_rel source field target =
+  Datalog.atom used_fields_rel [source; field; target]
+
 let pp_used_graph ppf (graph : graph) =
   let elts = List.of_seq @@ Hashtbl.to_seq graph.used in
   let pp ppf l =

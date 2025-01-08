@@ -82,61 +82,38 @@ end
 
 module FieldC : Datalog.Column.S with type t = int
 
-module Alias_rel :
-  Datalog.Schema.Relation
-    with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t
+type graph
 
-module Use_rel :
-  Datalog.Schema.Relation
-    with type keys = Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t Code_id_or_name.Map.t
+val name_to_dep : graph -> (Code_id_or_name.t, Dep.Set.t) Hashtbl.t
 
-module Accessor_rel :
-  Datalog.Schema.Relation
-    with type keys =
-      Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+val used : graph -> (Code_id_or_name.t, unit) Hashtbl.t
 
-module Constructor_rel :
-  Datalog.Schema.Relation
-    with type keys =
-      Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+val to_datalog : graph -> Datalog.database
 
-module Propagate_rel :
-  Datalog.Schema.Relation
-    with type keys =
-      Code_id_or_name.t -> Code_id_or_name.t -> Code_id_or_name.t -> Datalog.nil
-     and type t =
-      unit Code_id_or_name.Map.t Code_id_or_name.Map.t Code_id_or_name.Map.t
+type 'a rel0 = [> `Atom of Datalog.atom] as 'a
 
-module Used_pred :
-  Datalog.Schema.Relation
-    with type keys = Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t
+type ('a, 'b) rel1 = 'a Datalog.Term.t -> 'b rel0
 
-module Used_fields_top_rel :
-  Datalog.Schema.Relation
-    with type keys = Code_id_or_name.t -> int -> Datalog.nil
-     and type t = unit FieldC.Map.t Code_id_or_name.Map.t
+type ('a, 'b, 'c) rel2 = 'a Datalog.Term.t -> ('b, 'c) rel1
 
-module Used_fields_rel :
-  Datalog.Schema.Relation
-    with type keys =
-      Code_id_or_name.t -> int -> Code_id_or_name.t -> Datalog.nil
-     and type t = unit Code_id_or_name.Map.t FieldC.Map.t Code_id_or_name.Map.t
+type ('a, 'b, 'c, 'd) rel3 = 'a Datalog.Term.t -> ('b, 'c, 'd) rel2
 
-type graph =
-  { name_to_dep : (Code_id_or_name.t, Dep.Set.t) Hashtbl.t;
-    used : (Code_id_or_name.t, unit) Hashtbl.t;
-    mutable alias_rel : Alias_rel.t;
-    mutable use_rel : Use_rel.t;
-    mutable accessor_rel : Accessor_rel.t;
-    mutable constructor_rel : Constructor_rel.t;
-    mutable propagate_rel : Propagate_rel.t;
-    mutable used_pred : Used_pred.t
-  }
+val alias_rel : (Code_id_or_name.t, Code_id_or_name.t, _) rel2
+
+val use_rel : (Code_id_or_name.t, Code_id_or_name.t, _) rel2
+
+val accessor_rel : (Code_id_or_name.t, int, Code_id_or_name.t, _) rel3
+
+val constructor_rel : (Code_id_or_name.t, int, Code_id_or_name.t, _) rel3
+
+val propagate_rel :
+  (Code_id_or_name.t, Code_id_or_name.t, Code_id_or_name.t, _) rel3
+
+val used_pred : (Code_id_or_name.t, _) rel1
+
+val used_fields_top_rel : (Code_id_or_name.t, int, _) rel2
+
+val used_fields_rel : (Code_id_or_name.t, int, Code_id_or_name.t, _) rel3
 
 val pp_used_graph : Format.formatter -> graph -> unit
 

@@ -246,10 +246,11 @@ module Graph = struct
   let fold_nodes graph f init =
     Hashtbl.fold
       (fun n _ acc -> f n acc)
-      graph.Global_flow_graph.name_to_dep init
+      (Global_flow_graph.name_to_dep graph)
+      init
 
   let fold_edges graph n f init =
-    match Hashtbl.find_opt graph.Global_flow_graph.name_to_dep n with
+    match Hashtbl.find_opt (Global_flow_graph.name_to_dep graph) n with
     | None -> init
     | Some deps -> Global_flow_graph.Dep.Set.fold f deps init
 
@@ -409,42 +410,10 @@ let pp_result ppf (res : result) =
   in
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
-let alias_rel =
-  Datalog.Table.create_relation ~name:"alias"
-    Global_flow_graph.Alias_rel.columns
-
-let use_rel =
-  Datalog.Table.create_relation ~name:"use" Global_flow_graph.Use_rel.columns
-
-let accessor_rel =
-  Datalog.Table.create_relation ~name:"accessor"
-    Global_flow_graph.Accessor_rel.columns
-
-let constructor_rel =
-  Datalog.Table.create_relation ~name:"constructor"
-    Global_flow_graph.Constructor_rel.columns
-
-let propagate_rel =
-  Datalog.Table.create_relation ~name:"propagate"
-    Global_flow_graph.Propagate_rel.columns
-
-let used_pred =
-  Datalog.Table.create_relation ~name:"used" Global_flow_graph.Used_pred.columns
-
-let used_fields_top_rel =
-  Datalog.Table.create_relation ~name:"used_fields_top"
-    Global_flow_graph.Used_fields_top_rel.columns
-
-let used_fields_rel =
-  Datalog.Table.create_relation ~name:"used_fields_rel"
-    Global_flow_graph.Used_fields_rel.columns
-
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
-  let used_pred x = atom used_pred [x] in
-  let used_fields_top_rel x f = atom used_fields_top_rel [x; f] in
-  let used_fields_rel x f y = atom used_fields_rel [x; f; y] in
+  let open! Global_flow_graph in
   let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
   let query_used_field_top =
     Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
@@ -492,106 +461,94 @@ let db_to_uses db =
 
 let datalog_schedule =
   let open Datalog in
+  let open Global_flow_graph in
   let not = Datalog.not in
-  let alias_rel = atom alias_rel in
-  let used_pred key = atom used_pred [key] in
-  let propagate_rel = atom propagate_rel in
-  let used_fields_rel = atom used_fields_rel in
-  let used_fields_top_rel = atom used_fields_top_rel in
-  let accessor_rel = atom accessor_rel in
-  let constructor_rel = atom constructor_rel in
-  let use_rel = atom use_rel in
   let ( let$ ) xs f = compile xs f in
   let ( $:- ) c h = where h (deduce c) in
   (* propagate *)
   let alias_from_used_propagate =
     let$ [if_defined; source; target] = ["if_defined"; "source"; "target"] in
-    alias_rel [source; target]
-    $:- [used_pred if_defined; propagate_rel [if_defined; source; target]]
+    alias_rel source target
+    $:- [used_pred if_defined; propagate_rel if_defined source target]
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
     let$ [source; target; field; v] = ["source"; "target"; "field"; "v"] in
-    used_fields_rel [target; field; v]
+    used_fields_rel target field v
     $:- [ not (used_pred target);
           not (used_pred source);
-          not (used_fields_top_rel [target; field]);
-          not (used_fields_top_rel [source; field]);
-          alias_rel [source; target];
-          used_fields_rel [source; field; v] ]
+          not (used_fields_top_rel target field);
+          not (used_fields_top_rel source field);
+          alias_rel source target;
+          used_fields_rel source field v ]
   in
   let used_fields_top_from_used_fields_alias_top =
     let$ [source; target; field] = ["source"; "target"; "field"] in
-    used_fields_top_rel [target; field]
+    used_fields_top_rel target field
     $:- [ not (used_pred target);
           not (used_pred source);
-          alias_rel [source; target];
-          used_fields_top_rel [source; field] ]
+          alias_rel source target;
+          used_fields_top_rel source field ]
   in
   let used_from_alias_used =
     let$ [source; target] = ["source"; "target"] in
-    used_pred target $:- [alias_rel [source; target]; used_pred source]
+    used_pred target $:- [alias_rel source target; used_pred source]
   in
   (* accessor *)
   let used_fields_from_accessor_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_fields_top_rel [target; field]
+    used_fields_top_rel target field
     $:- [ not (used_pred target);
-          accessor_rel [source; field; target];
+          accessor_rel source field target;
           used_pred source ]
   in
   let used_fields_from_accessor_used_fields =
     let$ [source; field; target; _f; _x] =
       ["source"; "field"; "target"; "_f"; "_x"]
     in
-    used_fields_rel [target; field; source]
+    used_fields_rel target field source
     $:- [ not (used_pred target);
           not (used_pred source);
-          not (used_fields_top_rel [target; field]);
-          accessor_rel [source; field; target];
-          used_fields_rel [source; _f; _x] ]
+          not (used_fields_top_rel target field);
+          accessor_rel source field target;
+          used_fields_rel source _f _x ]
   in
   let used_fields_from_accessor_used_fields_top =
     let$ [source; field; target; _f] = ["source"; "field"; "target"; "_f"] in
-    used_fields_rel [target; field; source]
+    used_fields_rel target field source
     $:- [ not (used_pred target);
           not (used_pred source);
-          not (used_fields_top_rel [target; field]);
-          accessor_rel [source; field; target];
-          used_fields_top_rel [source; _f] ]
+          not (used_fields_top_rel target field);
+          accessor_rel source field target;
+          used_fields_top_rel source _f ]
   in
   (* constructor *)
   let alias_from_used_fields_constructor =
     let$ [source; field; target; v] = ["source"; "field"; "target"; "v"] in
-    alias_rel [v; target]
-    $:- [ used_fields_rel [source; field; v];
-          constructor_rel [source; field; target] ]
+    alias_rel v target
+    $:- [used_fields_rel source field v; constructor_rel source field target]
   in
   let used_from_constructor_field_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
     used_pred target
-    $:- [ used_fields_top_rel [source; field];
-          constructor_rel [source; field; target] ]
+    $:- [used_fields_top_rel source field; constructor_rel source field target]
   in
   let used_from_constructor_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred target
-    $:- [used_pred source; constructor_rel [source; field; target]]
+    used_pred target $:- [used_pred source; constructor_rel source field target]
   in
   (* use *)
   let used_from_used_use =
     let$ [source; target] = ["source"; "target"] in
-    used_pred target $:- [used_pred source; use_rel [source; target]]
+    used_pred target $:- [used_pred source; use_rel source target]
   in
   let used_from_used_fields_top_use =
     let$ [source; target; _f] = ["source"; "target"; "_f"] in
-    used_pred target
-    $:- [used_fields_top_rel [source; _f]; use_rel [source; target]]
+    used_pred target $:- [used_fields_top_rel source _f; use_rel source target]
   in
   let used_from_used_fields_use =
     let$ [source; target; _f; _x] = ["source"; "target"; "_f"; "_x"] in
-    used_pred target
-    $:- [used_fields_rel [source; _f; _x]; use_rel [source; target]]
+    used_pred target $:- [used_fields_rel source _f _x; use_rel source target]
   in
   Datalog.Schedule.(
     fixpoint
@@ -615,8 +572,8 @@ let datalog_schedule =
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in
   let uses =
-    graph_new.Global_flow_graph.used |> Hashtbl.to_seq_keys |> List.of_seq
-    |> Code_id_or_name.Set.of_list
+    Global_flow_graph.used graph_new
+    |> Hashtbl.to_seq_keys |> List.of_seq |> Code_id_or_name.Set.of_list
   in
   Gc.full_major ();
   let t0 = Sys.time () in
@@ -624,16 +581,7 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   let t1 = Sys.time () in
   Gc.full_major ();
   let t1' = Sys.time () in
-  let datalog = Datalog.empty in
-  let datalog =
-    Datalog.set_table alias_rel graph_new.alias_rel
-    @@ Datalog.set_table use_rel graph_new.use_rel
-    @@ Datalog.set_table accessor_rel graph_new.accessor_rel
-    @@ Datalog.set_table constructor_rel graph_new.constructor_rel
-    @@ Datalog.set_table propagate_rel graph_new.propagate_rel
-    @@ Datalog.set_table used_pred graph_new.used_pred
-    @@ datalog
-  in
+  let datalog = Global_flow_graph.to_datalog graph_new in
   let db = Datalog.Schedule.run datalog_schedule datalog in
   let t2 = Sys.time () in
   Format.eprintf "EXISTING: %f, DATALOG: %f, SPEEDUP: %f@." (t1 -. t0)

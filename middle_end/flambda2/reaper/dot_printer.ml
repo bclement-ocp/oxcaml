@@ -70,7 +70,7 @@ module P = struct
           Graph.Dep.Set.fold (fun dep acc -> dep_names dep @ acc) dep []
         in
         List.iter (fun name -> Hashtbl.replace names name ()) (name :: dep_names))
-      t.Graph.name_to_dep;
+      (Graph.name_to_dep t);
     names
 
   let nodes ~ctx ~print_color ppf t =
@@ -80,7 +80,7 @@ module P = struct
           Code_id_or_name.pattern_match'
             ~code_id:(fun _ -> false)
             ~name:(fun name ->
-              Hashtbl.mem t.Graph.used (Code_id_or_name.name name))
+              Hashtbl.mem (Graph.used t) (Code_id_or_name.name name))
             name
         in
         node ~ctx ~root ~print_color ppf name)
@@ -106,7 +106,7 @@ module P = struct
     Hashtbl.iter
       (fun src dst_set ->
         Graph.Dep.Set.iter (fun dst -> edge ~ctx ppf src dst) dst_set)
-      t.Graph.name_to_dep
+      (Graph.name_to_dep t)
 
   let code_deps ~ctx ~code_id ~print_color ppf
       (code_dep : Traverse_acc.code_dep) =
