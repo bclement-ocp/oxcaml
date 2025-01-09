@@ -420,7 +420,7 @@ let usages_rel =
   Datalog.Table.create_relation ~name:"usages"
     Usages_rel.columns
 
-let datalog_schedule =
+let _datalog_schedule =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
@@ -437,7 +437,7 @@ let datalog_schedule =
   in
   let usages_alias =
     let$ [source; target; usage] = ["source"; "target"; "usage"] in
-    usages_rel target usage $:- [ not (used_pred target); usages_rel source usage; alias_rel source target ]
+    usages_rel target usage $:- [ not (used_pred target); not (used_pred source); usages_rel source usage; alias_rel source target ]
   in
   (* has_use *)
   let has_use_used =
@@ -492,7 +492,10 @@ let datalog_schedule =
   let alias_from_accessed_constructor =
     let$ [source; field; target; source_use; v] = ["source"; "field"; "target"; "source_use"; "v"] in
     alias_rel v target
-    $:- [ constructor_rel source field target ;
+    $:- [ not (used_pred target);
+          not (used_fields_top_rel source_use field);
+          not (used_pred source);
+          constructor_rel source field target ;
           usages_rel source source_use ;
           used_fields_rel source_use field v ]
   in
@@ -500,6 +503,7 @@ let datalog_schedule =
     let$ [source; field; target; source_use] = ["source"; "field"; "target"; "source_use"] in
     used_pred target
     $:- [ constructor_rel source field target ;
+          not (used_pred source);
           usages_rel source source_use ;
           used_fields_top_rel source_use field ]
   in
@@ -517,7 +521,6 @@ let datalog_schedule =
     fixpoint
       [ saturate
           [ alias_from_used_propagate;
-            alias_from_accessed_constructor;
             used_from_alias_used;
             used_from_constructor_used;
             used_from_use;
@@ -528,23 +531,31 @@ let datalog_schedule =
             used_from_accessed_constructor;
           ];
         saturate
-          [ used_fields_from_accessor_used_fields; used_fields_from_accessor_used_fields_top; usages_accessor; usages_alias ] ])
+          [ alias_from_accessed_constructor; used_fields_from_accessor_used_fields; used_fields_from_accessor_used_fields_top; usages_accessor; usages_alias ] ])
 
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
   let open! Global_flow_graph in
-  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
+  (* let usages_rel v1 v2 = atom usages_rel [v1; v2] in *)
   let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
+  (*
   let query_used_field_top =
     Cursor.create ["X"; "U"; "F"] (fun [x; u; f] -> [usages_rel x u; used_fields_top_rel u f])
   in
   let query_used_field =
     Cursor.create ["X"; "U"; "F"; "Y"] (fun [x; u; f; y] -> [usages_rel x u; used_fields_rel u f y])
   in
+  *)
+  let query_used_field_top =
+    Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
+  in
+  let query_used_field =
+    Cursor.create ["X"; "F"; "Y"] (fun [x; f; y] -> [used_fields_rel x f y])
+  in
   let h = Hashtbl.create 17 in
   Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
-  Cursor.iter query_used_field_top db ~f:(fun [u; _; f] ->
+  Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
       let f = Field.decode f in
       let[@local] ff fields =
         Hashtbl.replace h u (Fields (Field.Map.add f Field_top fields))
@@ -554,7 +565,7 @@ let db_to_uses db =
       | Some Top -> ()
       | None -> ff Field.Map.empty
       | Some (Fields f) -> ff f);
-  Cursor.iter query_used_field db ~f:(fun [u; _; f; v] ->
+  Cursor.iter query_used_field db ~f:(fun [u; f; v] ->
       let[@local] ff fields =
         let f = Field.decode f in
         let v_top = Hashtbl.find_opt h v = Some Top in
@@ -580,7 +591,7 @@ let db_to_uses db =
       | Some (Fields f) -> ff f);
   h
 
-let _datalog_schedule =
+let datalog_schedule =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
