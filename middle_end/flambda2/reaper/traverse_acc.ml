@@ -112,12 +112,6 @@ let add_code code_id dep t = t.code <- Code_id.Map.add code_id dep t.code
 
 let find_code t code_id = Code_id.Map.find code_id t.code
 
-let record_dep ~denv:_ code_id_or_name dep t =
-  Graph.add_dep t.deps code_id_or_name dep
-
-let record_deps ~denv:_ code_id_or_name deps t =
-  Graph.add_deps t.deps code_id_or_name deps
-
 let alias_dep ~denv:_ pat dep t =
   Simple.pattern_match dep
     ~name:(fun name ~coercion:_ ->
@@ -176,29 +170,25 @@ let record_set_of_closure_deps t =
         (* The code comes from another compilation unit; so we don't know what
            happens once it is applied. As such, it must escape the whole
            block. *)
-        Graph.add_dep t.deps
+        Graph.add_constructor_dep t.deps
           (Code_id_or_name.name name)
-          (Constructor
-             { relation = Code_of_closure; target = Code_id_or_name.name name })
+          Code_of_closure
+          (Code_id_or_name.name name)
       | code_dep ->
-        Graph.add_dep t.deps
+        Graph.add_alias t.deps
           (Code_id_or_name.var code_dep.my_closure)
-          (Graph.Dep.Alias { target = name });
+          name;
         List.iteri
           (fun i v ->
-            Graph.add_dep t.deps
+            Graph.add_constructor_dep t.deps
               (Code_id_or_name.name name)
-              (Constructor
-                 { relation = Apply (Direct_code_pointer, Normal i);
-                   target = Code_id_or_name.var v
-                 }))
+              (Apply (Direct_code_pointer, Normal i))
+              (Code_id_or_name.var v))
           code_dep.return;
-        Graph.add_dep t.deps
+        Graph.add_constructor_dep t.deps
           (Code_id_or_name.name name)
-          (Constructor
-             { relation = Apply (Direct_code_pointer, Exn);
-               target = Code_id_or_name.var code_dep.exn
-             });
+          (Apply (Direct_code_pointer, Exn))
+          (Code_id_or_name.var code_dep.exn);
         let num_params =
           if code_dep.is_tupled
           then 1
@@ -210,40 +200,32 @@ let record_set_of_closure_deps t =
             Code_id_or_name.var
               (Variable.create (Printf.sprintf "partial_apply_%i" i))
           in
-          Graph.add_dep t.deps !acc
-            (Constructor
-               { relation = Apply (Indirect_code_pointer, Normal 0);
-                 target = tmp_name
-               });
+          Graph.add_constructor_dep t.deps !acc
+               (Apply (Indirect_code_pointer, Normal 0))
+               tmp_name;
           (* The code_id needs to stay alive even if the function is only
              partially applied, as the arity is needed at runtime in that
              case. *)
-          Graph.add_dep t.deps !acc
-            (Constructor
-               { relation = Code_of_closure;
-                 target = Code_id_or_name.code_id code_id
-               });
+          Graph.add_constructor_dep t.deps !acc
+            Code_of_closure
+            (Code_id_or_name.code_id code_id);
           acc := tmp_name
         done;
         List.iteri
           (fun i v ->
-            Graph.add_dep t.deps !acc
-              (Constructor
-                 { relation = Apply (Indirect_code_pointer, Normal i);
-                   target = Code_id_or_name.var v
-                 }))
+            Graph.add_constructor_dep t.deps !acc
+              (Apply (Indirect_code_pointer, Normal i))
+              (Code_id_or_name.var v))
           code_dep.return;
-        Graph.add_dep t.deps !acc
-          (Constructor
-             { relation = Apply (Indirect_code_pointer, Exn);
-               target = Code_id_or_name.var code_dep.exn
-             });
-        Graph.add_dep t.deps !acc
-          (Constructor
-             { relation = Code_of_closure;
-               target = Code_id_or_name.code_id code_id
-             }))
+        Graph.add_constructor_dep t.deps !acc
+             (Apply (Indirect_code_pointer, Exn))
+             (Code_id_or_name.var code_dep.exn);
+        Graph.add_constructor_dep t.deps !acc
+             Code_of_closure
+             (Code_id_or_name.code_id code_id))
     t.set_of_closures_dep
+
+let graph t = t.deps
 
 let deps t =
   List.iter
@@ -259,9 +241,8 @@ let deps t =
         let param = Name.var param in
         match function_containing_apply_expr with
         | None ->
-          Graph.add_dep t.deps
-            (Code_id_or_name.name param)
-            (Graph.Dep.Alias { target = name })
+          Graph.add_alias t.deps
+            (Code_id_or_name.name param) name
         | Some code_id ->
           Graph.add_propagate_dep t.deps code_id ~target:name ~source:param
       in

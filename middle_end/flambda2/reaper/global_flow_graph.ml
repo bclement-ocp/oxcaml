@@ -331,33 +331,6 @@ let add_graph_dep t k v =
   | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
   | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s)
 
-let insert t (k : Code_id_or_name.t) v =
-  add_graph_dep t k v;
-  match (v : Dep.t) with
-  | Alias { target } ->
-    t.alias_rel
-      <- Alias_rel.add_or_replace
-           [k; Code_id_or_name.name target]
-           () t.alias_rel
-  | Use { target } ->
-    t.use_rel <- Use_rel.add_or_replace [k; target] () t.use_rel
-  | Accessor { relation; target } ->
-    let field = Field.encode relation in
-    t.accessor_rel
-      <- Accessor_rel.add_or_replace
-           [k; field; Code_id_or_name.name target]
-           () t.accessor_rel
-  | Constructor { relation; target } ->
-    let field = Field.encode relation in
-    t.constructor_rel
-      <- Constructor_rel.add_or_replace [k; field; target] () t.constructor_rel
-  | Alias_if_def _ -> ()
-  | Propagate { target; source } ->
-    t.propagate_rel
-      <- Propagate_rel.add_or_replace
-           [k; Code_id_or_name.name source; Code_id_or_name.name target]
-           () t.propagate_rel
-
 let add_alias t k v =
   add_graph_dep t k (Alias { target = v });
   t.alias_rel
@@ -366,6 +339,14 @@ let add_alias t k v =
 let add_use_dep t k v =
   add_graph_dep t k (Use { target = v });
   t.use_rel <- Use_rel.add_or_replace [k; v] () t.use_rel
+
+let add_constructor_dep t source relation target =
+  add_graph_dep t source (Constructor { relation; target });
+  t.constructor_rel <- Constructor_rel.add_or_replace [source; Field.encode relation; target] () t.constructor_rel
+
+let add_accessor_dep t source relation target =
+  add_graph_dep t source (Accessor { relation; target });
+  t.accessor_rel <- Accessor_rel.add_or_replace [source; Field.encode relation; Code_id_or_name.name target] () t.accessor_rel
 
 let add_propagate_dep t if_defined ~target ~source =
   add_graph_dep t
@@ -381,11 +362,6 @@ let add_propagate_dep t if_defined ~target ~source =
            Code_id_or_name.name target ]
          () t.propagate_rel
 
-let inserts t k v =
-  (*let tbl = t.name_to_dep in match Hashtbl.find_opt tbl k with | None ->
-    Hashtbl.add tbl k v | Some s -> Hashtbl.replace tbl k (Dep.Set.union v s) *)
-  Dep.Set.iter (fun dep -> insert t k dep) v
-
 let add_opaque_let_dependency t bp fv =
   let bound_to = Bound_pattern.free_names bp in
   let f () bound_to =
@@ -395,10 +371,6 @@ let add_opaque_let_dependency t bp fv =
       ~init:()
   in
   Name_occurrences.fold_names bound_to ~f ~init:()
-
-let add_dep t bound_to dep = insert t bound_to dep
-
-let add_deps t bound_to deps = inserts t bound_to deps
 
 let add_use t (dep : Code_id_or_name.t) =
   Hashtbl.replace t.used dep ();
