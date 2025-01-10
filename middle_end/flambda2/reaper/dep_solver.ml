@@ -411,14 +411,13 @@ let pp_result ppf (res : result) =
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
 module Has_use_pred = Datalog.Schema.Relation1 (Code_id_or_name)
+
 let has_use_pred =
-  Datalog.Table.create_relation ~name:"has_use"
-    Has_use_pred.columns
+  Datalog.Table.create_relation ~name:"has_use" Has_use_pred.columns
 
 module Usages_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
-let usages_rel =
-  Datalog.Table.create_relation ~name:"usages"
-    Usages_rel.columns
+
+let usages_rel = Datalog.Table.create_relation ~name:"usages" Usages_rel.columns
 
 let _datalog_schedule =
   let open Datalog in
@@ -427,34 +426,39 @@ let _datalog_schedule =
   let has_use_pred v = atom has_use_pred [v] in
   let usages_rel v1 v2 = atom usages_rel [v1; v2] in
   let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h =
-    where h (deduce c)
-  in
+  let ( $:- ) c h = where h (deduce c) in
   (* usages *)
   let usages_accessor =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    usages_rel target target $:- [ not (used_pred target); has_use_pred source; accessor_rel source field target ]
+    usages_rel target target
+    $:- [ not (used_pred target);
+          has_use_pred source;
+          accessor_rel source field target ]
   in
   let usages_alias =
     let$ [source; target; usage] = ["source"; "target"; "usage"] in
-    usages_rel target usage $:- [ not (used_pred target); not (used_pred source); usages_rel source usage; alias_rel source target ]
+    usages_rel target usage
+    $:- [ not (used_pred target);
+          not (used_pred source);
+          usages_rel source usage;
+          alias_rel source target ]
   in
   (* has_use *)
   let has_use_used =
     let$ [x] = ["x"] in
-    has_use_pred x $:- [ used_pred x ]
+    has_use_pred x $:- [used_pred x]
   in
   let has_use_used_fields =
     let$ [source; _field; _target] = ["source"; "_field"; "_target"] in
-    has_use_pred source $:- [ used_fields_rel source _field _target ]
+    has_use_pred source $:- [used_fields_rel source _field _target]
   in
   let has_use_used_fields_top =
     let$ [source; _field] = ["source"; "_field"] in
-    has_use_pred source $:- [ used_fields_top_rel source _field ]
+    has_use_pred source $:- [used_fields_top_rel source _field]
   in
   let has_use_alias =
     let$ [source; target] = ["source"; "target"] in
-    has_use_pred target $:- [ has_use_pred source; alias_rel source target ]
+    has_use_pred target $:- [has_use_pred source; alias_rel source target]
   in
   (* propagate *)
   let alias_from_used_propagate =
@@ -468,9 +472,7 @@ let _datalog_schedule =
   in
   (* accessor *)
   let used_fields_from_accessor_used_fields =
-    let$ [source; field; target] =
-      ["source"; "field"; "target"]
-    in
+    let$ [source; field; target] = ["source"; "field"; "target"] in
     used_fields_rel target field source
     $:- [ not (used_pred target);
           not (used_pred source);
@@ -479,38 +481,38 @@ let _datalog_schedule =
           has_use_pred source ]
   in
   let used_fields_from_accessor_used_fields_top =
-    let$ [source; field; target] =
-      ["source"; "field"; "target"]
-    in
+    let$ [source; field; target] = ["source"; "field"; "target"] in
     used_fields_top_rel target field
     $:- [ not (used_pred target);
           used_pred source;
-          accessor_rel source field target;
-         ]
+          accessor_rel source field target ]
   in
   (* constructor *)
   let alias_from_accessed_constructor =
-    let$ [source; field; target; source_use; v] = ["source"; "field"; "target"; "source_use"; "v"] in
+    let$ [source; field; target; source_use; v] =
+      ["source"; "field"; "target"; "source_use"; "v"]
+    in
     alias_rel v target
     $:- [ not (used_pred target);
           not (used_fields_top_rel source_use field);
           not (used_pred source);
-          constructor_rel source field target ;
-          usages_rel source source_use ;
+          constructor_rel source field target;
+          usages_rel source source_use;
           used_fields_rel source_use field v ]
   in
   let used_from_accessed_constructor =
-    let$ [source; field; target; source_use] = ["source"; "field"; "target"; "source_use"] in
+    let$ [source; field; target; source_use] =
+      ["source"; "field"; "target"; "source_use"]
+    in
     used_pred target
-    $:- [ constructor_rel source field target ;
+    $:- [ constructor_rel source field target;
           not (used_pred source);
-          usages_rel source source_use ;
+          usages_rel source source_use;
           used_fields_top_rel source_use field ]
   in
   let used_from_constructor_used =
     let$ [source; field; target] = ["source"; "field"; "target"] in
-    used_pred target
-    $:- [used_pred source; constructor_rel source field target]
+    used_pred target $:- [used_pred source; constructor_rel source field target]
   in
   (* use *)
   let used_from_use =
@@ -528,10 +530,13 @@ let _datalog_schedule =
             has_use_used_fields_top;
             has_use_used;
             has_use_alias;
-            used_from_accessed_constructor;
-          ];
+            used_from_accessed_constructor ];
         saturate
-          [ alias_from_accessed_constructor; used_fields_from_accessor_used_fields; used_fields_from_accessor_used_fields_top; usages_accessor; usages_alias ] ])
+          [ alias_from_accessed_constructor;
+            used_fields_from_accessor_used_fields;
+            used_fields_from_accessor_used_fields_top;
+            usages_accessor;
+            usages_alias ] ])
 
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
@@ -539,14 +544,10 @@ let db_to_uses db =
   let open! Global_flow_graph in
   (* let usages_rel v1 v2 = atom usages_rel [v1; v2] in *)
   let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
-  (*
-  let query_used_field_top =
-    Cursor.create ["X"; "U"; "F"] (fun [x; u; f] -> [usages_rel x u; used_fields_top_rel u f])
-  in
-  let query_used_field =
-    Cursor.create ["X"; "U"; "F"; "Y"] (fun [x; u; f; y] -> [usages_rel x u; used_fields_rel u f y])
-  in
-  *)
+  (* let query_used_field_top = Cursor.create ["X"; "U"; "F"] (fun [x; u; f] ->
+     [usages_rel x u; used_fields_top_rel u f]) in let query_used_field =
+     Cursor.create ["X"; "U"; "F"; "Y"] (fun [x; u; f; y] -> [usages_rel x u;
+     used_fields_rel u f y]) in *)
   let query_used_field_top =
     Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
   in
