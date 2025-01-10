@@ -1,14 +1,20 @@
 open Flambda2_datalog.Datalog
 
+(* Create a column with an abstract type.
+
+   Note that we can only construct columns with integer types, but we can then
+   make that type abstract using a signature. *)
 module Node : sig
   include Column.S
 
   val make : unit -> t
 end = struct
+  let print ppf n = Format.fprintf ppf "node:%d" n
+
   include Column.Make (struct
     let name = "node"
 
-    let print ppf n = Format.fprintf ppf "node:%d" n
+    let print = print
   end)
 
   let make =
@@ -18,18 +24,20 @@ end = struct
       !cnt
 end
 
-type node = Node.t
+let node = Node.datalog_column_id
 
-let node : _ Column.t = (module Node)
+(* Note: the type annotation here is not required and is provided for
+   documentation purposes. *)
+let marked_pred : (unit Node.Map.t, Node.t -> nil) relation =
+  create_relation ~name:"marked" [node]
 
-let marked_pred : node rel1 = create_relation ~name:"marked" [node]
+(* For relations that have multiple arguments, writing out the full relation
+   type can get messy. Functors are provided to write out the appropriate types
+   for us. *)
+module Edge_rel = Schema.Relation2 (Node) (Node)
 
-module Edge_rel =
-  Table.Make
-    (struct
-      let name = "edge"
-    end)
-    (Schema.Relation2 (Node) (Node))
+let edge_rel : (Edge_rel.t, Edge_rel.keys) relation =
+  create_relation ~name:"edge" Edge_rel.columns
 
 let n1 = Node.make ()
 
@@ -51,11 +59,11 @@ let create_edge_table edges =
 let edge_table =
   create_edge_table [n1, n2; n3, n2; n2, n5; n5, n4; n4, n2; n4, n4]
 
-let db = add_fact marked_pred [n1] @@ set_table Edge_rel.id edge_table @@ empty
+let db = add_fact marked_pred [n1] @@ set_table edge_rel edge_table @@ empty
 
 let marked = atom marked_pred
 
-let edge = atom (table_relation Edge_rel.id)
+let edge = atom edge_rel
 
 let () = Format.eprintf "@[<v 2>Database:@ @[<v>%a@]@]@.@." print db
 
@@ -86,7 +94,7 @@ let () =
     successors
 
 let () =
-  let successors_n1 = Node.Map.find n1 (get_table Edge_rel.id db) in
+  let successors_n1 = Node.Map.find n1 (get_table edge_rel db) in
   let successors = Node.Map.fold (fun n () acc -> n :: acc) successors_n1 [] in
   Format.eprintf "@[<v 2>Successors of %a (direct access):@ @[(%a)@]@]@.@."
     Node.print n1

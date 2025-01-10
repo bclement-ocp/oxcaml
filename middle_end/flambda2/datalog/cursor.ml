@@ -15,10 +15,6 @@
 
 open Heterogenous_list
 
-(* CR-someday bclement: Using actions ([Unless]) for negation is not optimal
-   because we can end up looking up repeatedly a shared prefix. We could do
-   better by supporting antijoins in the [Leapfrog] module. *)
-
 type action =
   | Bind_iterator : 'a option ref * 'a Trie.Iterator.t -> action
   | Unless : ('t, 'k, 'v) Table.Id.t * 'k Option_ref.hlist -> action

@@ -63,6 +63,8 @@ module Datalog = struct
     module type S = sig
       type t
 
+      val print : Format.formatter -> t -> unit
+
       module Set : Container_types.Set with type elt = t
 
       module Map :
@@ -205,18 +207,14 @@ module Datalog = struct
       Cons (C1) (Relation3 (C2) (C3) (C4))
   end
 
-  module Table = struct
-    include Table
+  let create_trie ~name (schema : (_, _, _) Schema.t) =
+    Table.Id.create ~name
+      ~is_trie:(Column.is_trie schema.columns)
+      ~print_keys:(Column.print_keys schema.columns)
+      ~default_value:schema.default_value
 
-    let create_trie ~name (schema : (_, _, _) Schema.t) =
-      Id.create ~name
-        ~is_trie:(Column.is_trie schema.columns)
-        ~print_keys:(Column.print_keys schema.columns)
-        ~default_value:schema.default_value
-
-    let create_relation ~name columns =
-      create_trie ~name { columns; default_value = () }
-  end
+  let create_relation ~name columns =
+    create_trie ~name { columns; default_value = () }
 
   type ('t, 'k) relation = ('t, 'k, unit) Table.Id.t
 
@@ -263,7 +261,7 @@ module Datalog = struct
       f predicates
 
   module Cursor = struct
-    type ('p, 'v) with_parameters = ('p, 'v) cursor
+    type ('p, 'v) with_parameters = ('p, 'v) Cursor.With_parameters.t
     (* ('p, (action, 'v Constant.hlist, nil) Cursor0.instruction) cursor *)
 
     type 'v t = (nil, 'v) with_parameters
@@ -278,14 +276,16 @@ module Datalog = struct
               where (f parameters variables) @@ yield variables))
 
     let fold_with_parameters cursor parameters database ~init ~f =
-      naive_fold cursor parameters database f init
+      Cursor.With_parameters.naive_fold cursor parameters database f init
 
-    let fold cursor database ~init ~f = naive_fold cursor [] database f init
+    let fold cursor database ~init ~f =
+      Cursor.With_parameters.naive_fold cursor [] database f init
 
     let iter_with_parameters cursor parameters database ~f =
-      naive_iter cursor parameters database f
+      Cursor.With_parameters.naive_iter cursor parameters database f
 
-    let iter cursor database ~f = naive_iter cursor [] database f
+    let iter cursor database ~f =
+      Cursor.With_parameters.naive_iter cursor [] database f
   end
 
   let print_stats = Schedule.print_stats

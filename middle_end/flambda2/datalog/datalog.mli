@@ -43,33 +43,6 @@ open Heterogenous_list
     queries.
 *)
 
-type ('p, 'v) cursor = ('p, 'v) Cursor.With_parameters.t
-
-val seminaive_fold :
-  ('p, 'v) cursor ->
-  'p Constant.hlist ->
-  previous:Table.Map.t ->
-  diff:Table.Map.t ->
-  current:Table.Map.t ->
-  ('v Constant.hlist -> 'a -> 'a) ->
-  'a ->
-  'a
-
-val naive_fold :
-  ('p, 'v) cursor ->
-  'p Constant.hlist ->
-  Table.Map.t ->
-  ('v Constant.hlist -> 'a -> 'a) ->
-  'a ->
-  'a
-
-val naive_iter :
-  ('p, 'v) cursor ->
-  'p Constant.hlist ->
-  Table.Map.t ->
-  ('v Constant.hlist -> unit) ->
-  unit
-
 module Term : sig
   include Heterogenous_list.S
 
@@ -114,4 +87,4 @@ val unless_atom :
   ('p, 'a) program ->
   ('p, 'a) program
 
-val yield : 'v Term.hlist -> ('p, ('p, 'v) cursor) program
+val yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.With_parameters.t) program

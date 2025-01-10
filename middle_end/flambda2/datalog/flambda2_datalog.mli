@@ -30,6 +30,8 @@ module Datalog : sig
     module type S = sig
       type t
 
+      val print : Format.formatter -> t -> unit
+
       module Set : Container_types.Set with type elt = t
 
       module Map :
@@ -105,42 +107,36 @@ module Datalog : sig
          and type t = Relation3(C2)(C3)(C4).t C1.Map.t
   end
 
-  module Table : sig
-    module Id : sig
-      type ('t, 'k, 'v) t
-    end
+  type ('t, 'k) relation
 
-    (** [create_relation ~name schema] creates a new relation with name [name] and
-              schema [schema].
+  (** [create_relation ~name schema] creates a new relation with name [name] and
+      schema [schema].
 
-              The schema is given as a heterogenous list of column types, and the relation
-              is represented in memory as a series of nested maps following this list. If
-              the schema [ty1; ty2; ty3] is provided, the relation will be represented as
-              a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
-              arguments provided to a relation thus have profound implication for the
-              performance of iterations on the relation, and needs to be chosen carefully.
+      The schema is given as a heterogenous list of column types, and the relation
+      is represented in memory as a series of nested maps following this list. If
+      the schema [ty1; ty2; ty3] is provided, the relation will be represented as
+      a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
+      arguments provided to a relation thus have profound implication for the
+      performance of iterations on the relation, and needs to be chosen carefully.
 
-              @raise Invalid_argument if [schema] is empty.
+      @raise Invalid_argument if [schema] is empty.
 
-              {b Example}
+      {b Example}
 
-              The following code defines a binary edge relationship between nodes,
-              represented as a map from a node to its successors, and an unary predicate
-              to distinguish some sort of {e marked} nodes.
+      The following code defines a binary edge relationship between nodes,
+      represented as a map from a node to its successors, and an unary predicate
+      to distinguish some sort of {e marked} nodes.
 
-              {[
-              let marked_pred : node rel1 =
-                create_relation ~name:"marked" [node]
+      {[
+      let marked_pred : node rel1 =
+        create_relation ~name:"marked" [node]
 
-              let edge_rel : (node, node) rel2 =
-                create_relation ~name:"edge" [node; node]
-              ]}
-          *)
-    val create_relation :
-      name:string -> ('t, 'k, unit) Column.hlist -> ('t, 'k, unit) Id.t
-  end
-
-  type ('t, 'k) relation = ('t, 'k, unit) Table.Id.t
+      let edge_rel : (node, node) rel2 =
+        create_relation ~name:"edge" [node; node]
+      ]}
+        *)
+  val create_relation :
+    name:string -> ('t, 'k, unit) Column.hlist -> ('t, 'k) relation
 
   module Term : sig
     include Heterogenous_list.S
@@ -177,9 +173,9 @@ module Datalog : sig
 
   val empty : database
 
-  val get_table : ('t, 'k, 'v) Table.Id.t -> database -> 't
+  val get_table : ('t, 'k) relation -> database -> 't
 
-  val set_table : ('t, 'k, 'v) Table.Id.t -> 't -> database -> database
+  val set_table : ('t, 'k) relation -> 't -> database -> database
 
   (** [add_fact rel args db] records a fact into the database [db].
 

@@ -410,22 +410,16 @@ let pp_result ppf (res : result) =
   in
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
 
-module Has_use_pred = Datalog.Schema.Relation1 (Code_id_or_name)
-
-let has_use_pred =
-  Datalog.Table.create_relation ~name:"has_use" Has_use_pred.columns
-
 module Usages_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
 
-let usages_rel = Datalog.Table.create_relation ~name:"usages" Usages_rel.columns
+let usages_rel = Datalog.create_relation ~name:"usages" Usages_rel.columns
 
-let with_usages = true
+let with_usages = false
 
 let datalog_schedule_usages =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
-  let _has_use_pred v = atom has_use_pred [v] in
   let usages_rel v1 v2 = atom usages_rel [v1; v2] in
   let ( let$ ) xs f = compile xs f in
   let ( $:- ) c h = where h (deduce c) in
@@ -451,23 +445,6 @@ let datalog_schedule_usages =
           not (used_pred source);
           usages_rel source usage;
           alias_rel source target ]
-  in
-  (* has_use *)
-  let _has_use_used =
-    let$ [x] = ["x"] in
-    _has_use_pred x $:- [used_pred x]
-  in
-  let _has_use_used_fields =
-    let$ [source; _field; _target] = ["source"; "_field"; "_target"] in
-    _has_use_pred source $:- [used_fields_rel source _field _target]
-  in
-  let _has_use_used_fields_top =
-    let$ [source; _field] = ["source"; "_field"] in
-    _has_use_pred source $:- [used_fields_top_rel source _field]
-  in
-  let _has_use_alias =
-    let$ [source; target] = ["source"; "target"] in
-    _has_use_pred target $:- [_has_use_pred source; alias_rel source target]
   in
   (* propagate *)
   let alias_from_used_propagate =

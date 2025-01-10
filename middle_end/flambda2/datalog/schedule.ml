@@ -27,6 +27,8 @@ let fresh_rule_id =
     incr cnt;
     !cnt
 
+let create_rule tid cursor = Rule { table_id = tid; cursor ; rule_id = fresh_rule_id ()}
+
 type 'a incremental =
   { current : 'a;
     difference : 'a
@@ -184,6 +186,3 @@ let rec run_incremental schedule ~previous ~diff ~current =
 let run schedule db =
   (run_incremental schedule ~previous:Table.Map.empty ~diff:db ~current:db)
     .current
-
-let create_rule tid cursor =
-  Rule { table_id = tid; cursor; rule_id = fresh_rule_id () }

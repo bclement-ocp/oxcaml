@@ -157,16 +157,8 @@ let unless_atom id args k info =
   Cursor.add_action post_level (Cursor.unless id refs);
   k info
 
-type ('p, 'v) cursor = ('p, 'v) Cursor.With_parameters.t
-
 let yield output (info : _ context) =
   let output = compile_terms output in
   Cursor.With_parameters.create
     ~parameters:(Parameter.to_refs info.parameters)
     info.context output
-
-let naive_fold = Cursor.With_parameters.naive_fold
-
-let naive_iter = Cursor.With_parameters.naive_iter
-
-let seminaive_fold = Cursor.With_parameters.seminaive_fold

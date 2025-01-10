@@ -239,27 +239,25 @@ type graph =
     mutable used_pred : Used_pred.t
   }
 
-let alias_rel = Datalog.Table.create_relation ~name:"alias" Alias_rel.columns
+let alias_rel = Datalog.create_relation ~name:"alias" Alias_rel.columns
 
-let use_rel = Datalog.Table.create_relation ~name:"use" Use_rel.columns
+let use_rel = Datalog.create_relation ~name:"use" Use_rel.columns
 
-let accessor_rel =
-  Datalog.Table.create_relation ~name:"accessor" Accessor_rel.columns
+let accessor_rel = Datalog.create_relation ~name:"accessor" Accessor_rel.columns
 
 let constructor_rel =
-  Datalog.Table.create_relation ~name:"constructor" Constructor_rel.columns
+  Datalog.create_relation ~name:"constructor" Constructor_rel.columns
 
 let propagate_rel =
-  Datalog.Table.create_relation ~name:"propagate" Propagate_rel.columns
+  Datalog.create_relation ~name:"propagate" Propagate_rel.columns
 
-let used_pred = Datalog.Table.create_relation ~name:"used" Used_pred.columns
+let used_pred = Datalog.create_relation ~name:"used" Used_pred.columns
 
 let used_fields_top_rel =
-  Datalog.Table.create_relation ~name:"used_fields_top"
-    Used_fields_top_rel.columns
+  Datalog.create_relation ~name:"used_fields_top" Used_fields_top_rel.columns
 
 let used_fields_rel =
-  Datalog.Table.create_relation ~name:"used_fields_rel" Used_fields_rel.columns
+  Datalog.create_relation ~name:"used_fields_rel" Used_fields_rel.columns
 
 let name_to_dep { name_to_dep; _ } = name_to_dep
 
