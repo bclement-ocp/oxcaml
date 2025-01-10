@@ -419,7 +419,9 @@ module Usages_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
 
 let usages_rel = Datalog.Table.create_relation ~name:"usages" Usages_rel.columns
 
-let _datalog_schedule =
+let with_usages = true
+
+let datalog_schedule_usages =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
@@ -538,22 +540,33 @@ let _datalog_schedule =
             usages_accessor;
             usages_alias ] ])
 
+let query_uses =
+  let open Datalog in
+  let open! Global_flow_graph in
+  compile ["X"] (fun [x] -> where [used_pred x] (yield [x]))
+
+let query_used_field_top =
+  let open Datalog in
+  let open! Global_flow_graph in
+  if with_usages then
+  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
+  compile ["X"; "U"; "F"] (fun [x; u; f] -> where [usages_rel x u; used_fields_top_rel u f] (yield [x; f]))
+  else
+  compile ["X"; "F"] (fun [x; f] -> where [used_fields_top_rel x f] (yield [x; f]))
+
+let query_used_field =
+  let open Datalog in
+  let open! Global_flow_graph in
+  if with_usages then
+  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
+  compile ["X"; "U"; "F"; "y"] (fun [x; u; f; y] -> where [usages_rel x u; used_fields_rel u f y] (yield [x; f; y]))
+  else
+  compile ["X"; "F"; "Y"] (fun [x; f; y] -> where [used_fields_rel x f y] (yield [x; f; y]))
+
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
   let open Datalog in
   let open! Global_flow_graph in
-  (* let usages_rel v1 v2 = atom usages_rel [v1; v2] in *)
-  let query_uses = Cursor.create ["X"] (fun [x] -> [used_pred x]) in
-  (* let query_used_field_top = Cursor.create ["X"; "U"; "F"] (fun [x; u; f] ->
-     [usages_rel x u; used_fields_top_rel u f]) in let query_used_field =
-     Cursor.create ["X"; "U"; "F"; "Y"] (fun [x; u; f; y] -> [usages_rel x u;
-     used_fields_rel u f y]) in *)
-  let query_used_field_top =
-    Cursor.create ["X"; "F"] (fun [x; f] -> [used_fields_top_rel x f])
-  in
-  let query_used_field =
-    Cursor.create ["X"; "F"; "Y"] (fun [x; f; y] -> [used_fields_rel x f y])
-  in
   let h = Hashtbl.create 17 in
   Cursor.iter query_uses db ~f:(fun [u] -> Hashtbl.replace h u Top);
   Cursor.iter query_used_field_top db ~f:(fun [u; f] ->
@@ -592,7 +605,7 @@ let db_to_uses db =
       | Some (Fields f) -> ff f);
   h
 
-let datalog_schedule =
+let datalog_schedule_no_usages =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
@@ -701,6 +714,8 @@ let datalog_schedule =
           [ used_fields_from_used_fields_alias;
             used_fields_from_accessor_used_fields_top;
             used_fields_from_accessor_used_fields ] ])
+
+let datalog_schedule = if with_usages then datalog_schedule_usages else datalog_schedule_no_usages
 
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in
