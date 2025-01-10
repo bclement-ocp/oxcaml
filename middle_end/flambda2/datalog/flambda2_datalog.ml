@@ -287,4 +287,6 @@ module Datalog = struct
 
     let iter cursor database ~f = naive_iter cursor [] database f
   end
+
+  let print_stats = Schedule.print_stats
 end

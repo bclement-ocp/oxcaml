@@ -72,6 +72,8 @@ type 'v t
 
 type 'a cursor = 'a t
 
+val print : Format.formatter -> 'a t -> unit
+
 val create : context -> 'v Option_ref.hlist -> 'v t
 
 val naive_fold :

@@ -16,6 +16,14 @@
 module Id : sig
   type ('t, 'k, 'v) t
 
+  val print : Format.formatter -> ('t, 'k, 'v) t -> unit
+
+  val hash : ('t, 'k, 'v) t -> int
+
+  val equal : (_, _, _) t -> (_, _, _) t -> bool
+
+  val compare : (_, _, _) t -> (_, _, _) t -> int
+
   val is_trie : ('t, 'k, 'v) t -> ('t, 'k, 'v) Trie.is_trie
 
   type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly

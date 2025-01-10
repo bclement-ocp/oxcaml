@@ -16,25 +16,74 @@
 type rule =
   | Rule :
       { cursor : 'k Cursor.t;
-        table_id : ('t, 'k, unit) Table.Id.t
+        table_id : ('t, 'k, unit) Table.Id.t;
+        rule_id : int
       }
       -> rule
+
+let fresh_rule_id =
+  let cnt = ref 0 in
+  fun () ->
+    incr cnt;
+    !cnt
 
 type 'a incremental =
   { current : 'a;
     difference : 'a
   }
 
+type table = Table : (_, _, _) Table.Id.t -> table
+
+module IdHash = Hashtbl.Make (struct
+  type t = table
+
+  let equal (Table t1) (Table t2) = Table.Id.equal t1 t2
+
+  let hash (Table t) = Table.Id.hash t
+end)
+
+type profile = (int, rule * float) Hashtbl.t IdHash.t
+
+let stats : profile = IdHash.create 17
+
+let get_rules_table (Rule { table_id; _ }) =
+  try IdHash.find stats (Table table_id)
+  with Not_found ->
+    let table = Hashtbl.create 17 in
+    IdHash.replace stats (Table table_id) table;
+    table
+
+let add_timing (Rule { rule_id; _ } as rule) time =
+  let rules_table = get_rules_table rule in
+  Hashtbl.replace rules_table rule_id
+    ( rule,
+      time +. try snd (Hashtbl.find rules_table rule_id) with Not_found -> -0.
+    )
+
+let print_stats ppf () =
+  Format.fprintf ppf "@[<v>";
+  IdHash.iter
+    (fun (Table tid) rules ->
+      Format.fprintf ppf "  @[<v>%a:@ " Table.Id.print tid;
+      Hashtbl.iter
+        (fun _ (Rule { cursor; _ }, time) ->
+          Format.fprintf ppf "@[%a: %f@]@ " Cursor.print cursor time)
+        rules;
+      Format.fprintf ppf "@]@ ")
+    stats;
+  Format.fprintf ppf "@]"
+
 let incremental ~difference ~current = { current; difference }
 
 let run_rule_incremental ~previous ~diff ~current incremental_db
-    (Rule { table_id; cursor }) =
+    (Rule { table_id; cursor; _ } as rule) =
   let is_trie = Table.Id.is_trie table_id in
   let incremental_table =
     incremental
       ~current:(Table.Map.get table_id incremental_db.current)
       ~difference:(Table.Map.get table_id incremental_db.difference)
   in
+  let time0 = Sys.time () in
   let incremental_table' =
     Cursor.seminaive_fold cursor ~previous ~diff ~current
       (fun keys incremental_table ->
@@ -48,6 +97,9 @@ let run_rule_incremental ~previous ~diff ~current incremental_db
               (Trie.add_or_replace is_trie keys () incremental_table.difference))
       incremental_table
   in
+  let time1 = Sys.time () in
+  let seminaive_time = time1 -. time0 in
+  add_timing rule seminaive_time;
   let set_if_changed db ~before ~after =
     if after == before then db else Table.Map.set table_id after db
   in
@@ -133,4 +185,5 @@ let run schedule db =
   (run_incremental schedule ~previous:Table.Map.empty ~diff:db ~current:db)
     .current
 
-let create_rule tid cursor = Rule { table_id = tid; cursor }
+let create_rule tid cursor =
+  Rule { table_id = tid; cursor; rule_id = fresh_rule_id () }

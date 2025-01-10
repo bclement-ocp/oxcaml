@@ -507,4 +507,6 @@ module Datalog : sig
 
   (** [deduce rel args] adds the fact [rel args] to the database. *)
   val deduce : [`Atom of atom] -> (Heterogenous_list.nil, rule) program
+
+  val print_stats : Format.formatter -> unit -> unit
 end

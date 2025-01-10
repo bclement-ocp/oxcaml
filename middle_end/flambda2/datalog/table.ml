@@ -72,6 +72,13 @@ module Id = struct
 
   let print ppf t = Format.fprintf ppf "%s" t.name
 
+  let hash { id; _ } = Hashtbl.hash (Type.Id.uid id)
+
+  let equal { id = id1; _ } { id = id2; _ } = Type.Id.uid id1 = Type.Id.uid id2
+
+  let compare { id = id1; _ } { id = id2; _ } =
+    compare (Type.Id.uid id1) (Type.Id.uid id2)
+
   let create ~name ~is_trie ~print_keys ~default_value =
     { id = Type.Id.make (); name; is_trie; print_keys; default_value }
 

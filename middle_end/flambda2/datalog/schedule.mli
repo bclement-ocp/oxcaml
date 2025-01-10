@@ -24,3 +24,5 @@ val saturate : rule list -> t
 val fixpoint : t list -> t
 
 val run : t -> Table.Map.t -> Table.Map.t
+
+val print_stats : Format.formatter -> unit -> unit

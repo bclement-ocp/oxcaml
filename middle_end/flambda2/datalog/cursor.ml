@@ -149,6 +149,12 @@ type 'v t =
 
 type 'a cursor = 'a t
 
+let print ppf { cursor_binders; _ } =
+  Format.fprintf ppf "@[<hov 1>(%a)@]"
+    (Format.pp_print_list ~pp_sep:Format.pp_print_space
+       (fun ppf (Bind_table (table_id, _)) -> Table.Id.print ppf table_id))
+    cursor_binders
+
 let apply_actions actions instruction =
   (* Note: we must preserve the order of [Bind_iterator] actions in order to
      initialize iterators in the correct order. Otherwise, we would miscompile
