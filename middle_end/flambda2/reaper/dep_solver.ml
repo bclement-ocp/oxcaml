@@ -397,9 +397,10 @@ end
 
 module Solver = Make_Fixpoint (Graph)
 
-type result = Graph.state
+type result = Graph.state * Datalog.database
 
-let pp_result ppf (res : result) =
+let pp_result ppf (old_res, _new_res) =
+  let res = old_res in
   let elts = List.of_seq @@ Hashtbl.to_seq res in
   let pp ppf l =
     let pp_sep ppf () = Format.fprintf ppf ",@ " in
@@ -408,19 +409,19 @@ let pp_result ppf (res : result) =
     in
     Format.pp_print_list ~pp_sep pp ppf l
   in
-  Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts
+  Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts;
 
 module Usages_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
 
 let usages_rel = Datalog.create_relation ~name:"usages" Usages_rel.columns
+let usages_rel v1 v2 = Datalog.atom usages_rel [v1; v2]
 
-let with_usages = false
+let with_usages = true 
 
 let datalog_schedule_usages =
   let open Datalog in
   let open Global_flow_graph in
   let not = Datalog.not in
-  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
   let ( let$ ) xs f = compile xs f in
   let ( $:- ) c h = where h (deduce c) in
   (* usages *)
@@ -536,7 +537,6 @@ let query_used_field_top =
   let open! Global_flow_graph in
   if with_usages
   then
-    let usages_rel v1 v2 = atom usages_rel [v1; v2] in
     compile ["X"; "U"; "F"] (fun [x; u; f] ->
         where [usages_rel x u; used_fields_top_rel u f] (yield [x; f]))
   else
@@ -548,7 +548,6 @@ let query_used_field =
   let open! Global_flow_graph in
   if with_usages
   then
-    let usages_rel v1 v2 = atom usages_rel [v1; v2] in
     compile ["X"; "U"; "F"; "y"] (fun [x; u; f; y] ->
         where [usages_rel x u; used_fields_rel u f y] (yield [x; f; y]))
   else
@@ -710,6 +709,93 @@ let datalog_schedule_no_usages =
 let datalog_schedule =
   if with_usages then datalog_schedule_usages else datalog_schedule_no_usages
 
+let exists_with_parameters cursor params db =
+  Datalog.Cursor.fold_with_parameters cursor params db ~init:false ~f:(fun [] _ -> true)
+
+let mk_exists_query params existentials f =
+  Datalog.(compile [] (fun [] -> with_parameters params (fun params ->
+      foreach existentials (fun existentials -> where (f params existentials) (yield [])))))
+
+let has_use_with_usages, field_used_with_usages =
+  let open! Global_flow_graph in
+  let used_pred_query =
+    mk_exists_query ["X"] [] (fun [x] [] -> [used_pred x])
+  in
+  let usages_query =
+    mk_exists_query ["X"] ["Y"] (fun [x] [y] -> [usages_rel x y])
+  in
+  let used_field_top_query =
+    mk_exists_query ["X"; "F"] ["U"] (fun [x; f] [u] ->
+        [usages_rel x u; used_fields_top_rel u f])
+  in
+  let used_field_query =
+    mk_exists_query ["X"; "F"] ["U"; "V"] (fun [x; f] [u; v] ->
+        [usages_rel x u; used_fields_rel u f v])
+  in
+  (fun db x ->
+    exists_with_parameters used_pred_query [x] db
+    || exists_with_parameters usages_query [x] db),
+  (fun db x field ->
+    let field = Field.encode field in
+    exists_with_parameters used_pred_query [x] db
+    || exists_with_parameters used_field_top_query [x; field] db
+    || exists_with_parameters used_field_query [x; field] db
+  )
+
+let has_use_without_usages, field_used_without_usages =
+  let open! Global_flow_graph in
+  let used_pred_query =
+    mk_exists_query ["X"] [] (fun [x] [] -> [used_pred x])
+  in
+  let used_fields_top_any_query =
+    mk_exists_query ["X"] ["F"] (fun [x] [f] -> [used_fields_top_rel x f])
+  in
+  let used_fields_any_query =
+    mk_exists_query ["X"] ["F"; "Y"] (fun [x] [f; y] -> [used_fields_rel x f y])
+  in
+  let used_fields_top_query =
+    mk_exists_query ["X"; "F"] [] (fun [x; f] [] -> [used_fields_top_rel x f])
+  in
+  let used_fields_query =
+    mk_exists_query ["X"; "F"] ["Y"] (fun [x; f] [y] -> [used_fields_rel x f y])
+  in
+  (fun db x ->
+    exists_with_parameters used_pred_query [x] db
+    || exists_with_parameters used_fields_top_any_query [x] db
+    || exists_with_parameters used_fields_any_query [x] db),
+  (fun db x field ->
+    let field = Field.encode field in
+    exists_with_parameters used_pred_query [x] db
+    || exists_with_parameters used_fields_top_query [x; field] db
+    || exists_with_parameters used_fields_query [x; field] db)
+
+let has_use = if with_usages then has_use_with_usages else has_use_without_usages
+let field_used = if with_usages then field_used_with_usages else field_used_without_usages
+
+
+let has_use (old_result, db) v =
+  let old_is_used = Hashtbl.mem old_result v in
+  let new_is_used = has_use db v in
+  if old_is_used <> new_is_used then
+    Misc.fatal_errorf "Different is_used on %a (old %b, new %b)@."
+      Code_id_or_name.print v old_is_used new_is_used;
+  new_is_used
+
+let field_used (old_result, db) v f =
+  let new_is_used = field_used db v f in
+  let old_is_used =
+    match Hashtbl.find_opt old_result v with
+    | None -> false
+    | Some Bottom -> false
+    | Some Top -> true
+    | Some (Fields fields) -> Field.Map.mem f fields
+  in
+  if old_is_used <> new_is_used then
+    Misc.fatal_errorf "Different field_used on %a %a (old %b, new %b)@."
+      Code_id_or_name.print v Field.print f old_is_used new_is_used;
+  new_is_used
+
+
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in
   let uses =
@@ -750,4 +836,4 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
       let _v2 = Hashtbl.find result k in
       ())
     result2;
-  result
+  (result, db)

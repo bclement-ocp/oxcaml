@@ -23,10 +23,14 @@ type elt =
   | Fields of field_elt Global_flow_graph.Field.Map.t
   | Bottom
 
-type result = (Code_id_or_name.t, elt) Hashtbl.t
+type result
 
 val pp_elt : Format.formatter -> elt -> unit
 
 val pp_result : Format.formatter -> result -> unit
 
 val fixpoint : Global_flow_graph.graph -> result
+
+val has_use : result -> Code_id_or_name.t -> bool
+
+val field_used : result -> Code_id_or_name.t -> Global_flow_graph.Field.t -> bool
