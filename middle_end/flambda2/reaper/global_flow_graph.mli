@@ -134,5 +134,4 @@ val add_propagate_dep :
 val add_constructor_dep :
   graph -> Code_id_or_name.t -> Field.t -> Code_id_or_name.t -> unit
 
-val add_accessor_dep :
-  graph -> Code_id_or_name.t -> Field.t -> Name.t -> unit
+val add_accessor_dep : graph -> Code_id_or_name.t -> Field.t -> Name.t -> unit

@@ -175,9 +175,7 @@ let record_set_of_closure_deps t =
           Code_of_closure
           (Code_id_or_name.name name)
       | code_dep ->
-        Graph.add_alias t.deps
-          (Code_id_or_name.var code_dep.my_closure)
-          name;
+        Graph.add_alias t.deps (Code_id_or_name.var code_dep.my_closure) name;
         List.iteri
           (fun i v ->
             Graph.add_constructor_dep t.deps
@@ -201,13 +199,12 @@ let record_set_of_closure_deps t =
               (Variable.create (Printf.sprintf "partial_apply_%i" i))
           in
           Graph.add_constructor_dep t.deps !acc
-               (Apply (Indirect_code_pointer, Normal 0))
-               tmp_name;
+            (Apply (Indirect_code_pointer, Normal 0))
+            tmp_name;
           (* The code_id needs to stay alive even if the function is only
              partially applied, as the arity is needed at runtime in that
              case. *)
-          Graph.add_constructor_dep t.deps !acc
-            Code_of_closure
+          Graph.add_constructor_dep t.deps !acc Code_of_closure
             (Code_id_or_name.code_id code_id);
           acc := tmp_name
         done;
@@ -218,11 +215,10 @@ let record_set_of_closure_deps t =
               (Code_id_or_name.var v))
           code_dep.return;
         Graph.add_constructor_dep t.deps !acc
-             (Apply (Indirect_code_pointer, Exn))
-             (Code_id_or_name.var code_dep.exn);
-        Graph.add_constructor_dep t.deps !acc
-             Code_of_closure
-             (Code_id_or_name.code_id code_id))
+          (Apply (Indirect_code_pointer, Exn))
+          (Code_id_or_name.var code_dep.exn);
+        Graph.add_constructor_dep t.deps !acc Code_of_closure
+          (Code_id_or_name.code_id code_id))
     t.set_of_closures_dep
 
 let graph t = t.deps
@@ -240,9 +236,7 @@ let deps t =
       let add_cond_dep param name =
         let param = Name.var param in
         match function_containing_apply_expr with
-        | None ->
-          Graph.add_alias t.deps
-            (Code_id_or_name.name param) name
+        | None -> Graph.add_alias t.deps (Code_id_or_name.name param) name
         | Some code_id ->
           Graph.add_propagate_dep t.deps code_id ~target:name ~source:param
       in

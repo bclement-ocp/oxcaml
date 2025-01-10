@@ -548,20 +548,26 @@ let query_uses =
 let query_used_field_top =
   let open Datalog in
   let open! Global_flow_graph in
-  if with_usages then
-  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
-  compile ["X"; "U"; "F"] (fun [x; u; f] -> where [usages_rel x u; used_fields_top_rel u f] (yield [x; f]))
+  if with_usages
+  then
+    let usages_rel v1 v2 = atom usages_rel [v1; v2] in
+    compile ["X"; "U"; "F"] (fun [x; u; f] ->
+        where [usages_rel x u; used_fields_top_rel u f] (yield [x; f]))
   else
-  compile ["X"; "F"] (fun [x; f] -> where [used_fields_top_rel x f] (yield [x; f]))
+    compile ["X"; "F"] (fun [x; f] ->
+        where [used_fields_top_rel x f] (yield [x; f]))
 
 let query_used_field =
   let open Datalog in
   let open! Global_flow_graph in
-  if with_usages then
-  let usages_rel v1 v2 = atom usages_rel [v1; v2] in
-  compile ["X"; "U"; "F"; "y"] (fun [x; u; f; y] -> where [usages_rel x u; used_fields_rel u f y] (yield [x; f; y]))
+  if with_usages
+  then
+    let usages_rel v1 v2 = atom usages_rel [v1; v2] in
+    compile ["X"; "U"; "F"; "y"] (fun [x; u; f; y] ->
+        where [usages_rel x u; used_fields_rel u f y] (yield [x; f; y]))
   else
-  compile ["X"; "F"; "Y"] (fun [x; f; y] -> where [used_fields_rel x f y] (yield [x; f; y]))
+    compile ["X"; "F"; "Y"] (fun [x; f; y] ->
+        where [used_fields_rel x f y] (yield [x; f; y]))
 
 let db_to_uses db =
   (* Format.eprintf "%a@." Database.print_database db; *)
@@ -715,7 +721,8 @@ let datalog_schedule_no_usages =
             used_fields_from_accessor_used_fields_top;
             used_fields_from_accessor_used_fields ] ])
 
-let datalog_schedule = if with_usages then datalog_schedule_usages else datalog_schedule_no_usages
+let datalog_schedule =
+  if with_usages then datalog_schedule_usages else datalog_schedule_no_usages
 
 let fixpoint (graph_new : Global_flow_graph.graph) =
   let result = Hashtbl.create 17 in

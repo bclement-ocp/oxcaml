@@ -342,11 +342,17 @@ let add_use_dep t k v =
 
 let add_constructor_dep t source relation target =
   add_graph_dep t source (Constructor { relation; target });
-  t.constructor_rel <- Constructor_rel.add_or_replace [source; Field.encode relation; target] () t.constructor_rel
+  t.constructor_rel
+    <- Constructor_rel.add_or_replace
+         [source; Field.encode relation; target]
+         () t.constructor_rel
 
 let add_accessor_dep t source relation target =
   add_graph_dep t source (Accessor { relation; target });
-  t.accessor_rel <- Accessor_rel.add_or_replace [source; Field.encode relation; Code_id_or_name.name target] () t.accessor_rel
+  t.accessor_rel
+    <- Accessor_rel.add_or_replace
+         [source; Field.encode relation; Code_id_or_name.name target]
+         () t.accessor_rel
 
 let add_propagate_dep t if_defined ~target ~source =
   add_graph_dep t
