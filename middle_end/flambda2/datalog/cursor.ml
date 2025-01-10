@@ -211,10 +211,15 @@ let create context output =
   { cursor_binders = binders.rev_binders; instruction }
 
 let bind_table (Bind_table (id, handler)) database =
-  handler := Table.Map.get id database
+  let table = Table.Map.get id database in
+  if Trie.is_empty (Table.Id.is_trie id) table
+  then false
+  else (
+    handler := Table.Map.get id database;
+    true)
 
 let bind_table_list binders database =
-  List.iter (fun binder -> bind_table binder database) binders
+  List.iter (fun binder -> ignore @@ bind_table binder database) binders
 
 let evaluate op input =
   match op with
@@ -252,12 +257,13 @@ let[@inline] seminaive_fold cursor ~previous ~diff ~current f acc =
     match binders with
     | [] -> acc
     | binder :: binders ->
-      bind_table binder diff;
       let acc =
-        Cursor.fold f (Cursor.create ~evaluate current cursor.instruction) acc
+        if bind_table binder diff
+        then
+          Cursor.fold f (Cursor.create ~evaluate current cursor.instruction) acc
+        else acc
       in
-      bind_table binder previous;
-      loop binders acc
+      if bind_table binder previous then loop binders acc else acc
   in
   loop cursor.cursor_binders acc
 
