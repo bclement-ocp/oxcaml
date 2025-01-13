@@ -131,13 +131,5 @@ let print_dep dep =
     ~print:(P.print ~print_color:white_color)
 
 let print_solved_dep (result : Dep_solver.result) dep =
-  let print_color id =
-    if Dep_solver.has_use result id then "#a7a7a7" else "white" (* XXX *)
-      (*
-    match Hashtbl.find_opt result id with
-    | None | Some Bottom -> "white"
-    | Some Top -> "#a7a7a7"
-    | Some (Fields _) -> "#f1c40f" *)
-  in
   print_graph ~print_name:"solve_dep" ~lazy_ppf:dep_graph_ppf ~graph:dep
-    ~print:(P.print ~print_color)
+    ~print:(P.print ~print_color:(Dep_solver.print_color result))

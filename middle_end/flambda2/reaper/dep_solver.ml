@@ -399,7 +399,7 @@ module Solver = Make_Fixpoint (Graph)
 
 type result = Graph.state * Datalog.database
 
-let pp_result ppf (old_res, _new_res) =
+let pp_result ppf (old_res, new_res) =
   let res = old_res in
   let elts = List.of_seq @@ Hashtbl.to_seq res in
   let pp ppf l =
@@ -410,6 +410,7 @@ let pp_result ppf (old_res, _new_res) =
     Format.pp_print_list ~pp_sep pp ppf l
   in
   Format.fprintf ppf "@[<hov 2>{@ %a@ }@]" pp elts;
+  Format.fprintf ppf "%a@." Datalog.print new_res
 
 module Usages_rel = Datalog.Schema.Relation2 (Code_id_or_name) (Code_id_or_name)
 
@@ -716,11 +717,12 @@ let mk_exists_query params existentials f =
   Datalog.(compile [] (fun [] -> with_parameters params (fun params ->
       foreach existentials (fun existentials -> where (f params existentials) (yield [])))))
 
+let used_pred_query =
+  let open! Global_flow_graph in
+  mk_exists_query ["X"] [] (fun [x] [] -> [used_pred x])
+
 let has_use_with_usages, field_used_with_usages =
   let open! Global_flow_graph in
-  let used_pred_query =
-    mk_exists_query ["X"] [] (fun [x] [] -> [used_pred x])
-  in
   let usages_query =
     mk_exists_query ["X"] ["Y"] (fun [x] [y] -> [usages_rel x y])
   in
@@ -744,9 +746,6 @@ let has_use_with_usages, field_used_with_usages =
 
 let has_use_without_usages, field_used_without_usages =
   let open! Global_flow_graph in
-  let used_pred_query =
-    mk_exists_query ["X"] [] (fun [x] [] -> [used_pred x])
-  in
   let used_fields_top_any_query =
     mk_exists_query ["X"] ["F"] (fun [x] [f] -> [used_fields_top_rel x f])
   in
@@ -772,6 +771,14 @@ let has_use_without_usages, field_used_without_usages =
 let has_use = if with_usages then has_use_with_usages else has_use_without_usages
 let field_used = if with_usages then field_used_with_usages else field_used_without_usages
 
+let print_color (_, db) v =
+  if exists_with_parameters used_pred_query [v] db then
+    "#a7a7a7"
+  else if has_use db v then
+    "#f1c40f"
+  else
+    "white"
+  
 
 let has_use (old_result, db) v =
   let old_is_used = Hashtbl.mem old_result v in
