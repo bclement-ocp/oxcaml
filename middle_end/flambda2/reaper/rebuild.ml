@@ -185,12 +185,15 @@ let rewrite_set_of_closures bound (env : env) value_slots alloc_mode
   let slot_is_used slot =
     List.exists
       (fun bv ->
-        Dep_solver.field_used env.uses (Code_id_or_name.var (Bound_var.var bv)) slot
-      )
+        Dep_solver.field_used env.uses
+          (Code_id_or_name.var (Bound_var.var bv))
+          slot)
       bound
   in
   let code_is_used bv =
-    Dep_solver.field_used env.uses (Code_id_or_name.var (Bound_var.var bv)) Code_of_closure
+    Dep_solver.field_used env.uses
+      (Code_id_or_name.var (Bound_var.var bv))
+      Code_of_closure
   in
   let value_slots =
     Value_slot.Map.filter
@@ -547,7 +550,9 @@ let rebuild
     in
     keep_all_parameters
     ||
-    let is_var_used = Dep_solver.has_use solved_dep (Code_id_or_name.var param) in
+    let is_var_used =
+      Dep_solver.has_use solved_dep (Code_id_or_name.var param)
+    in
     is_var_used
     ||
     let info = Continuation.Map.find cont continuation_info in

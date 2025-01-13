@@ -27,7 +27,8 @@ let fresh_rule_id =
     incr cnt;
     !cnt
 
-let create_rule tid cursor = Rule { table_id = tid; cursor ; rule_id = fresh_rule_id ()}
+let create_rule tid cursor =
+  Rule { table_id = tid; cursor; rule_id = fresh_rule_id () }
 
 type 'a incremental =
   { current : 'a;
