@@ -425,87 +425,85 @@ let datalog_schedule_usages =
   let open Global_flow_graph in
   let not = Datalog.not in
   let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h = where h (deduce c) in
+  let ( ==> ) h c = where h (deduce c) in
   (* usages *)
   let usages_accessor_1 =
     let$ [to_; relation; base; _var] = ["to_"; "relation"; "base"; "_var"] in
-    usages_rel base base
-    $:- [ not (used_pred base);
-          usages_rel to_ _var;
-          accessor_rel to_ relation base ]
+    [not (used_pred base); usages_rel to_ _var; accessor_rel to_ relation base]
+    ==> usages_rel base base
   in
   let usages_accessor_2 =
     let$ [to_; relation; base] = ["to_"; "relation"; "base"] in
-    usages_rel base base
-    $:- [not (used_pred base); used_pred to_; accessor_rel to_ relation base]
+    [not (used_pred base); used_pred to_; accessor_rel to_ relation base]
+    ==> usages_rel base base
   in
   let usages_alias =
     let$ [to_; from; usage] = ["to_"; "from"; "usage"] in
-    usages_rel from usage
-    $:- [ not (used_pred from);
-          not (used_pred to_);
-          usages_rel to_ usage;
-          alias_rel to_ from ]
+    [ not (used_pred from);
+      not (used_pred to_);
+      usages_rel to_ usage;
+      alias_rel to_ from ]
+    ==> usages_rel from usage
   in
   (* propagate *)
   let alias_from_used_propagate =
     let$ [if_used; to_; from] = ["if_used"; "to_"; "from"] in
-    alias_rel to_ from $:- [used_pred if_used; propagate_rel if_used to_ from]
+    [used_pred if_used; propagate_rel if_used to_ from] ==> alias_rel to_ from
   in
   let used_from_alias_used =
     let$ [to_; from] = ["to_"; "from"] in
-    used_pred from $:- [alias_rel to_ from; used_pred to_]
+    [alias_rel to_ from; used_pred to_] ==> used_pred from
   in
   (* accessor *)
   let used_fields_from_accessor_used_fields =
     let$ [to_; relation; base; _var] = ["to_"; "relation"; "base"; "_var"] in
-    used_fields_rel base relation to_
-    $:- [ not (used_pred base);
-          not (used_pred to_);
-          not (used_fields_top_rel base relation);
-          accessor_rel to_ relation base;
-          usages_rel to_ _var ]
+    [ not (used_pred base);
+      not (used_pred to_);
+      not (used_fields_top_rel base relation);
+      accessor_rel to_ relation base;
+      usages_rel to_ _var ]
+    ==> used_fields_rel base relation to_
   in
   let used_fields_from_accessor_used_fields_top =
     let$ [to_; relation; base] = ["to_"; "relation"; "base"] in
-    used_fields_top_rel base relation
-    $:- [not (used_pred base); used_pred to_; accessor_rel to_ relation base]
+    [not (used_pred base); used_pred to_; accessor_rel to_ relation base]
+    ==> used_fields_top_rel base relation
   in
   (* constructor *)
   let alias_from_accessed_constructor =
     let$ [base; base_use; relation; from; to_] =
       ["base"; "base_use"; "relation"; "from"; "to_"]
     in
-    alias_rel to_ from
-    $:- [ not (used_pred from);
-          not (used_fields_top_rel base_use relation);
-          not (used_pred base);
-          constructor_rel base relation from;
-          usages_rel base base_use;
-          used_fields_rel base_use relation to_ ]
+    [ not (used_pred from);
+      not (used_fields_top_rel base_use relation);
+      not (used_pred base);
+      constructor_rel base relation from;
+      usages_rel base base_use;
+      used_fields_rel base_use relation to_ ]
+    ==> alias_rel to_ from
   in
   let used_from_accessed_constructor =
     let$ [base; base_use; relation; from] =
       ["base"; "base_use"; "relation"; "from"]
     in
-    used_pred from
-    $:- [ constructor_rel base relation from;
-          not (used_pred base);
-          usages_rel base base_use;
-          used_fields_top_rel base_use relation ]
+    [ constructor_rel base relation from;
+      not (used_pred base);
+      usages_rel base base_use;
+      used_fields_top_rel base_use relation ]
+    ==> used_pred from
   in
   let used_from_constructor_used =
     let$ [base; relation; from] = ["base"; "relation"; "from"] in
-    used_pred from $:- [used_pred base; constructor_rel base relation from]
+    [used_pred base; constructor_rel base relation from] ==> used_pred from
   in
   (* use *)
   let used_from_use_1 =
     let$ [to_; from; _var] = ["to_"; "from"; "_var"] in
-    used_pred from $:- [usages_rel to_ _var; use_rel to_ from]
+    [usages_rel to_ _var; use_rel to_ from] ==> used_pred from
   in
   let used_from_use_2 =
     let$ [to_; from] = ["to_"; "from"] in
-    used_pred from $:- [used_pred to_; use_rel to_ from]
+    [used_pred to_; use_rel to_ from] ==> used_pred from
   in
   Datalog.Schedule.(
     fixpoint
@@ -598,93 +596,92 @@ let datalog_schedule_no_usages =
   let open Global_flow_graph in
   let not = Datalog.not in
   let ( let$ ) xs f = compile xs f in
-  let ( $:- ) c h = where h (deduce c) in
+  let ( ==> ) h c = where h (deduce c) in
   (* propagate *)
   let alias_from_used_propagate =
     let$ [if_used; to_; from] = ["if_used"; "to_"; "from"] in
-    alias_rel to_ from $:- [used_pred if_used; propagate_rel if_used to_ from]
+    [used_pred if_used; propagate_rel if_used to_ from] ==> alias_rel to_ from
   in
   (* alias *)
   let used_fields_from_used_fields_alias =
     let$ [to_; from; relation; used_as] =
       ["to_"; "from"; "relation"; "used_as"]
     in
-    used_fields_rel from relation used_as
-    $:- [ not (used_pred from);
-          not (used_pred to_);
-          not (used_fields_top_rel from relation);
-          not (used_fields_top_rel to_ relation);
-          alias_rel to_ from;
-          used_fields_rel to_ relation used_as ]
+    [ not (used_pred from);
+      not (used_pred to_);
+      not (used_fields_top_rel from relation);
+      not (used_fields_top_rel to_ relation);
+      alias_rel to_ from;
+      used_fields_rel to_ relation used_as ]
+    ==> used_fields_rel from relation used_as
   in
   let used_fields_top_from_used_fields_alias_top =
     let$ [to_; from; relation] = ["to_"; "from"; "relation"] in
-    used_fields_top_rel from relation
-    $:- [ not (used_pred from);
-          not (used_pred to_);
-          alias_rel to_ from;
-          used_fields_top_rel to_ relation ]
+    [ not (used_pred from);
+      not (used_pred to_);
+      alias_rel to_ from;
+      used_fields_top_rel to_ relation ]
+    ==> used_fields_top_rel from relation
   in
   let used_from_alias_used =
     let$ [to_; from] = ["to_"; "from"] in
-    used_pred from $:- [alias_rel to_ from; used_pred to_]
+    [alias_rel to_ from; used_pred to_] ==> used_pred from
   in
   (* accessor *)
   let used_fields_from_accessor_used =
     let$ [to_; relation; base] = ["to_"; "relation"; "base"] in
-    used_fields_top_rel base relation
-    $:- [not (used_pred base); accessor_rel to_ relation base; used_pred to_]
+    [not (used_pred base); accessor_rel to_ relation base; used_pred to_]
+    ==> used_fields_top_rel base relation
   in
   let used_fields_from_accessor_used_fields =
     let$ [to_; relation; base; _f; _x] =
       ["to_"; "relation"; "base"; "_f"; "_x"]
     in
-    used_fields_rel base relation to_
-    $:- [ not (used_pred base);
-          not (used_pred to_);
-          not (used_fields_top_rel base relation);
-          accessor_rel to_ relation base;
-          used_fields_rel to_ _f _x ]
+    [ not (used_pred base);
+      not (used_pred to_);
+      not (used_fields_top_rel base relation);
+      accessor_rel to_ relation base;
+      used_fields_rel to_ _f _x ]
+    ==> used_fields_rel base relation to_
   in
   let used_fields_from_accessor_used_fields_top =
     let$ [to_; relation; base; _f] = ["to_"; "relation"; "base"; "_f"] in
-    used_fields_rel base relation to_
-    $:- [ not (used_pred base);
-          not (used_pred to_);
-          not (used_fields_top_rel base relation);
-          accessor_rel to_ relation base;
-          used_fields_top_rel to_ _f ]
+    [ not (used_pred base);
+      not (used_pred to_);
+      not (used_fields_top_rel base relation);
+      accessor_rel to_ relation base;
+      used_fields_top_rel to_ _f ]
+    ==> used_fields_rel base relation to_
   in
   (* constructor *)
   let alias_from_used_fields_constructor =
     let$ [base; relation; from; used_as] =
       ["base"; "relation"; "from"; "used_as"]
     in
-    alias_rel used_as from
-    $:- [ used_fields_rel base relation used_as;
-          constructor_rel base relation from ]
+    [used_fields_rel base relation used_as; constructor_rel base relation from]
+    ==> alias_rel used_as from
   in
   let used_from_constructor_field_used =
     let$ [base; relation; from] = ["base"; "relation"; "from"] in
-    used_pred from
-    $:- [used_fields_top_rel base relation; constructor_rel base relation from]
+    [used_fields_top_rel base relation; constructor_rel base relation from]
+    ==> used_pred from
   in
   let used_from_constructor_used =
     let$ [base; relation; from] = ["base"; "relation"; "from"] in
-    used_pred from $:- [used_pred base; constructor_rel base relation from]
+    [used_pred base; constructor_rel base relation from] ==> used_pred from
   in
   (* use *)
   let used_from_used_use =
     let$ [to_; from] = ["to_"; "from"] in
-    used_pred from $:- [used_pred to_; use_rel to_ from]
+    [used_pred to_; use_rel to_ from] ==> used_pred from
   in
   let used_from_used_fields_top_use =
     let$ [to_; from; _f] = ["to_"; "from"; "_f"] in
-    used_pred from $:- [used_fields_top_rel to_ _f; use_rel to_ from]
+    [used_fields_top_rel to_ _f; use_rel to_ from] ==> used_pred from
   in
   let used_from_used_fields_use =
     let$ [to_; from; _f; _x] = ["to_"; "from"; "_f"; "_x"] in
-    used_pred from $:- [used_fields_rel to_ _f _x; use_rel to_ from]
+    [used_fields_rel to_ _f _x; use_rel to_ from] ==> used_pred from
   in
   Datalog.Schedule.(
     fixpoint
