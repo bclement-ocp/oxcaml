@@ -280,26 +280,32 @@ type ('a, 'b, 'c) rel2 = 'a Datalog.Term.t -> ('b, 'c) rel1
 
 type ('a, 'b, 'c, 'd) rel3 = 'a Datalog.Term.t -> ('b, 'c, 'd) rel2
 
-let alias_rel source target = Datalog.atom alias_rel [source; target]
+(* Naming:
+ * to_ = from; (alias)
+ * to_ = [...] from (use)
+ * to_ = base.relation (accessor)
+ * base = Make_block { from_ } (constructor)
+ * *)
 
-let use_rel source target = Datalog.atom use_rel [source; target]
+let alias_rel to_ from = Datalog.atom alias_rel [to_; from]
 
-let accessor_rel source field target =
-  Datalog.atom accessor_rel [source; field; target]
+let use_rel to_ from = Datalog.atom use_rel [to_; from]
 
-let constructor_rel source field target =
-  Datalog.atom constructor_rel [source; field; target]
+let accessor_rel to_ relation base =
+  Datalog.atom accessor_rel [to_; relation; base]
 
-let propagate_rel if_defined source target =
-  Datalog.atom propagate_rel [if_defined; source; target]
+let constructor_rel base relation from =
+  Datalog.atom constructor_rel [base; relation; from]
+
+let propagate_rel if_used to_ from =
+  Datalog.atom propagate_rel [if_used; to_; from]
 
 let used_pred var = Datalog.atom used_pred [var]
 
-let used_fields_top_rel source field =
-  Datalog.atom used_fields_top_rel [source; field]
+let used_fields_top_rel var field = Datalog.atom used_fields_top_rel [var; field]
 
-let used_fields_rel source field target =
-  Datalog.atom used_fields_rel [source; field; target]
+let used_fields_rel var field used_as =
+  Datalog.atom used_fields_rel [var; field; used_as]
 
 let pp_used_graph ppf (graph : graph) =
   let elts = List.of_seq @@ Hashtbl.to_seq graph.used in
@@ -329,53 +335,54 @@ let add_graph_dep t k v =
   | None -> Hashtbl.add tbl k (Dep.Set.singleton v)
   | Some s -> Hashtbl.replace tbl k (Dep.Set.add v s)
 
-let add_alias t k v =
-  add_graph_dep t k (Alias { target = v });
+let add_alias t ~to_ ~from =
+  add_graph_dep t to_ (Alias { target = from });
   t.alias_rel
-    <- Alias_rel.add_or_replace [k; Code_id_or_name.name v] () t.alias_rel
+    <- Alias_rel.add_or_replace [to_; Code_id_or_name.name from] () t.alias_rel
 
-let add_use_dep t k v =
-  add_graph_dep t k (Use { target = v });
-  t.use_rel <- Use_rel.add_or_replace [k; v] () t.use_rel
+let add_use_dep t ~to_ ~from =
+  add_graph_dep t to_ (Use { target = from });
+  t.use_rel <- Use_rel.add_or_replace [to_; from] () t.use_rel
 
-let add_constructor_dep t source relation target =
-  add_graph_dep t source (Constructor { relation; target });
+let add_constructor_dep t ~base relation ~from =
+  add_graph_dep t base (Constructor { relation; target = from });
   t.constructor_rel
     <- Constructor_rel.add_or_replace
-         [source; Field.encode relation; target]
+         [base; Field.encode relation; from]
          () t.constructor_rel
 
-let add_accessor_dep t source relation target =
-  add_graph_dep t source (Accessor { relation; target });
+let add_accessor_dep t ~to_ relation ~base =
+  add_graph_dep t to_ (Accessor { relation; target = base });
   t.accessor_rel
     <- Accessor_rel.add_or_replace
-         [source; Field.encode relation; Code_id_or_name.name target]
+         [to_; Field.encode relation; Code_id_or_name.name base]
          () t.accessor_rel
 
-let add_propagate_dep t if_defined ~target ~source =
+let add_propagate_dep t ~if_used ~to_ ~from =
   add_graph_dep t
-    (Code_id_or_name.code_id if_defined)
-    (Propagate { target; source });
-  add_graph_dep t
-    (Code_id_or_name.name source)
-    (Alias_if_def { target; if_defined });
+    (Code_id_or_name.code_id if_used)
+    (Propagate { target = from; source = to_ });
+  add_graph_dep t (Code_id_or_name.name to_)
+    (Alias_if_def { target = from; if_defined = if_used });
   t.propagate_rel
     <- Propagate_rel.add_or_replace
-         [ Code_id_or_name.code_id if_defined;
-           Code_id_or_name.name source;
-           Code_id_or_name.name target ]
+         [ Code_id_or_name.code_id if_used;
+           Code_id_or_name.name to_;
+           Code_id_or_name.name from ]
          () t.propagate_rel
 
-let add_opaque_let_dependency t bp fv =
-  let bound_to = Bound_pattern.free_names bp in
+let add_opaque_let_dependency t ~to_ ~from =
+  let bound_to = Bound_pattern.free_names to_ in
   let f () bound_to =
-    Name_occurrences.fold_names fv
-      ~f:(fun () dep ->
-        add_use_dep t (Code_id_or_name.name bound_to) (Code_id_or_name.name dep))
+    Name_occurrences.fold_names from
+      ~f:(fun () var ->
+        add_use_dep t
+          ~to_:(Code_id_or_name.name bound_to)
+          ~from:(Code_id_or_name.name var))
       ~init:()
   in
   Name_occurrences.fold_names bound_to ~f ~init:()
 
-let add_use t (dep : Code_id_or_name.t) =
-  Hashtbl.replace t.used dep ();
-  t.used_pred <- Used_pred.add_or_replace [dep] () t.used_pred
+let add_use t (var : Code_id_or_name.t) =
+  Hashtbl.replace t.used var ();
+  t.used_pred <- Used_pred.add_or_replace [var] () t.used_pred

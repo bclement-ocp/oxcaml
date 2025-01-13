@@ -120,18 +120,20 @@ val pp_used_graph : Format.formatter -> graph -> unit
 val create : unit -> graph
 
 val add_opaque_let_dependency :
-  graph -> Bound_pattern.t -> Name_occurrences.t -> unit
+  graph -> to_:Bound_pattern.t -> from:Name_occurrences.t -> unit
 
-val add_alias : graph -> Code_id_or_name.t -> Name.t -> unit
+val add_alias : graph -> to_:Code_id_or_name.t -> from:Name.t -> unit
 
-val add_use_dep : graph -> Code_id_or_name.t -> Code_id_or_name.t -> unit
+val add_use_dep :
+  graph -> to_:Code_id_or_name.t -> from:Code_id_or_name.t -> unit
 
 val add_use : graph -> Code_id_or_name.t -> unit
 
 val add_propagate_dep :
-  graph -> Code_id.t -> target:Name.t -> source:Name.t -> unit
+  graph -> if_used:Code_id.t -> to_:Name.t -> from:Name.t -> unit
 
 val add_constructor_dep :
-  graph -> Code_id_or_name.t -> Field.t -> Code_id_or_name.t -> unit
+  graph -> base:Code_id_or_name.t -> Field.t -> from:Code_id_or_name.t -> unit
 
-val add_accessor_dep : graph -> Code_id_or_name.t -> Field.t -> Name.t -> unit
+val add_accessor_dep :
+  graph -> to_:Code_id_or_name.t -> Field.t -> base:Name.t -> unit
