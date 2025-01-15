@@ -21,6 +21,7 @@ type rule =
       }
       -> rule
 
+(* Rule identifiers are only used for statistics collection at the moment. *)
 let fresh_rule_id =
   let cnt = ref 0 in
   fun () ->
@@ -45,25 +46,25 @@ module IdHash = Hashtbl.Make (struct
   let hash (Table t) = Table.Id.hash t
 end)
 
-type profile = (int, rule * float) Hashtbl.t IdHash.t
+type stats = (int, rule * float) Hashtbl.t IdHash.t
 
-let stats : profile = IdHash.create 17
+let create_stats () = IdHash.create 17
 
-let get_rules_table (Rule { table_id; _ }) =
+let get_rules_table ~stats (Rule { table_id; _ }) =
   try IdHash.find stats (Table table_id)
   with Not_found ->
     let table = Hashtbl.create 17 in
     IdHash.replace stats (Table table_id) table;
     table
 
-let add_timing (Rule { rule_id; _ } as rule) time =
-  let rules_table = get_rules_table rule in
+let add_timing ~stats (Rule { rule_id; _ } as rule) time =
+  let rules_table = get_rules_table ~stats rule in
   Hashtbl.replace rules_table rule_id
     ( rule,
       time +. try snd (Hashtbl.find rules_table rule_id) with Not_found -> -0.
     )
 
-let print_stats ppf () =
+let print_stats ppf stats =
   Format.fprintf ppf "@[<v>";
   IdHash.iter
     (fun (Table tid) rules ->
@@ -78,7 +79,7 @@ let print_stats ppf () =
 
 let incremental ~difference ~current = { current; difference }
 
-let run_rule_incremental ~previous ~diff ~current incremental_db
+let run_rule_incremental ?stats ~previous ~diff ~current incremental_db
     (Rule { table_id; cursor; _ } as rule) =
   let is_trie = Table.Id.is_trie table_id in
   let incremental_table =
@@ -102,7 +103,7 @@ let run_rule_incremental ~previous ~diff ~current incremental_db
   in
   let time1 = Sys.time () in
   let seminaive_time = time1 -. time0 in
-  if false then add_timing rule seminaive_time;
+  Option.iter (fun stats -> add_timing ~stats rule seminaive_time) stats;
   let set_if_changed db ~before ~after =
     if after == before then db else Table.Map.set table_id after db
   in
@@ -123,23 +124,27 @@ let fixpoint schedule = Fixpoint schedule
 
 let saturate rules = Saturate rules
 
-let run_rules_incremental rules ~previous ~diff ~current =
+let run_rules_incremental ?stats rules ~previous ~diff ~current =
   List.fold_left
-    (run_rule_incremental ~previous ~diff ~current)
+    (run_rule_incremental ?stats ~previous ~diff ~current)
     (incremental ~current ~difference:Table.Map.empty)
     rules
 
-let rec saturate_rules_incremental ~previous ~diff ~current rules full_diff =
-  let incremental_db = run_rules_incremental ~previous ~diff ~current rules in
+let rec saturate_rules_incremental ?stats ~previous ~diff ~current rules
+    full_diff =
+  let incremental_db =
+    run_rules_incremental ?stats ~previous ~diff ~current rules
+  in
   if Table.Map.is_empty incremental_db.difference
   then incremental ~current ~difference:full_diff
   else
-    saturate_rules_incremental ~previous:current ~diff:incremental_db.difference
-      ~current:incremental_db.current rules
+    saturate_rules_incremental ?stats ~previous:current
+      ~diff:incremental_db.difference ~current:incremental_db.current rules
       (Table.Map.concat ~earlier:full_diff ~later:incremental_db.difference)
 
-let saturate_rules_incremental rules ~previous ~diff ~current =
-  saturate_rules_incremental rules Table.Map.empty ~previous ~diff ~current
+let saturate_rules_incremental ?stats rules ~previous ~diff ~current =
+  saturate_rules_incremental ?stats rules Table.Map.empty ~previous ~diff
+    ~current
 
 let run_list_incremental fns ~previous ~diff ~current =
   let rec cut ~cut_after result = function
@@ -176,14 +181,16 @@ let run_list_incremental fns ~previous ~diff ~current =
     (current, [0, diff], 0, Table.Map.empty)
     (List.map (fun fn -> fn, previous, -1) fns)
 
-let rec run_incremental schedule ~previous ~diff ~current =
+let rec run_incremental ?stats schedule ~previous ~diff ~current =
   match schedule with
-  | Saturate rules -> saturate_rules_incremental rules ~previous ~diff ~current
+  | Saturate rules ->
+    saturate_rules_incremental ?stats rules ~previous ~diff ~current
   | Fixpoint schedules ->
     run_list_incremental
-      (List.map run_incremental schedules)
+      (List.map (run_incremental ?stats) schedules)
       ~previous ~diff ~current
 
-let run schedule db =
-  (run_incremental schedule ~previous:Table.Map.empty ~diff:db ~current:db)
+let run ?stats schedule db =
+  (run_incremental ?stats schedule ~previous:Table.Map.empty ~diff:db
+     ~current:db)
     .current

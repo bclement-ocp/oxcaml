@@ -14,11 +14,32 @@
 (**************************************************************************)
 
 module Datalog : sig
-  type nil = Heterogenous_list.nil
+  (** Well-typed Datalog implementation. *)
 
-  module Constant = Heterogenous_list.Constant
+  (** Marker type for the end of heterogenous lists. *)
+  type nil = private Nil
 
   module Column : sig
+    (** Datalog tables are represented as a nesting of multiple maps; for
+        instance, a binary relation on integers is represented as a
+        [unit Int.Map.t Int.Map.t].
+
+        A [Column] represents a single argument of a relation, and contains
+        enough information to be combined with other columns into a n-ary
+        relation.
+
+        {b Note}: The [Column.id] and [Column.hlist] types encode some precise
+        type-level information that enables an easy-to-use syntax for the
+        [create_relation] function below. Understanding the type parameters for
+        [Column.id] and [Column.hlist] is {b not} necessary to use this module.
+    *)
+
+    (** A value of type [('t, 'k, 'v) id] represents a column with keys of type
+        ['k].
+
+        The ['t] and ['v] parameters are only relevant when applied to a column
+        that is part of a schema.
+    *)
     type ('t, 'k, 'v) id
 
     type (_, _, _) hlist =
@@ -49,97 +70,62 @@ module Datalog : sig
     end) : S with type t = int
   end
 
-  module Schema : sig
-    module type S = sig
-      type keys
+  type ('t, 'k, 'v) table
 
-      type value
+  val create_table :
+    name:string ->
+    default_value:'v ->
+    ('t, 'k, 'v) Column.hlist ->
+    ('t, 'k, 'v) table
 
-      type t
-
-      val columns : (t, keys, value) Column.hlist
-
-      val default_value : value
-
-      val empty : t
-
-      val is_empty : t -> bool
-
-      val singleton : keys Constant.hlist -> value -> t
-
-      val add_or_replace : keys Constant.hlist -> value -> t -> t
-
-      val remove : keys Constant.hlist -> t -> t
-
-      val union : (value -> value -> value option) -> t -> t -> t
-
-      val find_opt : keys Constant.hlist -> t -> value option
-    end
-
-    module Cons (C : Column.S) (S : S) :
-      S
-        with type keys = C.t -> S.keys
-         and type t = S.t C.Map.t
-         and type value = S.value
-
-    module type Relation = S with type value = unit
-
-    module Relation1 (C : Column.S) :
-      Relation with type keys = C.t -> nil and type t = unit C.Map.t
-
-    module Relation2 (C1 : Column.S) (C2 : Column.S) :
-      Relation
-        with type keys = C1.t -> Relation1(C2).keys
-         and type t = Relation1(C2).t C1.Map.t
-
-    module Relation3 (C1 : Column.S) (C2 : Column.S) (C3 : Column.S) :
-      Relation
-        with type keys = C1.t -> Relation2(C2)(C3).keys
-         and type t = Relation2(C2)(C3).t C1.Map.t
-
-    module Relation4
-        (C1 : Column.S)
-        (C2 : Column.S)
-        (C3 : Column.S)
-        (C4 : Column.S) :
-      Relation
-        with type keys = C1.t -> Relation3(C2)(C3)(C4).keys
-         and type t = Relation3(C2)(C3)(C4).t C1.Map.t
-  end
-
-  type ('t, 'k) relation
+  type ('t, 'k) relation = ('t, 'k, unit) table
 
   (** [create_relation ~name schema] creates a new relation with name [name] and
-      schema [schema].
+        schema [schema].
 
-      The schema is given as a heterogenous list of column types, and the relation
-      is represented in memory as a series of nested maps following this list. If
-      the schema [ty1; ty2; ty3] is provided, the relation will be represented as
-      a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
-      arguments provided to a relation thus have profound implication for the
-      performance of iterations on the relation, and needs to be chosen carefully.
+        The schema is given as a heterogenous list of column types, and the relation
+        is represented in memory as a series of nested maps following this list. If
+        the schema [ty1; ty2; ty3] is provided, the relation will be represented as
+        a map from [ty1] whose values are maps from [ty2] to [ty2]. The order of
+        arguments provided to a relation thus have profound implication for the
+        performance of iterations on the relation, and needs to be chosen carefully.
 
-      @raise Invalid_argument if [schema] is empty.
+        @raise Misc.Fatal_error if [schema] is empty.
 
-      {b Example}
+        {b Example}
 
-      The following code defines a binary edge relationship between nodes,
-      represented as a map from a node to its successors, and an unary predicate
-      to distinguish some sort of {e marked} nodes.
+        The following code defines a binary edge relationship between nodes,
+        represented as a map from a node to its successors, and an unary predicate
+        to distinguish some sort of {e marked} nodes.
 
-      {[
-      let marked_pred : node rel1 =
-        create_relation ~name:"marked" [node]
+        {[
+        let marked_pred : node rel1 =
+          create_relation ~name:"marked" [node]
 
-      let edge_rel : (node, node) rel2 =
-        create_relation ~name:"edge" [node; node]
-      ]}
-        *)
+        let edge_rel : (node, node) rel2 =
+          create_relation ~name:"edge" [node; node]
+        ]}
+          *)
   val create_relation :
     name:string -> ('t, 'k, unit) Column.hlist -> ('t, 'k) relation
 
+  module Constant : sig
+    (** The [Constant] module only provides a heterogenous list to represent
+        lists of values.
+
+        It is intended to be used with type-directed disambiguation. *)
+
+    type _ hlist =
+      | [] : nil hlist
+      | ( :: ) : 'a * 'b hlist -> ('a -> 'b) hlist
+  end
+
   module Term : sig
-    include Heterogenous_list.S
+    type 'a t
+
+    type _ hlist =
+      | [] : nil hlist
+      | ( :: ) : 'a t * 'b hlist -> ('a -> 'b) hlist
 
     val constant : 'a -> 'a t
   end
@@ -173,9 +159,9 @@ module Datalog : sig
 
   val empty : database
 
-  val get_table : ('t, 'k) relation -> database -> 't
+  val get_table : ('t, 'k, 'v) table -> database -> 't
 
-  val set_table : ('t, 'k) relation -> 't -> database -> database
+  val set_table : ('t, 'k, 'v) table -> 't -> database -> database
 
   (** [add_fact rel args db] records a fact into the database [db].
 
@@ -211,7 +197,9 @@ module Datalog : sig
         API.
     *)
 
-    include Heterogenous_list.S with type 'a t := string
+    type _ hlist =
+      | [] : nil hlist
+      | ( :: ) : string * 'b hlist -> ('a -> 'b) hlist
   end
 
   module Cursor : sig
@@ -454,34 +442,36 @@ module Datalog : sig
       *)
     val fixpoint : t list -> t
 
+    type stats
+
+    val create_stats : unit -> stats
+
+    val print_stats : Format.formatter -> stats -> unit
+
     (** [run schedule db] runs the schedule [schedule] on the database [db].
 
           It returns a new database that contains all the facts in [db], plus all
           the facts that were inferred by [schedule].
       *)
-    val run : t -> database -> database
+    val run : ?stats:stats -> t -> database -> database
   end
 
-  (** The type [('free, 'p, 'v) program] is the type of programs returning
-        values of type ['v] with free parameters ['free] and used parameters
-        ['p].
+  (** The type [('p, 'v) program] is the type of programs returning values
+      of type ['v] with parameters ['p].
 
-        Only programs with no free parameters (i.e. ['free] is
-        [Heterogenous_list.nil]) can be compiled, see [compile].
-
-        The output of programs is either queries or rules; the use of a shared
-        types allows writing combinators that work in both cases.
+      The output of programs is either queries or rules; the use of a shared
+      types allows writing combinators that work in both cases.
     *)
   type ('p, 'a) program
 
-  (** Compile a program with no free parameters and returns the resulting value.
+  (** Compile a program and returns the resulting value.
 
-        {b Note}: As a convenience, [compile] takes a list of variables and binds
-        them immediately with [foreach]. To compile an existing program with no
-        free variables, use [compile [] (fun [] -> program)].
+      {b Note}: As a convenience, [compile] takes a list of variables and binds
+      them immediately with [foreach]. To compile an existing program with no
+      free variables, use [compile [] (fun [] -> program)].
 
-        Repeated compilation of a program building mutable values (such as
-        cursors) create new values each time they are compiled.
+      Repeated compilation of a program building mutable values (such as
+      cursors) create new values each time they are compiled.
     *)
   val compile : 'v String.hlist -> ('v Term.hlist -> (nil, 'a) program) -> 'a
 
@@ -502,7 +492,65 @@ module Datalog : sig
   val yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.with_parameters) program
 
   (** [deduce rel args] adds the fact [rel args] to the database. *)
-  val deduce : [`Atom of atom] -> (Heterogenous_list.nil, rule) program
+  val deduce : [`Atom of atom] -> (nil, rule) program
 
-  val print_stats : Format.formatter -> unit -> unit
+  module Schema : sig
+    module type S = sig
+      type keys
+
+      type value
+
+      type t
+
+      val columns : (t, keys, value) Column.hlist
+
+      val default_value : value
+
+      val create : name:string -> (t, keys, value) table
+
+      val empty : t
+
+      val is_empty : t -> bool
+
+      val singleton : keys Constant.hlist -> value -> t
+
+      val add_or_replace : keys Constant.hlist -> value -> t -> t
+
+      val remove : keys Constant.hlist -> t -> t
+
+      val union : (value -> value -> value option) -> t -> t -> t
+
+      val find_opt : keys Constant.hlist -> t -> value option
+    end
+
+    module Cons (C : Column.S) (S : S) :
+      S
+        with type keys = C.t -> S.keys
+         and type t = S.t C.Map.t
+         and type value = S.value
+
+    module type Relation = S with type value = unit
+
+    module Relation1 (C : Column.S) :
+      Relation with type keys = C.t -> nil and type t = unit C.Map.t
+
+    module Relation2 (C1 : Column.S) (C2 : Column.S) :
+      Relation
+        with type keys = C1.t -> Relation1(C2).keys
+         and type t = Relation1(C2).t C1.Map.t
+
+    module Relation3 (C1 : Column.S) (C2 : Column.S) (C3 : Column.S) :
+      Relation
+        with type keys = C1.t -> Relation2(C2)(C3).keys
+         and type t = Relation2(C2)(C3).t C1.Map.t
+
+    module Relation4
+        (C1 : Column.S)
+        (C2 : Column.S)
+        (C3 : Column.S)
+        (C4 : Column.S) :
+      Relation
+        with type keys = C1.t -> Relation3(C2)(C3)(C4).keys
+         and type t = Relation3(C2)(C3)(C4).t C1.Map.t
+  end
 end

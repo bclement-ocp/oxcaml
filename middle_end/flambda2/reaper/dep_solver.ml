@@ -816,12 +816,13 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   Gc.full_major ();
   let t1' = Sys.time () in
   let datalog = Global_flow_graph.to_datalog graph_new in
-  let db = Datalog.Schedule.run datalog_schedule datalog in
+  let stats = Datalog.Schedule.create_stats () in
+  let db = Datalog.Schedule.run ~stats datalog_schedule datalog in
   let t2 = Sys.time () in
   Format.eprintf "EXISTING: %f, DATALOG: %f, SPEEDUP: %f@." (t1 -. t0)
     (t2 -. t1')
     ((t1 -. t0) /. (t2 -. t1'));
-  Format.eprintf "%a@." Datalog.print_stats ();
+  Format.eprintf "%a@." Datalog.Schedule.print_stats stats;
   let result2 = db_to_uses db in
   (* Format.eprintf "OLD:@.%a@.@.NEW:@.%a@.@." pp_result result pp_result
      result2; Format.eprintf "DB:@.%a@." Database.print_database db; *)

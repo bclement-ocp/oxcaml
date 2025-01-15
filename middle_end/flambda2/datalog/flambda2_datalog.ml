@@ -16,7 +16,7 @@
 open Heterogenous_list
 
 module Datalog = struct
-  type nonrec nil = nil
+  type nonrec nil = nil = Nil
 
   module Constant = Constant
 
@@ -125,12 +125,19 @@ module Datalog = struct
 
   include Datalog
 
-  module Schema = struct
-    type ('t, 'k, 'v) t =
-      { columns : ('t, 'k, 'v) Column.hlist;
-        default_value : 'v
-      }
+  type ('t, 'k, 'v) table = ('t, 'k, 'v) Table.Id.t
 
+  let create_table ~name ~default_value columns =
+    Table.Id.create ~name ~is_trie:(Column.is_trie columns)
+      ~print_keys:(Column.print_keys columns)
+      ~default_value
+
+  type ('t, 'k) relation = ('t, 'k, unit) table
+
+  let create_relation ~name columns =
+    create_table ~name ~default_value:() columns
+
+  module Schema = struct
     module type S0 = sig
       type keys
 
@@ -145,6 +152,8 @@ module Datalog = struct
 
     module type S = sig
       include S0
+
+      val create : name:string -> (t, keys, value) table
 
       val empty : t
 
@@ -190,6 +199,8 @@ module Datalog = struct
 
         let default_value = S.default_value
 
+        let create ~name = create_table ~name columns ~default_value
+
         let is_trie = Column.is_trie columns
 
         let empty = C.Map.empty
@@ -206,17 +217,6 @@ module Datalog = struct
     module Relation4 (C1 : C) (C2 : C) (C3 : C) (C4 : C) =
       Cons (C1) (Relation3 (C2) (C3) (C4))
   end
-
-  let create_trie ~name (schema : (_, _, _) Schema.t) =
-    Table.Id.create ~name
-      ~is_trie:(Column.is_trie schema.columns)
-      ~print_keys:(Column.print_keys schema.columns)
-      ~default_value:schema.default_value
-
-  let create_relation ~name columns =
-    create_trie ~name { columns; default_value = () }
-
-  type ('t, 'k) relation = ('t, 'k, unit) Table.Id.t
 
   let add_fact id args db =
     Table.Map.set id
@@ -287,6 +287,4 @@ module Datalog = struct
     let iter cursor database ~f =
       Cursor.With_parameters.naive_iter cursor [] database f
   end
-
-  let print_stats = Schedule.print_stats
 end

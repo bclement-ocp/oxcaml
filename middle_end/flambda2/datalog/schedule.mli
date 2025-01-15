@@ -13,6 +13,12 @@
 (*                                                                        *)
 (**************************************************************************)
 
+type stats
+
+val create_stats : unit -> stats
+
+val print_stats : Format.formatter -> stats -> unit
+
 type rule
 
 val create_rule : ('t, 'k, unit) Table.Id.t -> 'k Cursor.t -> rule
@@ -23,6 +29,4 @@ val saturate : rule list -> t
 
 val fixpoint : t list -> t
 
-val run : t -> Table.Map.t -> Table.Map.t
-
-val print_stats : Format.formatter -> unit -> unit
+val run : ?stats:stats -> t -> Table.Map.t -> Table.Map.t
