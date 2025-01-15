@@ -108,7 +108,7 @@ let add_new_level levels name =
   level
 
 module Join_iterator = Leapfrog.Join (Trie.Iterator)
-module Cursor = Leapfrog.Cursor (Join_iterator)
+module Cursor = Virtual_machine.Make (Join_iterator)
 
 type binders = { mutable rev_binders : binder list }
 
@@ -232,14 +232,14 @@ let evaluate op input =
     match Trie.Iterator.current it with
     | Some found when Trie.Iterator.equal_key it found value ->
       Trie.Iterator.accept it;
-      Leapfrog.Accept
-    | None | Some _ -> Leapfrog.Skip)
+      Virtual_machine.Accept
+    | None | Some _ -> Virtual_machine.Skip)
   | Unless (id, args) ->
     if Option.is_some
          (Trie.find_opt (Table.Id.is_trie id) (Option_ref.get args)
             (Table.Map.get id input))
-    then Leapfrog.Skip
-    else Leapfrog.Accept
+    then Virtual_machine.Skip
+    else Virtual_machine.Accept
 
 let naive_fold cursor db f acc =
   bind_table_list cursor.cursor_binders db;

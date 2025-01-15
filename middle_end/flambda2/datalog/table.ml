@@ -97,7 +97,7 @@ module Id = struct
     handler, iterator, out
 end
 
-module Cursor = Leapfrog.Cursor (Trie.Iterator)
+module Cursor = Virtual_machine.Make (Trie.Iterator)
 
 let iter id f table =
   let input_ref, it, out_ref = Id.create_iterator id in
