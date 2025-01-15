@@ -102,7 +102,7 @@ let run_rule_incremental ~previous ~diff ~current incremental_db
   in
   let time1 = Sys.time () in
   let seminaive_time = time1 -. time0 in
-  add_timing rule seminaive_time;
+  if false then add_timing rule seminaive_time;
   let set_if_changed db ~before ~after =
     if after == before then db else Table.Map.set table_id after db
   in

@@ -243,17 +243,20 @@ let evaluate op input =
 
 let naive_fold cursor db f acc =
   bind_table_list cursor.cursor_binders db;
-  Cursor.fold f (Cursor.create ~evaluate db cursor.instruction) acc
+  Cursor.fold f
+    (Cursor.create db (Cursor.compile ~evaluate cursor.instruction))
+    acc
 
 let naive_iter cursor db f =
   bind_table_list cursor.cursor_binders db;
-  Cursor.iter f (Cursor.create ~evaluate db cursor.instruction)
+  Cursor.iter f (Cursor.create db (Cursor.compile ~evaluate cursor.instruction))
 
 (* Seminaive evaluation iterates over all the {b new} tuples in the [diff]
    database that are not in the [previous] database.
 
    [current] must be equal to [concat ~earlier:previous ~later:diff]. *)
 let[@inline] seminaive_fold cursor ~previous ~diff ~current f acc =
+  let compiled = Cursor.compile ~evaluate cursor.instruction in
   bind_table_list cursor.cursor_binders current;
   let rec loop binders acc =
     match binders with
@@ -261,8 +264,7 @@ let[@inline] seminaive_fold cursor ~previous ~diff ~current f acc =
     | binder :: binders ->
       let acc =
         if bind_table binder diff
-        then
-          Cursor.fold f (Cursor.create ~evaluate current cursor.instruction) acc
+        then Cursor.fold f (Cursor.create current compiled) acc
         else acc
       in
       if bind_table binder previous then loop binders acc else acc

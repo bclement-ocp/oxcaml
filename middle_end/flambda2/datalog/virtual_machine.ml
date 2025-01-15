@@ -106,19 +106,13 @@ module Make (Iterator : Leapfrog.Iterator) = struct
      fun input stack ->
       match stack with
       | Stack_nil -> exhausted input stack
-      | Stack_cons (_, iterator, level, stack) ->
+      | Stack_cons (_, iterator, level, stack) -> (
         Iterator.advance iterator;
-        dispatch iterator level input stack
-
-    and dispatch :
-        type a x y s.
-        a Iterator.t -> (_, x, y, a -> s) compiled -> (_, x, y, s) compiled =
-     fun iterator k input stack ->
-      match Iterator.current iterator with
-      | Some current_key ->
-        Iterator.accept iterator;
-        k input (Stack_cons (current_key, iterator, k, stack))
-      | None -> advance input stack
+        match Iterator.current iterator with
+        | Some current_key ->
+          Iterator.accept iterator;
+          level input (Stack_cons (current_key, iterator, level, stack))
+        | None -> advance input stack)
 
     let pop :
         type i a x y s. (i, x, y, s) compiled -> (i, x, y, a -> s) compiled =
@@ -129,7 +123,11 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         a Iterator.t -> (_, x, y, a -> s) compiled -> (_, x, y, s) compiled =
      fun iterator k input stack ->
       Iterator.init iterator;
-      dispatch iterator k input stack
+      match Iterator.current iterator with
+      | Some current_key ->
+        Iterator.accept iterator;
+        k input (Stack_cons (current_key, iterator, k, stack))
+      | None -> advance input stack
 
     let action op k input stack =
       match (A.evaluate [@inlined hint]) op input with
@@ -154,28 +152,23 @@ module Make (Iterator : Leapfrog.Iterator) = struct
       | Action (a, k) -> action a (compile k)
       | Yield (rs, k) -> yield rs (compile k)
       | Set_output (r, k) -> set_output r (compile k)
-
-    let create input instruction =
-      let instruction = compile instruction in
-      ref (Suspension { state = input; stack = Stack_nil; instruction })
-
-    let step : type y. (_, _, y) state -> y option =
-     fun state ->
-      let (Suspension { stack; state = input; instruction }) = !state in
-      let suspension, outcome = instruction input stack in
-      state := suspension;
-      outcome
   end
   [@@inline]
 
-  type 'y t =
-    | Cursor :
-        { state : ('i, 'a, 'y) state;
-          step : ('i, 'a, 'y) state -> 'y option
-        }
-        -> 'y t
+  let step : type y. (_, _, y) state -> y option =
+   fun state ->
+    let (Suspension { stack; state = input; instruction }) = !state in
+    let suspension, outcome = instruction input stack in
+    state := suspension;
+    outcome
 
-  let create (type a i) ~(evaluate : a -> i -> outcome) input instruction =
+  type 'y t = State : ('i, 'a, 'y) state -> 'y t [@@unboxed]
+
+  let create input instruction =
+    State (ref (Suspension { state = input; stack = Stack_nil; instruction }))
+
+  let compile (type a i) ~(evaluate : a -> i -> outcome) instruction :
+      (_, _, _, _) compiled =
     let module M = Make (struct
       type action = a
 
@@ -183,22 +176,21 @@ module Make (Iterator : Leapfrog.Iterator) = struct
 
       let evaluate = evaluate
     end) in
-    Cursor { state = M.create input instruction; step = M.step }
+    M.compile instruction
 
   type void = |
 
   let iterator iterators =
     let evaluate : void -> unit -> outcome = function _ -> . in
-    create ~evaluate () (iterate iterators)
+    create () (compile ~evaluate (iterate iterators))
 
-  let[@inline] fold f (Cursor { state; step }) init =
+  let[@inline] fold f (State state) init =
     let rec loop state acc =
       match step state with
       | Some output -> loop state (f output acc)
       | None -> acc
     in
-    let acc = loop state init in
-    acc
+    loop state init
 
   let[@inline] iter f state = fold (fun keys () -> f keys) state ()
 end

@@ -43,11 +43,14 @@ module Make (Iterator : Leapfrog.Iterator) : sig
 
   val iterator : 's Iterator.hlist -> 's Heterogenous_list.Constant.hlist t
 
-  val create :
+  type ('i, 'x, 'y, 's) compiled
+
+  val compile :
     evaluate:('a -> 'i -> outcome) ->
-    'i ->
-    ('a, 'y, Heterogenous_list.nil) instruction ->
-    'y t
+    ('a, 'y, 's) instruction ->
+    ('i, 'a, 'y, 's) compiled
+
+  val create : 'i -> ('i, 'a, 'y, Heterogenous_list.nil) compiled -> 'y t
 
   val fold : ('y -> 'a -> 'a) -> 'y t -> 'a -> 'a
 
