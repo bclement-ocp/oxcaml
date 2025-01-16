@@ -565,10 +565,20 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params:_ ~cut_after
       ts_and_use_ids
   in
   (* let _ = *)
-  Join_env.Superjoin.dodoblahdo
-    ~meet_type:(Meet_and_join.meet_type ())
-    ~join_ty:(Meet_and_join_new.join ?bound_name:None)
-    central_env joined_envs
+  try
+    Join_env.Superjoin.dodoblahdo
+      ~meet_type:(Meet_and_join.meet_type ())
+      ~join_ty:(Meet_and_join_new.join ?bound_name:None)
+      central_env joined_envs
+  with Stack_overflow ->
+    let bt = Printexc.get_raw_backtrace () in
+    Format.eprintf "@[<v>join in:@ @[<v>%a@]@." TE.print central_env;
+    Format.eprintf "@[<v>%a@]@."
+      (Format.pp_print_list
+         ~pp_sep:(fun ppf () -> Format.fprintf ppf "@ --------------------@ ")
+         (fun ppf (_, tel) -> Format.fprintf ppf "@[<v>%a@]" TEL.print tel))
+      joined_envs;
+    Printexc.raise_with_backtrace Stack_overflow bt
 (* in let params = Bound_parameters.to_list params in let level = n_way_join
    ~env_at_fork:definition_typing_env after_cuts ~params
    ~extra_lifted_consts_in_use_envs ~extra_allowed_names in

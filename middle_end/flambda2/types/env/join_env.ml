@@ -361,7 +361,7 @@ type joined_env =
         (** Names whose type has changed compared to the central env. *)
   }
 
-let join_joined_env ~meet_type ~central_env joined_envs =
+let join_joined_env ~trie ~meet_type ~central_env joined_envs =
   match joined_envs with
   | [] -> assert false
   | first_joined_env :: other_joined_envs ->
@@ -446,7 +446,7 @@ let join_joined_env ~meet_type ~central_env joined_envs =
                 else Trie.add trie (List.rev shared_names) name)
           in
           typing_env, demoted_to_canonical, trie)
-        (central_env, Demoted_to_canonical.empty, Trie.empty)
+        (central_env, Demoted_to_canonical.empty, trie)
         classes
     in
     let joined_names =
@@ -620,7 +620,7 @@ module Superjoin = struct
 
   module T = struct
     type binary_join_adapter =
-      | Bottom_env of joined_env
+      | Join_with_bottom of joined_env
       | Binary_join of
           { left_env : joined_env;
             right_env : joined_env;
@@ -632,12 +632,12 @@ module Superjoin = struct
 
     let rec print_binary_join_adapter ppf bja =
       match bja with
-      | Bottom_env _ -> Format.fprintf ppf "⊥"
+      | Join_with_bottom _ -> Format.fprintf ppf "⊥"
       | Binary_join { left_env; right_env = _; trie = _; recursive_join } ->
         Format.fprintf ppf "(join@ @[%a@]@ @[%a@])" print_joined_env left_env
           print_binary_join_adapter recursive_join
 
-    let make_binary_join_adapter ~meet_type central_env joined_envs =
+    let make_binary_join_adapter ~trie ~meet_type central_env joined_envs =
       List.fold_right
         (fun left_env acc ->
           match acc with
@@ -646,11 +646,11 @@ module Superjoin = struct
             Or_bottom.Ok
               ( left_env (* join_joined_env ~meet_type ~central_env [left_env] *),
                 Name.Map.empty,
-                Bottom_env left_env )
+                Join_with_bottom left_env )
           | Or_bottom.Ok (right_env, right_joined_names, adapter) ->
             (* central_env + shared eqn *)
             let shared_env, trie, _joined_names =
-              join_joined_env ~meet_type ~central_env [left_env; right_env]
+              join_joined_env ~trie ~meet_type ~central_env [left_env; right_env]
             in
             let new_joined_names =
               Trie.fold
@@ -679,7 +679,7 @@ module Superjoin = struct
 
     let rec loop ~join_ty central_env adapter types =
       match adapter, types with
-      | Bottom_env left_env, [ty] ->
+      | Join_with_bottom left_env, [ty] ->
         let names = TG.free_names ty in
         let central_env, to_join =
           Name_occurrences.fold_names names ~init:(central_env, Name.Map.empty)
@@ -700,8 +700,8 @@ module Superjoin = struct
               in
               central_env, to_join)
         in
-        ty, central_env, Bottom_env left_env, Name.Map.empty, to_join
-      | Bottom_env _, _ -> assert false
+        ty, central_env, Join_with_bottom left_env, Name.Map.empty, to_join
+      | Join_with_bottom _, ([] | _ :: _ :: _) -> assert false
       | ( Binary_join
             { left_env = left_join_env;
               right_env = right_join_env;
@@ -781,7 +781,8 @@ module Superjoin = struct
     type nary =
       { central_env : TE.t;
         joined_envs : binary_join_adapter;
-        join_at_next_depth : (K.t * joined_simple) Name.Map.t
+        join_at_next_depth : (K.t * joined_simple) Name.Map.t;
+        depth : int
       }
 
     let do_one ~join_ty nary types =
@@ -805,11 +806,16 @@ module Superjoin = struct
       Name.Map.iter
         (fun name _ -> assert (mem_name central_env name))
         join_at_next_depth;
-      ty, { central_env; joined_envs = bja; join_at_next_depth }
+      ( ty,
+        { central_env;
+          joined_envs = bja;
+          join_at_next_depth;
+          depth = nary.depth
+        } )
 
     let rec resolve_simples joined kind simples =
       match joined with
-      | Bottom_env left_env -> (
+      | Join_with_bottom left_env -> (
         match simples with
         | Same_simple simple ->
           let ty =
@@ -894,7 +900,8 @@ module Superjoin = struct
               | exception Not_found ->
                 if Flambda_features.debug_flambda2 ()
                 then
-                  Format.eprintf "join next: %a@." Name.Set.print
+                  Format.eprintf "join next (after %d): %a@." nary.depth
+                    Name.Set.print
                     (Name.Map.keys nary.join_at_next_depth);
                 Name.Map.iter
                   (fun name _ -> assert (mem_name nary.central_env name))
@@ -907,7 +914,10 @@ module Superjoin = struct
                 in
                 { nary with central_env })
             join_at_this_depth
-            { nary with join_at_next_depth = Name.Map.empty }
+            { nary with
+              join_at_next_depth = Name.Map.empty;
+              depth = nary.depth + 1
+            }
         in
         fixpoint ~meet_type ~join_ty already_joined nary
   end
@@ -989,7 +999,8 @@ module Superjoin = struct
       },
       changed_in_extension )
 
-  let joinit0 ~meet_type ~join_ty central_env extended_envs =
+  let joinit0 ?(trie = Trie.empty) ~meet_type ~join_ty central_env extended_envs
+      =
     let join_ty env left right =
       let left = Expand_head.expand_head (Binary.left_join_env env) left in
       let right = Expand_head.expand_head (Binary.right_join_env env) right in
@@ -1023,12 +1034,12 @@ module Superjoin = struct
     let initial_env = central_env in
     let central_env = TE.increment_scope central_env in
     match
-      T.make_binary_join_adapter ~meet_type central_env joined_extensions
+      T.make_binary_join_adapter ~trie ~meet_type central_env joined_extensions
     with
     | Bottom -> assert false
     | Ok (shared_env, _joined, bja) ->
       let shared_env, _trie, _join =
-        join_joined_env ~meet_type ~central_env [shared_env]
+        join_joined_env ~trie:Trie.empty ~meet_type ~central_env [shared_env]
       in
       assert (
         Scope.equal
@@ -1058,7 +1069,8 @@ module Superjoin = struct
                 Name.Map.add name
                   (kind, Same_simple (Simple.name name))
                   join_at_next_depth)
-              to_consider Name.Map.empty
+              to_consider Name.Map.empty;
+          depth = 0
         }
       in
       let nary = T.fixpoint ~meet_type ~join_ty Name.Set.empty nary in
@@ -1071,6 +1083,34 @@ module Superjoin = struct
         TE.add_env_extension_from_level initial_env level ~meet_type
       in
       final_env, level
+
+  let depth = ref 0
+
+  let joinit0 ?trie ~meet_type ~join_ty central_env extended_envs =
+    incr depth;
+    try
+      let result =
+        joinit0 ?trie ~meet_type ~join_ty central_env extended_envs
+      in
+      decr depth;
+      result
+    with Stack_overflow ->
+      decr depth;
+      Format.eprintf "%d@." !depth;
+      if !depth = 0
+      then (
+        let bt = Printexc.get_raw_backtrace () in
+        Format.eprintf "@[<v>join in:@ @[<v>%a@]@." TE.print central_env;
+        Format.eprintf "@[<v>%a@]@."
+          (Format.pp_print_list
+             ~pp_sep:(fun ppf () ->
+               Format.fprintf ppf "@ --------------------@ ")
+             (fun ppf (_, _, ext) ->
+               let ext = TG.Env_extension.create ~equations:ext in
+               Format.fprintf ppf "@[<v>%a@]" TEE.print ext))
+          extended_envs;
+        Printexc.raise_with_backtrace Stack_overflow bt)
+      else raise Stack_overflow
 
   let joinit ~meet_type ~join_ty central_env envs_with_equations =
     let parent_env =
@@ -1099,6 +1139,8 @@ module Superjoin = struct
 end
 
 let join_binary_env_extensions ~meet_type ~join_ty join_env left_ext right_ext =
+  (* TODO: We need to make sure we do not join again things we were already
+     joining. *)
   let central_env = join_env.Binary.central_env in
   let left_parent_env = join_env.Binary.left_join_env in
   let right_parent_env = join_env.Binary.right_join_env in
@@ -1109,8 +1151,18 @@ let join_binary_env_extensions ~meet_type ~join_ty join_env left_ext right_ext =
     TE.add_env_extension ~meet_type right_parent_env.typing_env right_ext
   in
   let _, level =
-    Superjoin.joinit0 ~meet_type ~join_ty central_env
+    Superjoin.joinit0 ~trie:join_env.Binary.trie ~meet_type ~join_ty central_env
       [ left_parent_env, left_env, left_ext.TG.equations;
         right_parent_env, right_env, right_ext.TG.equations ]
   in
-  TEL.as_extension level
+  let ext = TEL.as_extension level in
+  let central_env =
+    TEL.fold_on_defined_vars
+      (fun var kind env ->
+        TE.add_definition env
+          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+          kind)
+      level central_env
+  in
+  let ext = TG.Env_extension.create ~equations:ext.TG.equations in
+  { join_env with Binary.central_env }, ext

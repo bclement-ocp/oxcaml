@@ -615,8 +615,11 @@ let find_with_binding_time_and_mode' t name kind =
     if Compilation_unit.equal comp_unit (Compilation_unit.get_current_exn ())
     then
       let[@inline always] var var =
-        Misc.fatal_errorf "Variable %a not bound in typing environment:@ %a"
-          Variable.print var print t
+        let str =
+          Format.asprintf "Variable %a not bound in typing environment:@ %a"
+            Variable.print var print t
+        in
+        Misc.fatal_error str
       in
       let[@inline always] symbol sym =
         if Symbol.Set.mem sym t.defined_symbols
@@ -1249,7 +1252,7 @@ let cut t ~cut_after =
     loop (One_level.level t.current_level) t.prev_levels
 
 let cut_as_extension t ~cut_after =
-  Typing_env_level.as_extension (cut t ~cut_after)
+  Typing_env_level.as_extension_without_bindings (cut t ~cut_after)
 
 let type_simple_in_term_exn t ?min_name_mode simple =
   (* If [simple] is a variable then it should not come from a missing .cmx file,
