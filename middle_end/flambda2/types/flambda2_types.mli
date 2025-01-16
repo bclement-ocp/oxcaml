@@ -75,8 +75,6 @@ module Typing_env_extension : sig
 
   val add_or_replace_equation : t -> Name.t -> flambda_type -> t
 
-  val meet : typing_env -> t -> t -> t Or_bottom.t
-
   module With_extra_variables : sig
     type t
 
