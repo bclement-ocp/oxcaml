@@ -1144,12 +1144,14 @@ let join_binary_env_extensions ~meet_type ~join_ty join_env left_ext right_ext =
   let central_env = join_env.Binary.central_env in
   let left_parent_env = join_env.Binary.left_join_env in
   let right_parent_env = join_env.Binary.right_join_env in
-  let left_env =
-    TE.add_env_extension ~meet_type left_parent_env.typing_env left_ext
-  in
-  let right_env =
-    TE.add_env_extension ~meet_type right_parent_env.typing_env right_ext
-  in
+  let left_scope = TE.current_scope left_parent_env.typing_env in
+  let left_env = TE.increment_scope left_parent_env.typing_env in
+  let left_env = TE.add_env_extension ~meet_type left_env left_ext in
+  let left_ext = TE.cut_as_extension left_env ~cut_after:left_scope in
+  let right_scope = TE.current_scope right_parent_env.typing_env in
+  let right_env = TE.increment_scope right_parent_env.typing_env in
+  let right_env = TE.add_env_extension ~meet_type right_env right_ext in
+  let right_ext = TE.cut_as_extension right_env ~cut_after:right_scope in
   let _, level =
     Superjoin.joinit0 ~trie:join_env.Binary.trie ~meet_type ~join_ty central_env
       [ left_parent_env, left_env, left_ext.TG.equations;

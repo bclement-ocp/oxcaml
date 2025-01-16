@@ -1074,6 +1074,11 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
       match meet_type with
       | New meet_type_new -> (
         let existing_ty = find t eqn_name (Some (TG.kind ty)) in
+        Format.eprintf "for: %a@." Name.print eqn_name;
+        Format.eprintf "aliases: %a@." Aliases.Alias_set.print
+          (Aliases.get_aliases aliases (Simple.name eqn_name));
+        Format.eprintf "existing: %a@." TG.print existing_ty;
+        Format.eprintf "new: %a@." TG.print ty;
         match meet_type_new t ty existing_ty with
         | Bottom ->
           if raise_on_bottom

@@ -23,6 +23,8 @@ module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module Vec128 = Vector_types.Vec128.Bit_pattern
 
+let depth = ref 0
+
 type 'a meet_return_value = 'a TE.meet_return_value =
   | Left_input
   | Right_input
@@ -318,6 +320,7 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
       ( Or_bottom.bind env_a ~f:(fun env ->
             TE.add_env_extension_strict env when_a ~meet_type:(New meet_type)),
         Or_bottom.bind env_b ~f:(fun env ->
+            Format.eprintf "add: %a@." TEE.print when_b;
             TE.add_env_extension_strict env when_b ~meet_type:(New meet_type)) )
   in
   let a_result : _ meet_result =
@@ -408,6 +411,9 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
         ~join_ty env
         [env_a, when_a; env_b, when_b]
     in
+    Format.eprintf "when a: %a@." TEE.print when_a;
+    Format.eprintf "when b: %a@." TEE.print when_b;
+    Format.eprintf "result: %a@." TEE.print _result_extension;
     let result_level = TE.cut result_env ~cut_after:join_scope in
     let initial_env =
       TEL.fold_on_defined_vars
@@ -417,10 +423,11 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
             kind)
         result_level initial_env
     in
-    let result_extension = (TEL.as_extension when_a_level).TG.equations in
+    let result_extension = (TEL.as_extension result_level).TG.equations in
     let result_extension =
       TG.Env_extension.create ~equations:result_extension
     in
+    Format.eprintf "TRUE result: %a@." TEE.print result_extension;
     let result_env =
       (* Not strict, as we don't expect to be able to get bottom equations from
          joining non-bottom ones *)
@@ -1579,12 +1586,22 @@ and meet_function_type (env : TE.t)
       ~right_a:code_id2 ~meet_b:meet ~left_b:rec_info1 ~right_b:rec_info2
 
 and meet_type env t1 t2 : _ Or_bottom.t =
-  if TE.is_bottom env
-  then Bottom
-  else
-    match meet env t1 t2 with
-    | Ok (res, env) -> Ok (res, env)
-    | Bottom _ -> Bottom
+  incr depth;
+  if !depth >= 100
+  then (
+    let bt = Printexc.get_callstack 100_000 in
+    Format.eprintf "@[<v>trace:@ %s@]@." (Printexc.raw_backtrace_to_string bt);
+    assert false);
+  let out : _ Or_bottom.t =
+    if TE.is_bottom env
+    then Bottom
+    else
+      match meet env t1 t2 with
+      | Ok (res, env) -> Ok (res, env)
+      | Bottom _ -> Bottom
+  in
+  decr depth;
+  out
 
 and mark_for_join env t1 t2 : TG.t join_result =
   if not (K.equal (TG.kind t1) (TG.kind t2))
@@ -2473,10 +2490,35 @@ let meet_env_extension env ext1 ext2 : _ Or_bottom.t =
         in
         Ok env_extension)
 
+let wrap f =
+  try f ()
+  with _ ->
+    let () = assert false in
+    let bt = Printexc.get_callstack 5000 in
+    Format.eprintf "%s@." (Printexc.raw_backtrace_to_string bt);
+    assert false
+
 let meet env t1 t2 =
+  if true
+  then
+    Format.eprintf "@[<v>meet:@ @[<v>%a@]@ and@ @[<v>%a@]@]@." TG.print t1
+      TG.print t2;
   try meet env t1 t2
-  with Stack_overflow ->
+  with _ ->
+    let () = assert false in
+    let bt = Printexc.get_callstack 5000 in
+    Format.eprintf "%s@." (Printexc.raw_backtrace_to_string bt);
+    let () = assert false in
     let bt = Printexc.get_raw_backtrace () in
     Format.eprintf "@[<v>meet:@ @[<v>%a@]@ and@ @[<v>%a@]@]@." TG.print t1
       TG.print t2;
     Printexc.raise_with_backtrace Stack_overflow bt
+
+let meet_type env t1 t2 = wrap (fun () -> meet_type env t1 t2)
+
+let join ?bound_name env t1 t2 = wrap (fun () -> join ?bound_name env t1 t2)
+
+let meet_shape env t ~shape ~result_var ~result_kind =
+  wrap (fun () -> meet_shape env t ~shape ~result_var ~result_kind)
+
+let meet_env_extension env t1 t2 = wrap (fun () -> meet_env_extension env t1 t2)
