@@ -23,6 +23,8 @@ module TEEV = Typing_env_extension.With_extra_variables
 module Expanded_type : sig
   type t
 
+  val equal : equal_type:(TG.t -> TG.t -> bool) -> t -> t -> bool
+
   val of_non_alias_type : ?coercion:Coercion.t -> TG.t -> t
 
   val create_value : Type_grammar.head_of_kind_value -> t
@@ -110,6 +112,239 @@ end = struct
     { kind : K.t;
       descr : descr Or_unknown_or_bottom.t
     }
+
+  let equal_row_like_index_domain ~equal_lattice
+      (t1 : _ TG.row_like_index_domain) (t2 : _ TG.row_like_index_domain) =
+    match t1, t2 with
+    | Known t1, Known t2 -> equal_lattice t1 t2
+    | Known _, At_least _ | At_least _, Known _ -> false
+    | At_least t1, At_least t2 -> equal_lattice t1 t2
+
+  let equal_row_like_index ~equal_lattice ~equal_shape
+      (t1 : (_, _) TG.row_like_index) (t2 : (_, _) TG.row_like_index) =
+    equal_row_like_index_domain ~equal_lattice t1.domain t2.domain
+    && equal_shape t1.shape t2.shape
+
+  let equal_env_extension ~equal_type (t1 : TG.env_extension)
+      (t2 : TG.env_extension) =
+    true
+    || Name.Set.equal (Name.Map.keys t1.equations) (Name.Map.keys t2.equations)
+       && Name.Map.for_all
+            (fun name ty1 -> equal_type ty1 (Name.Map.find name t2.equations))
+            t1.equations
+
+  let equal_row_like_case ~equal_type ~equal_maps_to ~equal_lattice ~equal_shape
+      (t1 : (_, _, _) TG.row_like_case) (t2 : (_, _, _) TG.row_like_case) =
+    equal_maps_to t1.maps_to t2.maps_to
+    && equal_row_like_index ~equal_lattice ~equal_shape t1.index t2.index
+    && equal_env_extension ~equal_type t1.env_extension t2.env_extension
+
+  let equal_array eq a1 a2 =
+    Array.length a1 = Array.length a2 && Array.for_all2 eq a1 a2
+
+  let equal_row_like_block_case ~equal_type (t1 : TG.row_like_block_case)
+      (t2 : TG.row_like_block_case) =
+    equal_row_like_case ~equal_type ~equal_lattice:TG.Block_size.equal
+      ~equal_shape:Flambda_kind.Block_shape.equal
+      ~equal_maps_to:(equal_array equal_type) t1 t2
+
+  let equal_row_like_for_blocks ~equal_type (t1 : TG.row_like_for_blocks)
+      (t2 : TG.row_like_for_blocks) =
+    Tag.Map.equal
+      (Or_unknown.equal (equal_row_like_block_case ~equal_type))
+      t1.known_tags t2.known_tags
+    && (match t1.other_tags, t2.other_tags with
+       | Bottom, Bottom -> true
+       | Bottom, Ok _ | Ok _, Bottom -> false
+       | Ok t1, Ok t2 -> equal_row_like_block_case ~equal_type t1 t2)
+    && Alloc_mode.For_types.equal t1.alloc_mode t2.alloc_mode
+
+  let equal_function_slot_indexed_product ~equal_type
+      (t1 : TG.function_slot_indexed_product)
+      (t2 : TG.function_slot_indexed_product) =
+    Function_slot.Map.equal equal_type t1.function_slot_components_by_index
+      t2.function_slot_components_by_index
+
+  let equal_value_slot_indexed_product ~equal_type
+      (t1 : TG.value_slot_indexed_product) (t2 : TG.value_slot_indexed_product)
+      =
+    Value_slot.Map.equal equal_type t1.value_slot_components_by_index
+      t2.value_slot_components_by_index
+
+  let equal_function_type ~equal_type (t1 : TG.function_type)
+      (t2 : TG.function_type) =
+    Code_id.equal t1.code_id t2.code_id && equal_type t1.rec_info t2.rec_info
+
+  let equal_closures_entry ~equal_type (t1 : TG.closures_entry)
+      (t2 : TG.closures_entry) =
+    Function_slot.Map.equal
+      (Or_unknown_or_bottom.equal (equal_function_type ~equal_type))
+      t1.function_types t2.function_types
+    && equal_function_slot_indexed_product ~equal_type t1.closure_types
+         t2.closure_types
+    && equal_value_slot_indexed_product ~equal_type t1.value_slot_types
+         t2.value_slot_types
+
+  let equal_row_like_for_closures ~equal_type (t1 : TG.row_like_for_closures)
+      (t2 : TG.row_like_for_closures) =
+    let equal_row_like_case =
+      equal_row_like_case ~equal_type
+        ~equal_lattice:Set_of_closures_contents.equal
+        ~equal_shape:(fun () () -> true)
+        ~equal_maps_to:(equal_closures_entry ~equal_type)
+    in
+    Function_slot.Map.equal equal_row_like_case t1.known_closures
+      t2.known_closures
+    &&
+    match t1.other_closures, t2.other_closures with
+    | Bottom, Bottom -> true
+    | Bottom, Ok _ | Ok _, Bottom -> false
+    | Ok case1, Ok case2 -> equal_row_like_case case1 case2
+
+  let equal_variant_extensions ~equal_type (t1 : TG.variant_extensions)
+      (t2 : TG.variant_extensions) =
+    match t1, t2 with
+    | No_extensions, No_extensions -> true
+    | No_extensions, Ext _ | Ext _, No_extensions -> false
+    | Ext e1, Ext e2 ->
+      equal_env_extension ~equal_type e1.when_immediate e2.when_immediate
+      && equal_env_extension ~equal_type e1.when_block e2.when_block
+
+  let equal_array_contents ~equal_type (t1 : TG.array_contents)
+      (t2 : TG.array_contents) =
+    match t1, t2 with
+    | Mutable, Mutable -> true
+    | Mutable, Immutable _ | Immutable _, Mutable -> false
+    | Immutable { fields = f1 }, Immutable { fields = f2 } ->
+      equal_array equal_type f1 f2
+
+  let equal_head_of_kind_value_non_null ~equal_type
+      (t1 : TG.head_of_kind_value_non_null)
+      (t2 : TG.head_of_kind_value_non_null) =
+    match[@warning "-fragile-match"] t1, t2 with
+    | Variant t1, Variant t2 ->
+      Or_unknown.equal equal_type t1.immediates t2.immediates
+      && Or_unknown.equal
+           (equal_row_like_for_blocks ~equal_type)
+           t1.blocks t2.blocks
+      && equal_variant_extensions ~equal_type t1.extensions t2.extensions
+      && Bool.equal t1.is_unique t2.is_unique
+    | Mutable_block t1, Mutable_block t2 ->
+      Alloc_mode.For_types.equal t1.alloc_mode t2.alloc_mode
+    | Boxed_float32 (t1, a1), Boxed_float32 (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Boxed_float (t1, a1), Boxed_float (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Boxed_int32 (t1, a1), Boxed_int32 (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Boxed_int64 (t1, a1), Boxed_int64 (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Boxed_nativeint (t1, a1), Boxed_nativeint (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Boxed_vec128 (t1, a1), Boxed_vec128 (t2, a2) ->
+      equal_type t1 t2 && Alloc_mode.For_types.equal a1 a2
+    | Closures c1, Closures c2 ->
+      equal_row_like_for_closures ~equal_type c1.by_function_slot
+        c2.by_function_slot
+      && Alloc_mode.For_types.equal c1.alloc_mode c2.alloc_mode
+    | String t1, String t2 -> String_info.Set.equal t1 t2
+    | Array t1, Array t2 ->
+      Or_unknown_or_bottom.equal Flambda_kind.With_subkind.equal t1.element_kind
+        t2.element_kind
+      && equal_type t1.length t2.length
+      && Or_unknown.equal
+           (equal_array_contents ~equal_type)
+           t1.contents t2.contents
+      && Alloc_mode.For_types.equal t1.alloc_mode t2.alloc_mode
+    | _, _ -> false
+
+  let equal_head_of_kind_value ~equal_type (t1 : TG.head_of_kind_value)
+      (t2 : TG.head_of_kind_value) =
+    match t1.is_null, t2.is_null with
+    | Not_null, Maybe_null | Maybe_null, Not_null -> false
+    | Not_null, Not_null | Maybe_null, Maybe_null ->
+      Or_unknown_or_bottom.equal
+        (equal_head_of_kind_value_non_null ~equal_type)
+        t1.non_null t2.non_null
+
+  let equal_head_of_kind_naked_immediate ~equal_type
+      (t1 : TG.head_of_kind_naked_immediate)
+      (t2 : TG.head_of_kind_naked_immediate) =
+    match[@warning "-fragile-match"] t1, t2 with
+    | Naked_immediates is1, Naked_immediates is2 ->
+      Targetint_31_63.Set.equal is1 is2
+    | Is_int t1, Is_int t2 -> equal_type t1 t2
+    | Get_tag t1, Get_tag t2 -> equal_type t1 t2
+    | Is_null t1, Is_null t2 -> equal_type t1 t2
+    | _, _ -> false
+
+  let equal_head_of_kind_naked_float32 (t1 : TG.head_of_kind_naked_float32)
+      (t2 : TG.head_of_kind_naked_float32) =
+    Numeric_types.Float32_by_bit_pattern.Set.equal
+      (t1 :> Numeric_types.Float32_by_bit_pattern.Set.t)
+      (t2 :> Numeric_types.Float32_by_bit_pattern.Set.t)
+
+  let equal_head_of_kind_naked_float (t1 : TG.head_of_kind_naked_float)
+      (t2 : TG.head_of_kind_naked_float) =
+    Numeric_types.Float_by_bit_pattern.Set.equal
+      (t1 :> Numeric_types.Float_by_bit_pattern.Set.t)
+      (t2 :> Numeric_types.Float_by_bit_pattern.Set.t)
+
+  let equal_head_of_kind_naked_int32 (t1 : TG.head_of_kind_naked_int32)
+      (t2 : TG.head_of_kind_naked_int32) =
+    Numeric_types.Int32.Set.equal
+      (t1 :> Numeric_types.Int32.Set.t)
+      (t2 :> Numeric_types.Int32.Set.t)
+
+  let equal_head_of_kind_naked_int64 (t1 : TG.head_of_kind_naked_int64)
+      (t2 : TG.head_of_kind_naked_int64) =
+    Numeric_types.Int64.Set.equal
+      (t1 :> Numeric_types.Int64.Set.t)
+      (t2 :> Numeric_types.Int64.Set.t)
+
+  let equal_head_of_kind_naked_nativeint (t1 : TG.head_of_kind_naked_nativeint)
+      (t2 : TG.head_of_kind_naked_nativeint) =
+    Targetint_32_64.Set.equal
+      (t1 :> Targetint_32_64.Set.t)
+      (t2 :> Targetint_32_64.Set.t)
+
+  let equal_head_of_kind_naked_vec128 (t1 : TG.head_of_kind_naked_vec128)
+      (t2 : TG.head_of_kind_naked_vec128) =
+    Vector_types.Vec128.Bit_pattern.Set.equal
+      (t1 :> Vector_types.Vec128.Bit_pattern.Set.t)
+      (t2 :> Vector_types.Vec128.Bit_pattern.Set.t)
+
+  let equal_head_of_kind_rec_info (t1 : TG.head_of_kind_rec_info)
+      (t2 : TG.head_of_kind_rec_info) =
+    Rec_info_expr.equal t1 t2
+
+  let equal_head_of_kind_region (_ : TG.head_of_kind_region)
+      (_ : TG.head_of_kind_region) =
+    true
+
+  let equal ~equal_type t1 t2 =
+    match t1.descr, t2.descr with
+    | Unknown, Unknown -> true
+    | Unknown, (Ok _ | Bottom) | (Ok _ | Bottom), Unknown -> false
+    | Bottom, Bottom -> true
+    | Ok _, Bottom | Bottom, Ok _ -> false
+    | Ok t1, Ok t2 -> (
+      match[@warning "-fragile-match"] t1, t2 with
+      | Value t1, Value t2 -> equal_head_of_kind_value ~equal_type t1 t2
+      | Naked_immediate t1, Naked_immediate t2 ->
+        equal_head_of_kind_naked_immediate ~equal_type t1 t2
+      | Naked_float32 t1, Naked_float32 t2 ->
+        equal_head_of_kind_naked_float32 t1 t2
+      | Naked_float t1, Naked_float t2 -> equal_head_of_kind_naked_float t1 t2
+      | Naked_int32 t1, Naked_int32 t2 -> equal_head_of_kind_naked_int32 t1 t2
+      | Naked_int64 t1, Naked_int64 t2 -> equal_head_of_kind_naked_int64 t1 t2
+      | Naked_nativeint t1, Naked_nativeint t2 ->
+        equal_head_of_kind_naked_nativeint t1 t2
+      | Naked_vec128 t1, Naked_vec128 t2 ->
+        equal_head_of_kind_naked_vec128 t1 t2
+      | Rec_info t1, Rec_info t2 -> equal_head_of_kind_rec_info t1 t2
+      | Region t1, Region t2 -> equal_head_of_kind_region t1 t2
+      | _, _ -> false)
 
   let descr t = t.descr
 

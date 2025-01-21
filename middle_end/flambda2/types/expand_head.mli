@@ -20,6 +20,9 @@
 module Expanded_type : sig
   type t
 
+  val equal :
+    equal_type:(Type_grammar.t -> Type_grammar.t -> bool) -> t -> t -> bool
+
   val create_value : Type_grammar.head_of_kind_value -> t
 
   val create_naked_immediate : Type_grammar.head_of_kind_naked_immediate -> t

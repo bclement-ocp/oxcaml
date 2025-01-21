@@ -815,13 +815,10 @@ let add_variable_definition t var kind name_mode =
        %a@ in environment:@ %a"
       Variable.print var print t;
   let name = Name.var var in
-  if Flambda_features.check_light_invariants () && mem t name
+  if Flambda_features.check_invariants () && mem t name
   then
-    if true
-    then assert false
-    else
-      Misc.fatal_errorf "Cannot rebind %a in environment:@ %a" Name.print name
-        print t;
+    Misc.fatal_errorf "Cannot rebind %a in environment:@ %a" Name.print name
+      print t;
   let level =
     TEL.add_definition
       (One_level.level t.current_level)
@@ -1074,11 +1071,10 @@ and add_equation1 ~raise_on_bottom t name ty ~(meet_type : meet_type) =
       match meet_type with
       | New meet_type_new -> (
         let existing_ty = find t eqn_name (Some (TG.kind ty)) in
-        Format.eprintf "for: %a@." Name.print eqn_name;
-        Format.eprintf "aliases: %a@." Aliases.Alias_set.print
-          (Aliases.get_aliases aliases (Simple.name eqn_name));
-        Format.eprintf "existing: %a@." TG.print existing_ty;
-        Format.eprintf "new: %a@." TG.print ty;
+        (* Format.eprintf "for: %a@." Name.print eqn_name; Format.eprintf
+           "aliases: %a@." Aliases.Alias_set.print (Aliases.get_aliases aliases
+           (Simple.name eqn_name)); Format.eprintf "existing: %a@." TG.print
+           existing_ty; Format.eprintf "new: %a@." TG.print ty; *)
         match meet_type_new t ty existing_ty with
         | Bottom ->
           if raise_on_bottom
@@ -1628,3 +1624,34 @@ end = struct
     in
     type_to_approx symbol_ty
 end
+
+let compute_joined_aliases base_env alias_candidates envs_at_uses =
+  match List.map aliases envs_at_uses with
+  | [] -> base_env
+  | aliases_at_first_use :: aliases_at_other_uses ->
+    let new_aliases =
+      Name.Set.fold
+        (fun name new_aliases ->
+          let alias_set =
+            List.fold_left
+              (fun alias_set aliases ->
+                Aliases.Alias_set.inter alias_set
+                  (Aliases.get_aliases aliases (Simple.name name)))
+              (Aliases.get_aliases aliases_at_first_use (Simple.name name))
+              aliases_at_other_uses
+          in
+          let alias_set =
+            Aliases.Alias_set.filter alias_set ~f:(fun simple ->
+                mem_simple base_env simple
+                && not (Simple.equal simple (Simple.name name)))
+          in
+          if Aliases.Alias_set.is_empty alias_set
+          then new_aliases
+          else
+            Aliases.add_alias_set
+              ~binding_time_resolver:base_env.binding_time_resolver
+              ~binding_times_and_modes:(names_to_types base_env) new_aliases
+              name alias_set)
+        alias_candidates (aliases base_env)
+    in
+    with_aliases base_env ~aliases:new_aliases
