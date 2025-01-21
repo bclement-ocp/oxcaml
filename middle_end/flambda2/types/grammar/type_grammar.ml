@@ -2738,6 +2738,7 @@ module Env_extension = struct
     { existential_vars = Variable.Map.empty; equations = Name.Map.empty }
 
   let create_with_existential_vars ~existential_vars ~equations =
+    assert (Variable.Map.is_empty existential_vars);
     { existential_vars; equations }
 
   let create ~equations =

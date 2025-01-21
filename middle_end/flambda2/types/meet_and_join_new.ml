@@ -299,7 +299,7 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
                 kind)
             level initial_env
         in
-        let ext = (TEL.as_extension level).TG.equations in
+        let ext = (TEL.as_extension_without_bindings level).TG.equations in
         let ext = TG.Env_extension.create ~equations:ext in
         TE.add_env_extension_strict initial_env ext ~meet_type:(New meet_type))
   in
@@ -2540,26 +2540,3 @@ let meet_env_extension env ext1 ext2 : _ Or_bottom.t =
           TEL.as_extension_without_bindings (TE.cut scoped_env ~cut_after:scope)
         in
         Ok env_extension)
-
-let wrap f = f ()
-
-let meet env t1 t2 =
-  if false
-  then
-    Format.eprintf "@[<v>meet:@ @[<v>%a@]@ and@ @[<v>%a@]@]@." TG.print t1
-      TG.print t2;
-  try meet env t1 t2
-  with _ ->
-    let bt = Printexc.get_raw_backtrace () in
-    Format.eprintf "@[<v>meet:@ @[<v>%a@]@ and@ @[<v>%a@]@]@." TG.print t1
-      TG.print t2;
-    Printexc.raise_with_backtrace Stack_overflow bt
-
-let meet_type env t1 t2 = wrap (fun () -> meet_type env t1 t2)
-
-let join ?bound_name env t1 t2 = wrap (fun () -> join ?bound_name env t1 t2)
-
-let meet_shape env t ~shape ~result_var ~result_kind =
-  wrap (fun () -> meet_shape env t ~shape ~result_var ~result_kind)
-
-let meet_env_extension env t1 t2 = wrap (fun () -> meet_env_extension env t1 t2)

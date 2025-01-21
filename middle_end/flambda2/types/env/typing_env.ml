@@ -1113,6 +1113,7 @@ and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
 
 and add_env_extension ~raise_on_bottom t
     (env_extension : Typing_env_extension.t) ~meet_type =
+  assert (Variable.Map.is_empty env_extension.TG.existential_vars);
   let renaming =
     Variable.Map.fold
       (fun var _ renaming ->

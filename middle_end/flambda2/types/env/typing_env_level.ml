@@ -201,7 +201,6 @@ let as_extension_without_bindings
            bindings"
           print t
       in
-      let () = assert false in
       Misc.fatal_error err);
   TG.Env_extension.create ~equations
 

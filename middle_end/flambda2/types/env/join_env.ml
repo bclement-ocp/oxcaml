@@ -6,8 +6,6 @@ module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module ET = Expand_head.Expanded_type
 
-let heavy_debug = false
-
 (* XXX: The only thing we really need from the join env is to get us the
    aliases, and to mark the aliases for joining. We *DO NOT* actually need to
    depend on the typing env in this file, which would make it easier to migrate
@@ -96,9 +94,6 @@ module Alias_set = struct
        (Name.Map.print Coercion.print) names
 
   let create ?const names = { const; names }
-
-  let filter_names f { const; names } =
-    { const; names = Name.Map.filter (fun name _ -> f name) names }
 
   let choose { const; names } =
     match const with
@@ -216,11 +211,9 @@ module Demoted_to_canonical = struct
     Name.Map.fold
       (fun name demoted acc ->
         let aliases =
-          if true || mem_name central_env name
+          if mem_name central_env name
           then Map_to_canonical.add name ~coercion:Coercion.id demoted
-          else (
-            Format.eprintf "SKIPPING %a@." Name.print name;
-            demoted)
+          else demoted
         in
         (Alias_set.create aliases, [Simple.name name]) :: acc)
       t.demoted_to_canonical_name classes
@@ -236,7 +229,8 @@ module Demoted_to_canonical = struct
 
   let set_demoted_to_canonical_element t canonical demoted_to_canonical =
     Simple.pattern_match canonical
-      ~name:(fun name ~coercion:_ ->
+      ~name:(fun name ~coercion ->
+        assert (Coercion.is_id coercion);
         { t with
           demoted_to_canonical_name =
             Name.Map.add (* replace *) name demoted_to_canonical
@@ -295,19 +289,22 @@ module Demoted_to_canonical = struct
     | exception Not_found -> t
 end
 
-module Aliases_of_canonical_element = struct
-  type t = Coercion.t Name.Map.t
+module Trie : sig
+  type 'a t
 
-  let empty = Name.Map.empty
+  val print :
+    (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a t -> unit
 
-  let is_empty m = Name.Map.is_empty m
+  val empty : 'a t
 
-  let to_map m = m
+  val iter : (Simple.t list -> 'a -> unit) -> 'a t -> unit
 
-  let of_map m = m
-end
+  val fold : (Simple.t list -> 'a -> 'b -> 'b) -> 'a t -> 'b -> 'b
 
-module Trie = struct
+  val add : 'a t -> Simple.t list -> 'a -> 'a t
+
+  val find : 'a t -> Simple.t list -> 'a
+end = struct
   type 'a t =
     | Value of 'a
     | Map of 'a t Simple.Map.t
@@ -376,142 +373,133 @@ module Trie = struct
            m)
 end
 
+(** A [joined_env] represents one of the branches of a join.
+
+    The [joined_env] is relative to a central environment that is the result of
+    the join. *)
 type joined_env =
-  { typing_env : TE.t;
+  { typing_env : TE.t;  (** The typing env that is getting joined. Invariant. *)
     demoted_to_canonical : Demoted_to_canonical.t;
-        (** Names that have been demoted in this env. *)
-    changed_equations : Name.Set.t
-        (** Names whose type has changed compared to the central env. *)
+        (** Names {b from the central env} that have been demoted in this branch,
+            mapped to their canonical {b in this branch}. *)
+    names_with_new_equation : Name.Set.t
+        (** Names that have a new equation in this branch. *)
   }
 
-let print_classes ppf xs =
-  Format.fprintf ppf "@[<hov 1>(%a)@]"
-    (Format.pp_print_list ~pp_sep:Format.pp_print_space
-       (fun ppf (alias_set, _simples) -> Alias_set.print ppf alias_set))
-    xs
+let partition_classes classes joined_env =
+  List.concat_map
+    (fun (alias_set, canonicals_in_other_envs) ->
+      let partition =
+        Alias_set.fold
+          (fun alias partition ->
+            let canonical_in_this_env =
+              (* It seems like [alias] should always be present in all joined
+                 envs since it is present in the central env.
 
-let join_joined_env ~trie ~meet_type ~central_env joined_envs =
+                 However, [alias] could have been imported from one of the
+                 joined envs (e.g. [alias] is a lifted constant) without
+                 necessarily being present in the current env. *)
+              if mem_simple joined_env alias
+              then get_canonical_simple_exn joined_env alias
+              else alias
+            in
+            Simple.Map.update canonical_in_this_env
+              (function
+                | None -> Some (Alias_set.singleton alias)
+                | Some alias_set -> Some (Alias_set.add alias alias_set))
+              partition)
+          alias_set Simple.Map.empty
+      in
+      Simple.Map.fold
+        (fun canonical_in_this_env alias_set classes ->
+          (alias_set, canonical_in_this_env :: canonicals_in_other_envs)
+          :: classes)
+        partition [])
+    classes
+
+let add_classes0 ~meet_type ~central_env ~classes =
+  List.fold_left
+    (fun typing_env (alias_set, _) ->
+      Alias_set.fold_equations
+        (fun name alias typing_env ->
+          let kind = TG.kind (TE.find central_env name None) in
+          let alias_ty = TG.alias_type_of kind alias in
+          TE.add_equation typing_env name alias_ty ~meet_type)
+        alias_set typing_env)
+    central_env classes
+
+let make_trie0 ~central_env ~classes =
+  List.fold_left
+    (fun trie (alias_set, shared_names) ->
+      let trie =
+        match Alias_set.choose alias_set with
+        | Some alias ->
+          assert (mem_simple central_env alias);
+          let the_canonical = get_canonical_simple_exn central_env alias in
+          Simple.pattern_match the_canonical
+            ~const:(fun _ -> trie)
+            ~name:(fun name ~coercion ->
+              assert (Coercion.is_id coercion);
+              if List.for_all (Simple.equal the_canonical) shared_names
+              then trie
+              else Trie.add trie (List.rev shared_names) name)
+        | None -> trie
+      in
+      trie)
+    Trie.empty classes
+
+let demoted_to_canonical0 ~central_env:typing_env ~classes =
+  List.fold_left
+    (fun demoted_to_canonical (alias_set, _) ->
+      Alias_set.fold
+        (fun simple demoted_to_canonical ->
+          Simple.pattern_match simple
+            ~const:(fun _ -> demoted_to_canonical)
+            ~name:(fun name ~coercion ->
+              assert (Coercion.is_id coercion);
+              let canonical = find_canonical typing_env name in
+              if Simple.equal canonical simple
+              then demoted_to_canonical
+              else Demoted_to_canonical.add name ~canonical demoted_to_canonical))
+        alias_set demoted_to_canonical)
+    Demoted_to_canonical.empty classes
+
+let join_joined_env ~meet_type ~central_env joined_envs =
   match joined_envs with
-  | [] -> assert false
+  | [] ->
+    ( { typing_env = central_env;
+        demoted_to_canonical = Demoted_to_canonical.empty;
+        names_with_new_equation = Name.Set.empty
+      },
+      Trie.empty )
   | first_joined_env :: other_joined_envs ->
     let classes =
       Demoted_to_canonical.classes ~central_env
         first_joined_env.demoted_to_canonical
     in
-    let changed_equations = first_joined_env.changed_equations in
-    let classes, changed_equations =
+    let classes =
       List.fold_left
-        (fun (classes, changed_equations) other_joined_env ->
-          let classes =
-            List.concat_map
-              (fun (alias_set, other_simples) ->
-                let partition =
-                  Alias_set.fold
-                    (fun alias partition ->
-                      let canonical_in_other_env =
-                        if mem_simple other_joined_env.typing_env alias
-                        then
-                          get_canonical_simple_exn other_joined_env.typing_env
-                            alias
-                        else alias
-                      in
-                      Simple.Map.update canonical_in_other_env
-                        (function
-                          | None -> Some (Alias_set.singleton alias)
-                          | Some alias_set_in_other_env ->
-                            Some (Alias_set.add alias alias_set_in_other_env))
-                        partition)
-                    alias_set Simple.Map.empty
-                in
-                Simple.Map.fold
-                  (fun this_canonical alias_set partition ->
-                    (alias_set, this_canonical :: other_simples) :: partition)
-                  partition [])
-              classes
-          in
-          ( classes,
-            Name.Set.inter changed_equations other_joined_env.changed_equations
-          ))
-        (classes, changed_equations)
-        other_joined_envs
+        (fun classes other_joined_env ->
+          partition_classes classes other_joined_env.typing_env)
+        classes other_joined_envs
     in
-    let typing_env, demoted_to_canonical, trie =
+    let typing_env = add_classes0 ~meet_type ~central_env ~classes in
+    let demoted_to_canonical =
+      demoted_to_canonical0 ~central_env:typing_env ~classes
+    in
+    let names_with_new_equation = first_joined_env.names_with_new_equation in
+    let names_with_new_equation =
       List.fold_left
-        (fun (typing_env, demoted_to_canonical, trie) (alias_set, shared_names) ->
-          let alias_set0 =
-            Alias_set.filter_names (mem_name typing_env) alias_set
-          in
-          let typing_env =
-            Alias_set.fold_equations
-              (fun name alias typing_env ->
-                let kind = TG.kind (TE.find central_env name None) in
-                let alias_ty = TG.alias_type_of kind alias in
-                TE.add_equation typing_env name alias_ty ~meet_type)
-              alias_set0 typing_env
-          in
-          let demoted_to_canonical =
-            Alias_set.fold
-              (fun simple demoted_to_canonical ->
-                Simple.pattern_match simple
-                  ~const:(fun _ -> demoted_to_canonical)
-                  ~name:(fun name ~coercion:_ ->
-                    let canonical = find_canonical typing_env name in
-                    if Simple.equal canonical simple
-                    then demoted_to_canonical
-                    else
-                      Demoted_to_canonical.add name ~canonical
-                        demoted_to_canonical))
-              alias_set0 demoted_to_canonical
-          in
-          let trie =
-            match Alias_set.choose alias_set0 with
-            | Some alias ->
-              assert (mem_simple typing_env alias);
-              let the_canonical = get_canonical_simple_exn typing_env alias in
-              Simple.pattern_match the_canonical
-                ~const:(fun _ -> trie)
-                ~name:(fun name ~coercion ->
-                  assert (Coercion.is_id coercion);
-                  if List.for_all (Simple.equal the_canonical) shared_names
-                  then trie
-                  else Trie.add trie (List.rev shared_names) name)
-            | None -> trie
-          in
-          typing_env, demoted_to_canonical, trie)
-        (central_env, Demoted_to_canonical.empty, trie)
-        classes
+        (fun names_with_new_equation other_joined_env ->
+          Name.Set.inter names_with_new_equation
+            other_joined_env.names_with_new_equation)
+        names_with_new_equation other_joined_envs
     in
-    let joined_names =
-      Trie.fold
-        (fun simples name joined_names ->
-          Name.Map.add name simples joined_names)
-        trie Name.Map.empty
-    in
-    { typing_env; demoted_to_canonical; changed_equations }, trie, joined_names
-
-let aliases_in_central_env ~central_env demoted name =
-  let demoted_to_name =
-    Demoted_to_canonical.get_demoted_to_canonical_name demoted name
-  in
-  if mem_name central_env name
-  then Map_to_canonical.add name ~coercion:Coercion.id demoted_to_name
-  else demoted_to_name
-
-let aliases_in_central_env' ~central_env demoted simple =
-  let demoted =
-    Demoted_to_canonical.get_demoted_to_canonical_element demoted simple
-  in
-  Simple.pattern_match simple
-    ~const:(fun _ -> demoted)
-    ~name:(fun name ~coercion ->
-      assert (Coercion.is_id coercion);
-      if mem_simple central_env simple
-      then Map_to_canonical.add name ~coercion demoted
-      else demoted)
+    ( { typing_env; demoted_to_canonical; names_with_new_equation },
+      make_trie0 ~central_env:typing_env ~classes )
 
 module Binary = struct
   type join_simple =
-    | Import of Name.t
     | Join_simples of Simple.t Or_bottom.t * Simple.t Or_bottom.t
     | Join_types of TG.t * TG.t
 
@@ -534,6 +522,15 @@ module Binary = struct
   let right_join_env { right_join_env; _ } = right_join_env.typing_env
 
   let import_name ~meet_type t kind name =
+    let exists_in_central_env = mem_name t.central_env name in
+    let central_env =
+      if not exists_in_central_env
+      then
+        TE.add_definition t.central_env
+          (Bound_name.create name Name_mode.in_types)
+          kind
+      else t.central_env
+    in
     let exists_in_left_env = mem_name (left_join_env t) name in
     let exists_in_right_env = mem_name (right_join_env t) name in
     let left_canonical =
@@ -546,39 +543,32 @@ module Binary = struct
       then Or_bottom.Ok (find_canonical (right_join_env t) name)
       else Or_bottom.Bottom
     in
+    (* TODO: if the name exists in the central env and is not updated in neither
+       left nor right we do not need to join its type. *)
     let join_at_next_depth =
-      Name.Map.add name (kind, Import name) t.join_at_next_depth
+      Name.Map.add name
+        (kind, Join_simples (left_canonical, right_canonical))
+        t.join_at_next_depth
     in
-    let central_env =
-      if not (mem_name t.central_env name)
-      then
-        TE.add_definition t.central_env
-          (Bound_name.create name Name_mode.in_types)
-          kind
-      else t.central_env
-    in
-    let central_env, trie =
-      match left_canonical, right_canonical with
-      | Ok left_canonical, Ok right_canonical -> (
-        if heavy_debug
-        then
-          Format.eprintf "importing %a = (%a, %a)@." Name.print name
-            Simple.print left_canonical Simple.print right_canonical;
-        match Trie.find t.trie [left_canonical; right_canonical] with
-        | canonical ->
+    match left_canonical, right_canonical with
+    | Ok left_canonical, Ok right_canonical -> (
+      match Trie.find t.trie [left_canonical; right_canonical] with
+      | canonical ->
+        (* No need to add the entry to [join_at_next_depth]: we already have a
+           name for this pair of canonicals. *)
+        let central_env =
           if Name.equal name canonical
-          then central_env, t.trie
+          then central_env
           else
-            ( TE.add_equation central_env name ~meet_type
-                (TG.alias_type_of kind (Simple.name canonical)),
-              t.trie )
-        | exception Not_found ->
-          central_env, Trie.add t.trie [left_canonical; right_canonical] name)
-      | Ok _, Bottom | Bottom, Ok _ | Bottom, Bottom ->
-        (* XXX: TODO: add equality if applicable!! *)
-        central_env, t.trie
-    in
-    { t with trie; central_env; join_at_next_depth }
+            TE.add_equation central_env name ~meet_type
+              (TG.alias_type_of kind (Simple.name canonical))
+        in
+        { t with central_env }
+      | exception Not_found ->
+        let trie = Trie.add t.trie [left_canonical; right_canonical] name in
+        { t with central_env; trie; join_at_next_depth })
+    | (Ok _ | Bottom), (Ok _ | Bottom) ->
+      { t with central_env; join_at_next_depth }
 
   let now_joining_simple ~meet_type t kind left_simple right_simple :
       Simple.t Or_unknown.t * t =
@@ -590,35 +580,39 @@ module Binary = struct
       (not (mem_simple (right_join_env t) right_simple))
       || Simple.equal right_simple
            (get_canonical_simple_exn (right_join_env t) right_simple));
-    (* XXX: importing is broken if the name is not canonical!!! *)
     if Simple.equal left_simple right_simple
     then
       Simple.pattern_match left_simple
         ~const:(fun _ -> Or_unknown.Known left_simple, t)
         ~name:(fun name ~coercion:_ ->
-          if mem_name t.central_env name
-          then Or_unknown.Known left_simple, t
-          else
-            let join_at_next_depth =
-              Name.Map.add name (kind, Import name) t.join_at_next_depth
-            in
-            let central_env =
+          (* TODO: if the name exists in the central env and is not updated in
+             neither left nor right we do not need to join its type. *)
+          let join_at_next_depth =
+            Name.Map.add name
+              (kind, Join_simples (Ok (Simple.name name), Ok (Simple.name name)))
+              t.join_at_next_depth
+          in
+          let central_env =
+            if mem_name t.central_env name
+            then t.central_env
+            else
               TE.add_definition t.central_env
                 (Bound_name.create name Name_mode.in_types)
                 kind
-            in
-            let central_env =
-              match Trie.find t.trie [Simple.name name; Simple.name name] with
-              | central_name ->
-                if Name.equal name central_name
-                then central_env
-                else
-                  TE.add_equation central_env name ~meet_type
-                    (TG.alias_type_of kind (Simple.name central_name))
-              | exception Not_found -> central_env
-            in
-            ( Or_unknown.Known left_simple,
-              { t with central_env; join_at_next_depth } ))
+          in
+          let central_env, join_at_next_depth =
+            match Trie.find t.trie [Simple.name name; Simple.name name] with
+            | central_name ->
+              if Name.equal name central_name
+              then central_env, t.join_at_next_depth
+              else
+                ( TE.add_equation central_env name ~meet_type
+                    (TG.alias_type_of kind (Simple.name central_name)),
+                  t.join_at_next_depth )
+            | exception Not_found -> central_env, join_at_next_depth
+          in
+          ( Or_unknown.Known left_simple,
+            { t with central_env; join_at_next_depth } ))
     else
       match Trie.find t.trie [left_simple; right_simple] with
       | canonical -> Or_unknown.Known (Simple.name canonical), t
@@ -646,18 +640,8 @@ module Binary = struct
                     ~symbol:(fun _ -> "join_var"))
                 ~symbol:(fun _ ~coercion:_ -> "join_var"))
         in
-        let left_ty =
-          Simple.pattern_match left_simple ~const:MTC.type_for_const
-            ~name:(fun name ~coercion:_ ->
-              TE.find t.left_join_env.typing_env name None)
-        in
-        let right_ty =
-          Simple.pattern_match right_simple ~const:MTC.type_for_const
-            ~name:(fun name ~coercion:_ ->
-              TE.find t.right_join_env.typing_env name None)
-        in
         let name = Name.var (Variable.create raw_name) in
-        if heavy_debug
+        if Flambda_features.debug_flambda2 ()
         then
           Format.eprintf "Creating %a = (%a, %a)@." Name.print name Simple.print
             left_simple Simple.print right_simple;
@@ -668,24 +652,6 @@ module Binary = struct
             )
             t.join_at_next_depth
         in
-        if Flambda_features.debug_flambda2 ()
-        then (
-          let left_ali =
-            aliases_in_central_env' ~central_env:t.central_env
-              t.left_join_env.demoted_to_canonical left_simple
-          in
-          let right_ali =
-            aliases_in_central_env' ~central_env:t.central_env
-              t.right_join_env.demoted_to_canonical right_simple
-          in
-          Format.eprintf "creating: %a for (%a[%b] : %a, %a[%b] : %a)@."
-            Name.print name Simple.print left_simple
-            (TG.is_obviously_unknown left_ty)
-            TG.print left_ty Simple.print right_simple
-            (TG.is_obviously_unknown right_ty)
-            TG.print right_ty;
-          Format.eprintf "left aliases: %a@ right aliases: %a@." Name.Set.print
-            (Name.Map.keys left_ali) Name.Set.print (Name.Map.keys right_ali));
         let central_env =
           TE.add_definition t.central_env
             (Bound_name.create name Name_mode.in_types)
@@ -697,8 +663,6 @@ module Binary = struct
   let now_joining_types ~meet_type t kind left_ty right_ty :
       TG.t Or_unknown.t * t =
     (* TODO: check kind *)
-    let left_ty = TG.recover_some_aliases left_ty in
-    let right_ty = TG.recover_some_aliases right_ty in
     match
       ( get_alias_then_canonical_simple_exn (left_join_env t) left_ty,
         get_alias_then_canonical_simple_exn (right_join_env t) right_ty )
@@ -736,8 +700,13 @@ module Superjoin = struct
     | Or_bottom.Ok simple1, Import_simple simple2
       when Simple.equal simple1 simple2 ->
       simples
+    | Or_bottom.Ok simple1, Import_type ty2 -> (
+      match TG.get_alias_opt ty2 with
+      | Some simple2 when Simple.equal simple1 simple2 -> simples
+      | _ -> Join_type (TG.alias_type_of (TG.kind ty2) simple1, simples))
+    | Or_bottom.Bottom, (Import_simple _ | Import_type _) -> simples
     | ( (Or_bottom.Ok _ | Or_bottom.Bottom),
-        (Import_simple _ | Join_simples _ | Join_type _ | Import_type _) ) ->
+        (Import_simple _ | Join_simples _ | Join_type _) ) ->
       Join_simples (simple, simples)
 
   let join_type ty simples =
@@ -758,7 +727,10 @@ module Superjoin = struct
   let rec equal_join_simple j1 j2 =
     match j1, j2 with
     | Import_simple n1, Import_simple n2 -> Simple.equal n1 n2
-    | Import_type _, Import_type _ -> false
+    | Import_type ty1, Import_type ty2 -> (
+      match TG.get_alias_exn ty1, TG.get_alias_exn ty2 with
+      | simple1, simple2 -> Simple.equal simple1 simple2
+      | exception Not_found -> false)
     | Join_simples (simple1, rest1), Join_simples (simple2, rest2) ->
       (match simple1, simple2 with
       | Or_bottom.Ok a, Or_bottom.Ok b -> Simple.equal a b
@@ -766,7 +738,11 @@ module Superjoin = struct
         false
       | Or_bottom.Bottom, Or_bottom.Bottom -> true)
       && equal_join_simple rest1 rest2
-    | Join_type (_, _), Join_type (_, _) -> false
+    | Join_type (ty1, rest1), Join_type (ty2, rest2) -> (
+      match TG.get_alias_exn ty1, TG.get_alias_exn ty2 with
+      | simple1, simple2 ->
+        Simple.equal simple1 simple2 && equal_join_simple rest1 rest2
+      | exception Not_found -> false)
     | ( (Import_simple _ | Join_simples _ | Join_type _ | Import_type _),
         (Import_simple _ | Join_simples _ | Join_type _ | Import_type _) ) ->
       false
@@ -841,45 +817,27 @@ module Superjoin = struct
         Format.fprintf ppf "(join@ @[%a@]@ @[%a@])" print_joined_env left_env
           print_binary_join_adapter recursive_join
 
-    let make_binary_join_adapter ~trie ~meet_type central_env joined_envs =
-      List.fold_right
-        (fun left_env acc ->
-          match acc with
-          | Or_bottom.Bottom ->
-            (* This is the first env. *)
-            Or_bottom.Ok
-              ( left_env (* join_joined_env ~meet_type ~central_env [left_env] *),
-                Name.Map.empty,
-                Join_with_bottom left_env )
-          | Or_bottom.Ok (right_env, right_joined_names, adapter) ->
-            (* central_env + shared eqn *)
-            let shared_env, trie, _joined_names =
-              join_joined_env ~trie ~meet_type ~central_env [left_env; right_env]
-            in
-            let new_joined_names =
-              Trie.fold
-                (fun simples name new_trie ->
-                  match simples with
-                  | [left_simple; right_simple] ->
-                    let right_simples =
-                      Simple.pattern_match right_simple
-                        ~const:(fun _ -> Same_simple right_simple)
-                        ~name:(fun name ~coercion:_ ->
-                          try Name.Map.find name right_joined_names
-                          with Not_found -> Same_simple right_simple)
-                    in
-                    Name.Map.add name
-                      (Simple_in_left_env (left_simple, right_simples))
-                      new_trie
-                  | _ -> assert false)
-                trie Name.Map.empty
-            in
-            Or_bottom.Ok
-              ( shared_env,
-                new_joined_names,
-                Binary_join
-                  { left_env; right_env; trie; recursive_join = adapter } ))
-        joined_envs Or_bottom.Bottom
+    let make_binary_join_adapter ~meet_type central_env joined_envs =
+      match joined_envs with
+      | [] -> Or_bottom.Bottom
+      | [joined_env] ->
+        let shared_env, _ =
+          join_joined_env ~meet_type ~central_env [joined_env]
+        in
+        Or_bottom.Ok (shared_env, Join_with_bottom joined_env)
+      | first_env :: (_ :: _ as other_envs) ->
+        Or_bottom.Ok
+          (List.fold_right
+             (fun left_env (right_env, adapter) ->
+               (* central_env + shared eqn *)
+               let shared_env, trie =
+                 join_joined_env ~meet_type ~central_env [left_env; right_env]
+               in
+               ( shared_env,
+                 Binary_join
+                   { left_env; right_env; trie; recursive_join = adapter } ))
+             other_envs
+             (first_env, Join_with_bottom first_env))
 
     let rec loop ~join_ty central_env adapter types =
       match adapter, types with
@@ -891,7 +849,7 @@ module Superjoin = struct
               let kind = TG.kind (TE.find left_env.typing_env name None) in
               let to_join =
                 Name.Map.add name
-                  (kind, Import_simple (Simple.name name))
+                  (kind, Import_type (TG.alias_type_of kind (Simple.name name)))
                   to_join_next
               in
               let central_env =
@@ -949,11 +907,6 @@ module Superjoin = struct
           Name.Map.map
             (fun (kind, binary_join) ->
               match binary_join with
-              | Binary.Import name -> (
-                match Name.Map.find name right_join_at_next_depth with
-                | _, right_simples ->
-                  kind, join_simple (Ok (Simple.name name)) right_simples
-                | exception Not_found -> kind, Import_simple (Simple.name name))
               | Binary.Join_types (left_ty, right_ty) -> (
                 match TG.get_alias_opt right_ty with
                 | None -> kind, join_type left_ty (Import_type right_ty)
@@ -964,7 +917,9 @@ module Superjoin = struct
                   in
                   Simple.pattern_match right_simple
                     ~const:(fun _ ->
-                      kind, join_type left_ty (Import_simple right_simple))
+                      ( kind,
+                        join_type left_ty
+                          (Import_type (TG.alias_type_of kind right_simple)) ))
                     ~name:(fun right_name ~coercion ->
                       match
                         Name.Map.find right_name right_join_at_next_depth
@@ -986,14 +941,15 @@ module Superjoin = struct
                         then
                           Format.eprintf "Forcing right import of %a@."
                             Simple.print right_simple;
-                        kind, join_type left_ty (Import_simple right_simple)))
+                        ( kind,
+                          join_type left_ty
+                            (Import_type (TG.alias_type_of kind right_simple)) ))
+                )
               | Binary.Join_simples (left_simple_ob, right_simple_ob) -> (
                 match left_simple_ob, right_simple_ob with
                 | Or_bottom.Bottom, Or_bottom.Bottom -> assert false
                 | Or_bottom.Ok left_simple, Or_bottom.Bottom ->
-                  Format.eprintf "Forcing import of %a@." Simple.print
-                    left_simple;
-                  kind, Import_simple left_simple
+                  kind, Import_type (TG.alias_type_of kind left_simple)
                 | left_simple, Or_bottom.Ok right_simple ->
                   let left_simple =
                     match left_simple with
@@ -1005,7 +961,9 @@ module Superjoin = struct
                   in
                   Simple.pattern_match right_simple
                     ~const:(fun _ ->
-                      kind, join_simple left_simple (Import_simple right_simple))
+                      ( kind,
+                        join_simple left_simple
+                          (Import_type (TG.alias_type_of kind right_simple)) ))
                     ~name:(fun right_name ~coercion ->
                       if Flambda_features.debug_flambda2 ()
                       then Format.eprintf "expanding %a@." Name.print right_name;
@@ -1029,14 +987,15 @@ module Superjoin = struct
                             right_simples;
                         kind, join_simple left_simple right_simples
                       | exception Not_found ->
-                        if heavy_debug
+                        if Flambda_features.debug_flambda2 ()
                         then (
                           Format.eprintf "not (%d)? %a@."
                             (List.length other_types) Simple.print right_simple;
                           Format.eprintf "Forcing right import of %a@."
                             Simple.print right_simple);
                         ( kind,
-                          join_simple left_simple (Import_simple right_simple) ))
+                          join_simple left_simple
+                            (Import_type (TG.alias_type_of kind right_simple)) ))
                 ))
             join_at_next_depth
         in
@@ -1102,15 +1061,9 @@ module Superjoin = struct
               let ty =
                 if mem_name left_env.typing_env name
                 then
-                  let ty = TE.find left_env.typing_env name None in
-                  let ty =
-                    match TG.get_alias_exn ty with
-                    | alias when Simple.is_const alias -> ty
-                    | _ | (exception Not_found) ->
-                      let et = Expand_head.expand_head left_env.typing_env ty in
-                      ET.to_type et
-                  in
-                  TG.apply_coercion ty coercion
+                  TG.apply_coercion
+                    (TE.find left_env.typing_env name (Some kind))
+                    coercion
                 else (
                   if Flambda_features.debug_flambda2 ()
                   then
@@ -1119,14 +1072,33 @@ module Superjoin = struct
                   MTC.bottom kind)
               in
               [ty])
-        | Import_type ty -> [ty]
+        | Import_type ty -> (
+          match TG.get_alias_opt ty with
+          | Some simple ->
+            if mem_simple left_env.typing_env simple
+            then [ET.to_type (Expand_head.expand_head left_env.typing_env ty)]
+            else [MTC.bottom kind]
+          | None -> [ty])
         | Join_type _ -> assert false
         | Join_simples _ -> assert false)
       | Binary_join { left_env; right_env = _; trie = _; recursive_join } -> (
         match simples with
-        | Import_type ty -> ty :: resolve_simples recursive_join kind simples
-        | Join_type (ty, right_simples) ->
-          ty :: resolve_simples recursive_join kind right_simples
+        | Import_type _ | Join_type _ ->
+          let ty, other_simples =
+            match simples with
+            | Import_type ty -> ty, Import_type ty
+            | Join_type (ty, simples) -> ty, simples
+            | Import_simple _ | Join_simples _ -> assert false
+          in
+          let ty =
+            match TG.get_alias_opt ty with
+            | Some simple ->
+              if mem_simple left_env.typing_env simple
+              then ET.to_type (Expand_head.expand_head left_env.typing_env ty)
+              else MTC.bottom kind
+            | None -> ty
+          in
+          ty :: resolve_simples recursive_join kind other_simples
         | (Import_simple _ | Join_simples _) as simples ->
           let this_simple, other_simples =
             match simples with
@@ -1139,27 +1111,12 @@ module Superjoin = struct
             match this_simple with
             | Or_bottom.Bottom -> MTC.bottom kind
             | Or_bottom.Ok this_simple ->
-              Simple.pattern_match this_simple
-                ~const:(fun const -> MTC.type_for_const const)
-                ~name:(fun name ~coercion ->
-                  if mem_name left_env.typing_env name
-                  then
-                    let ty = TE.find left_env.typing_env name None in
-                    let ty =
-                      match TG.get_alias_exn ty with
-                      | alias when Simple.is_const alias -> ty
-                      | _ | (exception Not_found) ->
-                        let et =
-                          Expand_head.expand_head left_env.typing_env ty
-                        in
-                        ET.to_type et
-                    in
-                    TG.apply_coercion ty coercion
-                  else (
-                    if Flambda_features.debug_flambda2 ()
-                    then
-                      Format.eprintf "binary no type for %a@." Name.print name;
-                    MTC.bottom kind))
+              if mem_simple left_env.typing_env this_simple
+              then
+                ET.to_type
+                  (Expand_head.expand_head left_env.typing_env
+                     (TG.alias_type_of kind this_simple))
+              else MTC.bottom kind
           in
           ty :: resolve_simples recursive_join kind other_simples)
 
@@ -1300,16 +1257,15 @@ module Superjoin = struct
       split1 ~central_env ~parent_env env equations
     in
     let changed_in_env =
-      Name.Set.union changed_in_extension parent_env.changed_equations
+      Name.Set.union changed_in_extension parent_env.names_with_new_equation
     in
     ( { typing_env = env;
         demoted_to_canonical = demoted_in_env;
-        changed_equations = changed_in_env
+        names_with_new_equation = changed_in_env
       },
       changed_in_extension )
 
-  let joinit0 ?(trie = Trie.empty) ~meet_type ~join_ty central_env extended_envs
-      =
+  let joinit0 ~meet_type ~join_ty central_env extended_envs =
     let join_ty env left right =
       let left = Expand_head.expand_head (Binary.left_join_env env) left in
       let right = Expand_head.expand_head (Binary.right_join_env env) right in
@@ -1346,13 +1302,10 @@ module Superjoin = struct
     let initial_env = central_env in
     let central_env = TE.increment_scope central_env in
     match
-      T.make_binary_join_adapter ~trie ~meet_type central_env joined_extensions
+      T.make_binary_join_adapter ~meet_type central_env joined_extensions
     with
     | Bottom -> assert false
-    | Ok (shared_env, _joined, bja) ->
-      let shared_env, _trie, _join =
-        join_joined_env ~trie:Trie.empty ~meet_type ~central_env [shared_env]
-      in
+    | Ok (shared_env, bja) ->
       assert (
         Scope.equal
           (TE.current_scope shared_env.typing_env)
@@ -1366,7 +1319,8 @@ module Superjoin = struct
             (List.length joined_extensions)
             TEL.print ext;
       let to_consider =
-        Name.Set.inter !changed_in_any_extension shared_env.changed_equations
+        Name.Set.inter !changed_in_any_extension
+          shared_env.names_with_new_equation
       in
       if Flambda_features.debug_flambda2 ()
       then Format.eprintf "Names to consider: %a@ " Name.Set.print to_consider;
@@ -1379,7 +1333,7 @@ module Superjoin = struct
               (fun name join_at_next_depth ->
                 let kind = TG.kind (TE.find central_env name None) in
                 Name.Map.add name
-                  (kind, Import_simple (Simple.name name))
+                  (kind, Import_type (TG.alias_type_of kind (Simple.name name)))
                   join_at_next_depth)
               to_consider Name.Map.empty;
           depth = 0
@@ -1396,39 +1350,11 @@ module Superjoin = struct
       in
       final_env, level
 
-  let depth = ref 0
-
-  let joinit0 ?trie ~meet_type ~join_ty central_env extended_envs =
-    incr depth;
-    try
-      let result =
-        joinit0 ?trie ~meet_type ~join_ty central_env extended_envs
-      in
-      decr depth;
-      result
-    with Stack_overflow ->
-      decr depth;
-      Format.eprintf "%d@." !depth;
-      if !depth = 0
-      then (
-        let bt = Printexc.get_raw_backtrace () in
-        Format.eprintf "@[<v>join in:@ @[<v>%a@]@." TE.print central_env;
-        Format.eprintf "@[<v>%a@]@."
-          (Format.pp_print_list
-             ~pp_sep:(fun ppf () ->
-               Format.fprintf ppf "@ --------------------@ ")
-             (fun ppf (_, _, ext) ->
-               let ext = TG.Env_extension.create ~equations:ext in
-               Format.fprintf ppf "@[<v>%a@]" TEE.print ext))
-          extended_envs;
-        Printexc.raise_with_backtrace Stack_overflow bt)
-      else raise Stack_overflow
-
   let joinit ~meet_type ~join_ty central_env envs_with_equations =
     let parent_env =
       { typing_env = central_env;
         demoted_to_canonical = Demoted_to_canonical.empty;
-        changed_equations = Name.Set.empty
+        names_with_new_equation = Name.Set.empty
       }
     in
     joinit0 ~meet_type ~join_ty central_env
@@ -1466,7 +1392,7 @@ let join_binary_env_extensions0 ~meet_type ~join_ty join_env left_ext right_ext
   let right_env = TE.add_env_extension ~meet_type right_env right_ext in
   let right_ext = TE.cut_as_extension right_env ~cut_after:right_scope in
   let _, level =
-    Superjoin.joinit0 ~trie:Trie.empty ~meet_type ~join_ty central_env
+    Superjoin.joinit0 ~meet_type ~join_ty central_env
       [ left_parent_env, left_env, left_ext.TG.equations;
         right_parent_env, right_env, right_ext.TG.equations ]
   in
