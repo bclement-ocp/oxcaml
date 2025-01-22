@@ -945,22 +945,7 @@ and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
 
 and add_env_extension ~raise_on_bottom t
     (env_extension : Typing_env_extension.t) ~meet_type : t =
-  assert (Variable.Map.is_empty env_extension.TG.existential_vars);
-  let renaming =
-    Variable.Map.fold
-      (fun var _ renaming ->
-        Renaming.add_variable renaming var
-          (Variable.create (Variable.raw_name var)))
-      env_extension.TG.existential_vars Renaming.empty
-  in
-  let env_extension =
-    if Renaming.is_identity renaming
-    then env_extension
-    else TG.Env_extension.apply_renaming env_extension renaming
-  in
   Typing_env_extension.fold
-    ~variable:(fun var kind t ->
-      add_variable_definition t var kind Name_mode.in_types)
     ~equation:(fun name ty t ->
       add_equation ~raise_on_bottom t name ty ~meet_type)
     env_extension t

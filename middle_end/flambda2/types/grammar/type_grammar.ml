@@ -209,10 +209,7 @@ and array_contents =
   | Immutable of { fields : t array }
   | Mutable
 
-and env_extension =
-  { existential_vars : K.t Variable.Map.t;
-    equations : t Name.Map.t
-  }
+and env_extension = { equations : t Name.Map.t } [@@unboxed]
 
 and variant_extensions =
   | No_extensions
@@ -469,19 +466,14 @@ and free_names_function_type ~follow_value_slots
       (free_names0 ~follow_value_slots rec_info)
       code_id Name_mode.normal
 
-and free_names_env_extension ~follow_value_slots { existential_vars; equations }
-    =
-  let variables = Variable.Map.keys existential_vars in
-  let free_names =
-    Name_occurrences.create_variables variables Name_mode.in_types
-  in
+and free_names_env_extension ~follow_value_slots { equations } =
   Name.Map.fold
     (fun name t acc ->
       let acc =
         Name_occurrences.union acc (free_names0 ~follow_value_slots t)
       in
       Name_occurrences.add_name acc name Name_mode.in_types)
-    equations free_names
+    equations Name_occurrences.empty
 
 and free_names_variant_extensions ~follow_value_slots
     (extensions : variant_extensions) =
@@ -825,17 +817,8 @@ and apply_renaming_function_type ({ code_id; rec_info } as function_type)
   then function_type
   else { code_id = code_id'; rec_info = rec_info' }
 
-and apply_renaming_env_extension
-    ({ existential_vars; equations } as env_extension) renaming =
+and apply_renaming_env_extension ({ equations } as env_extension) renaming =
   let changed = ref false in
-  let existential_vars' =
-    Variable.Map.fold
-      (fun var kind result ->
-        let var' = Renaming.apply_variable renaming var in
-        if not (var' == var) then changed := true;
-        Variable.Map.add var' kind result)
-      existential_vars Variable.Map.empty
-  in
   let equations' =
     Name.Map.fold
       (fun name ty acc ->
@@ -845,9 +828,7 @@ and apply_renaming_env_extension
         Name.Map.add name' ty' acc)
       equations Name.Map.empty
   in
-  if !changed
-  then { equations = equations'; existential_vars = existential_vars' }
-  else env_extension
+  if !changed then { equations = equations' } else env_extension
 
 and apply_renaming_variant_extensions extensions renaming =
   match extensions with
@@ -1115,7 +1096,7 @@ and print_function_type ppf { code_id; rec_info } =
      %a)@])@]"
     Code_id.print code_id print rec_info
 
-and print_env_extension ppf { existential_vars; equations } =
+and print_env_extension ppf { equations } =
   let print_equations ppf equations =
     let equations = Name.Map.bindings equations in
     match equations with
@@ -1128,11 +1109,8 @@ and print_env_extension ppf { existential_vars; equations } =
         ppf equations;
       Format.pp_print_string ppf ")"
   in
-  Format.fprintf ppf
-    "@[<hov 1>(@[<hov 1>(variables@ @[<hov 1>%a@])@]@ @[<hov 1>(equations@ \
-     @[<v 1>%a@])@])@]"
-    (Variable.Map.print K.print)
-    existential_vars print_equations equations
+  Format.fprintf ppf "@[<hov 1>(equations@ @[<v 1>%a@])@])@]" print_equations
+    equations
 
 and print_variant_extensions ppf (extensions : variant_extensions) =
   match extensions with
@@ -1323,13 +1301,11 @@ and ids_for_export_function_type { code_id; rec_info } =
     (Ids_for_export.singleton_code_id code_id)
     (ids_for_export rec_info)
 
-and ids_for_export_env_extension { existential_vars; equations } =
-  let variables = Variable.Map.keys existential_vars in
-  let ids = Ids_for_export.create ~variables () in
+and ids_for_export_env_extension { equations } =
   Name.Map.fold
     (fun name t ids ->
       Ids_for_export.add_name (Ids_for_export.union ids (ids_for_export t)) name)
-    equations ids
+    equations Ids_for_export.empty
 
 and ids_for_export_variant_extensions ext =
   match ext with
@@ -1678,8 +1654,7 @@ and apply_coercion_function_type
       let rec_info = Rec_info (TD.create to_) in
       Ok (Or_unknown_or_bottom.Ok { code_id; rec_info }))
 
-and apply_coercion_env_extension { existential_vars; equations } coercion :
-    _ Or_bottom.t =
+and apply_coercion_env_extension { equations } coercion : _ Or_bottom.t =
   let<+ equations =
     Name.Map.fold
       (fun name t result ->
@@ -1688,7 +1663,7 @@ and apply_coercion_env_extension { existential_vars; equations } coercion :
         Name.Map.add name t result)
       equations (Or_bottom.Ok Name.Map.empty)
   in
-  { existential_vars; equations }
+  { equations }
 
 let apply_coercion t coercion =
   match apply_coercion t coercion with
@@ -2143,8 +2118,7 @@ and remove_unused_value_slots_and_shortcut_aliases_function_type
   else { code_id; rec_info = rec_info' }
 
 and remove_unused_value_slots_and_shortcut_aliases_env_extension
-    ({ existential_vars; equations } as extension) ~used_value_slots
-    ~canonicalise =
+    ({ equations } as extension) ~used_value_slots ~canonicalise =
   (* CR vlaviron: Two things can be improved here. First, we could try to
      preserve sharing. Currently we lose sharing as soon as the extension isn't
      empty (the [env_extension] type is unboxed so the final record expression
@@ -2172,9 +2146,7 @@ and remove_unused_value_slots_and_shortcut_aliases_env_extension
           ~const:(fun _c -> acc (* CR vlaviron: check bottom and propagate *)))
       equations Name.Map.empty
   in
-  if equations' == equations
-  then extension
-  else { existential_vars; equations = equations' }
+  if equations' == equations then extension else { equations = equations' }
 
 and remove_unused_value_slots_and_shortcut_aliases_variant_extensions
     (extensions : variant_extensions) ~used_value_slots ~canonicalise =
@@ -2649,8 +2621,7 @@ and project_function_type ~to_project ~expand
   then function_type
   else { code_id; rec_info = rec_info' }
 
-and project_env_extension ~to_project ~expand
-    ({ existential_vars; equations } as env_extension) =
+and project_env_extension ~to_project ~expand ({ equations } as env_extension) =
   let changed = ref false in
   let equations' =
     Name.Map.fold
@@ -2670,19 +2641,7 @@ and project_env_extension ~to_project ~expand
             else keep_equation ()))
       equations Name.Map.empty
   in
-  let existential_vars' =
-    Variable.Map.filter
-      (fun var _ ->
-        if Variable.Set.mem var to_project
-        then (
-          changed := true;
-          false)
-        else true)
-      existential_vars
-  in
-  if !changed
-  then { existential_vars = existential_vars'; equations = equations' }
-  else env_extension
+  if !changed then { equations = equations' } else env_extension
 
 and project_variant_extensions ~to_project ~expand
     (extensions : variant_extensions) =
@@ -2734,15 +2693,9 @@ let create_closures alloc_mode by_function_slot =
 module Env_extension = struct
   type t = env_extension
 
-  let empty =
-    { existential_vars = Variable.Map.empty; equations = Name.Map.empty }
+  let empty = { equations = Name.Map.empty }
 
-  let create_with_existential_vars ~existential_vars ~equations =
-    assert (Variable.Map.is_empty existential_vars);
-    { existential_vars; equations }
-
-  let create ~equations =
-    create_with_existential_vars ~existential_vars:Variable.Map.empty ~equations
+  let create ~equations = { equations }
 
   let ids_for_export = ids_for_export_env_extension
 

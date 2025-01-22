@@ -18,36 +18,29 @@ module TG = Type_grammar
 
 type t = TG.Env_extension.t
 
-let fold ~variable ~equation ({ existential_vars; equations } : t) acc =
-  let acc = Variable.Map.fold variable existential_vars acc in
+let fold ~equation ({ equations } : t) acc =
   Name.Map.fold equation equations acc
 
-let invariant ({ existential_vars = _; equations } : t) =
+let invariant ({ equations } : t) =
   if Flambda_features.check_invariants ()
   then Name.Map.iter More_type_creators.check_equation equations
 
 let empty = TG.Env_extension.empty
 
-let is_empty ({ existential_vars = _; equations } : t) =
-  Name.Map.is_empty equations
+let is_empty ({ equations } : t) = Name.Map.is_empty equations
 
 let from_map equations =
   let t = TG.Env_extension.create ~equations in
   invariant t;
   t
 
-let to_map ({ existential_vars; equations } : t) =
-  assert (Variable.Map.is_empty existential_vars);
-  equations
-
-let existential_vars ({ existential_vars; equations = _ } : t) =
-  existential_vars
+let to_map ({ equations } : t) = equations
 
 let one_equation name ty =
   More_type_creators.check_equation name ty;
   TG.Env_extension.create ~equations:(Name.Map.singleton name ty)
 
-let add_or_replace_equation ({ existential_vars; equations } : t) name ty =
+let add_or_replace_equation ({ equations } : t) name ty =
   More_type_creators.check_equation name ty;
   if Flambda_features.check_invariants () && Name.Map.mem name equations
   then
@@ -57,11 +50,10 @@ let add_or_replace_equation ({ existential_vars; equations } : t) name ty =
        New equation is@ @[%a@]@." Name.print name TG.print
       (Name.Map.find name equations)
       TG.print ty;
-  TG.Env_extension.create_with_existential_vars ~existential_vars
-    ~equations:(Name.Map.add name ty equations)
+  TG.Env_extension.create ~equations:(Name.Map.add name ty equations)
 
-let replace_equation ({ existential_vars; equations } : t) name ty =
-  TG.Env_extension.create_with_existential_vars ~existential_vars
+let replace_equation ({ equations } : t) name ty =
+  TG.Env_extension.create
     ~equations:(Name.Map.add (* replace *) name ty equations)
 
 let ids_for_export = TG.Env_extension.ids_for_export
