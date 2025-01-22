@@ -245,7 +245,7 @@ module Typing_env : sig
     t -> min_name_mode:Name_mode.t -> Simple.t -> Alias_set.t
 end
 
-val meet : Typing_env.t -> t -> t -> (t * Typing_env_extension.t) Or_bottom.t
+val meet : Typing_env.t -> t -> t -> (t * Typing_env.t) Or_bottom.t
 
 val meet_shape :
   Typing_env.t ->
@@ -253,7 +253,7 @@ val meet_shape :
   shape:t ->
   result_var:Bound_var.t ->
   result_kind:Flambda_kind.t ->
-  Typing_env_extension.t Or_bottom.t
+  Typing_env_extension.With_extra_variables.t Or_bottom.t
 
 val join :
   ?bound_name:Name.t ->

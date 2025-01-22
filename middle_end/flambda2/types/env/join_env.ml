@@ -862,7 +862,7 @@ module Superjoin = struct
               in
               central_env, to_join)
         in
-        ty, central_env, Join_with_bottom left_env, Name.Map.empty, to_join
+        ty, central_env, Join_with_bottom left_env, to_join
       | Join_with_bottom _, ([] | _ :: _ :: _) -> assert false
       | ( Binary_join
             { left_env = left_join_env;
@@ -871,12 +871,7 @@ module Superjoin = struct
               recursive_join = adapter
             },
           left_ty :: other_types ) ->
-        (* [n] is the depth of [adapter] *)
-        let ( joined_ty,
-              right_typing_env,
-              adapter,
-              _right_joined_names,
-              right_join_at_next_depth ) =
+        let joined_ty, right_typing_env, adapter, right_join_at_next_depth =
           loop ~join_ty right_join_env.typing_env adapter other_types
         in
         let right_join_env =
@@ -1007,7 +1002,6 @@ module Superjoin = struct
               trie;
               recursive_join = adapter
             },
-          Name.Map.empty,
           join_next_depth )
       | Binary_join _, [] -> assert false
 
@@ -1019,14 +1013,7 @@ module Superjoin = struct
       }
 
     let do_one ~join_ty nary types =
-      if List.length types >= 1
-      then
-        if Flambda_features.debug_flambda2 ()
-        then
-          Format.eprintf "going for %d types: @[<v>%a@]@." (List.length types)
-            (Format.pp_print_list TG.print)
-            types;
-      let ty, central_env, bja, _, join_at_next_depth =
+      let ty, central_env, bja, join_at_next_depth =
         loop ~join_ty nary.central_env nary.joined_envs types
       in
       let join_at_next_depth =
@@ -1396,19 +1383,21 @@ let join_binary_env_extensions0 ~meet_type ~join_ty join_env left_ext right_ext
       [ left_parent_env, left_env, left_ext.TG.equations;
         right_parent_env, right_env, right_ext.TG.equations ]
   in
-  let ext = TEL.as_extension level in
-  let central_env =
-    TEL.fold_on_defined_vars
-      (fun var kind env ->
-        TE.add_definition env
-          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
-          kind)
-      level central_env
-  in
-  let equations =
-    Name.Map.filter
-      (fun _ ty -> not (TG.is_obviously_unknown ty))
-      ext.TG.equations
+  let ext = TEL.as_extension_with_extra_variables level in
+  let central_env, equations =
+    TEE.With_extra_variables.fold
+      ~variable:(fun var kind (env, equations) ->
+        ( TE.add_definition env
+            (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+            kind,
+          equations ))
+      ~equation:(fun name ty (env, equations) ->
+        ( env,
+          if TG.is_obviously_unknown ty
+          then equations
+          else Name.Map.add name ty equations ))
+      ext
+      (central_env, Name.Map.empty)
   in
   let ext = TG.Env_extension.create ~equations in
   { join_env with Binary.central_env }, ext

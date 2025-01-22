@@ -211,6 +211,12 @@ val add_env_extension_strict :
 val add_env_extension_with_extra_variables :
   t -> Typing_env_extension.With_extra_variables.t -> meet_type:meet_type -> t
 
+val add_env_extension_with_extra_variables_strict :
+  t ->
+  Typing_env_extension.With_extra_variables.t ->
+  meet_type:meet_type ->
+  t Or_bottom.t
+
 val add_env_extension_from_level :
   t -> Typing_env_level.t -> meet_type:meet_type -> t
 

@@ -35,7 +35,7 @@ val meet_shape :
   shape:Type_grammar.t ->
   result_var:Bound_var.t ->
   result_kind:Flambda_kind.t ->
-  Typing_env_extension.t Or_bottom.t
+  Typing_env_extension.With_extra_variables.t Or_bottom.t
 
 val meet_env_extension :
   Typing_env.Meet_env.t ->

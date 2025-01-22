@@ -391,7 +391,9 @@ let mark_parameters_as_toplevel t params =
 
 let define_variable_and_extend_typing_environment t var kind env_extension =
   let t = (define_variable [@inlined hint]) t var kind in
-  let typing_env = TE.add_env_extension t.typing_env env_extension in
+  let typing_env =
+    TE.add_env_extension_with_extra_variables t.typing_env env_extension
+  in
   { t with typing_env }
 
 let add_variable_and_extend_typing_environment t var ty env_extension =

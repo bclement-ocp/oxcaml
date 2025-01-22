@@ -1112,7 +1112,7 @@ and[@inline always] add_equation ~raise_on_bottom t name ty ~meet_type =
   | t -> t
 
 and add_env_extension ~raise_on_bottom t
-    (env_extension : Typing_env_extension.t) ~meet_type =
+    (env_extension : Typing_env_extension.t) ~meet_type : t =
   assert (Variable.Map.is_empty env_extension.TG.existential_vars);
   let renaming =
     Variable.Map.fold
@@ -1133,14 +1133,13 @@ and add_env_extension ~raise_on_bottom t
       add_equation ~raise_on_bottom t name ty ~meet_type)
     env_extension t
 
-and add_env_extension_with_extra_variables t
+and add_env_extension_with_extra_variables t ~raise_on_bottom
     (env_extension : Typing_env_extension.With_extra_variables.t) ~meet_type =
   Typing_env_extension.With_extra_variables.fold
     ~variable:(fun var kind t ->
       add_variable_definition t var kind Name_mode.in_types)
     ~equation:(fun name ty t ->
-      try add_equation ~raise_on_bottom:true t name ty ~meet_type
-      with Bottom_equation -> make_bottom t)
+      add_equation ~raise_on_bottom t name ty ~meet_type)
     env_extension t
 
 let add_env_extension_from_level t level ~meet_type : t =
@@ -1184,6 +1183,23 @@ let add_equation t name ty ~meet_type =
 
 let add_env_extension t env_extension ~meet_type =
   try add_env_extension ~raise_on_bottom:true t env_extension ~meet_type
+  with Bottom_equation -> make_bottom t
+
+let add_env_extension_with_extra_variables_strict t env_extension ~meet_type :
+    _ Or_bottom.t =
+  if t.is_bottom
+  then Bottom
+  else
+    try
+      Ok
+        (add_env_extension_with_extra_variables ~raise_on_bottom:true t
+           env_extension ~meet_type)
+    with Bottom_equation -> Bottom
+
+let add_env_extension_with_extra_variables t env_extension ~meet_type =
+  try
+    add_env_extension_with_extra_variables ~raise_on_bottom:true t env_extension
+      ~meet_type
   with Bottom_equation -> make_bottom t
 
 let add_definitions_of_params t ~params =

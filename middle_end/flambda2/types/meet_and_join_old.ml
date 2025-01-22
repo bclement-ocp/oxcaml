@@ -1920,4 +1920,6 @@ let meet_shape env t ~shape ~result_var ~result_kind : _ Or_bottom.t =
     let result = Bound_name.create_var result_var in
     let env = TE.add_definition env result result_kind in
     let<+ _meet_ty, env_extension = meet (Meet_env.create env) t shape in
-    env_extension
+    { TEE.With_extra_variables.existential_vars = Variable.Map.empty;
+      equations = TEE.to_map env_extension
+    }

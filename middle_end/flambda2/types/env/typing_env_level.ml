@@ -216,3 +216,17 @@ let as_extension
         print t;
   TG.Env_extension.create_with_existential_vars ~existential_vars:defined_vars
     ~equations
+
+let as_extension_with_extra_variables
+    ({ defined_vars; binding_times = _; equations; symbol_projections } as t) =
+  if Flambda_features.check_light_invariants ()
+  then
+    if Variable.Map.is_empty symbol_projections
+    then ()
+    else
+      Misc.fatal_errorf
+        "Typing_env_level.as_extension_without_bindings:@ level %a has bindings"
+        print t;
+  { Typing_env_extension.With_extra_variables.existential_vars = defined_vars;
+    equations
+  }

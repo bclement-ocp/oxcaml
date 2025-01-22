@@ -63,3 +63,6 @@ val fold_on_defined_vars :
 val as_extension_without_bindings : t -> Type_grammar.Env_extension.t
 
 val as_extension : t -> Type_grammar.Env_extension.t
+
+val as_extension_with_extra_variables :
+  t -> Typing_env_extension.With_extra_variables.t

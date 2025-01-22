@@ -121,7 +121,7 @@ val define_variable_and_extend_typing_environment :
   t ->
   Bound_var.t ->
   Flambda_kind.t ->
-  Flambda2_types.Typing_env_extension.t ->
+  Flambda2_types.Typing_env_extension.With_extra_variables.t ->
   t
 
 val add_variable_and_extend_typing_environment :

@@ -37,12 +37,12 @@ let simplify_make_block ~original_prim ~(block_kind : P.Block_kind.t)
           let<* typing_env = typing_env in
           Simple.pattern_match' arg
             ~var:(fun _ ~coercion:_ : _ Or_bottom.t ->
-              let<+ _ty, env_extension =
+              let<+ _ty, typing_env =
                 T.meet typing_env
                   (T.alias_type_of (K.With_subkind.kind arg_kind) arg)
                   (T.unknown_with_subkind arg_kind)
               in
-              TE.add_env_extension typing_env env_extension)
+              typing_env)
             ~const:(fun _ : _ Or_bottom.t -> Ok typing_env)
             ~symbol:(fun _ ~coercion:_ : _ Or_bottom.t -> Ok typing_env))
         (Or_bottom.Ok typing_env) field_kinds args_with_tys
@@ -118,10 +118,10 @@ let simplify_make_array (array_kind : P.Array_kind.t)
         (fun typing_env element_type ->
           let open Or_bottom.Let_syntax in
           let<* typing_env = typing_env in
-          let<+ _, env_extension =
+          let<+ _, typing_env =
             T.meet typing_env initial_element_type element_type
           in
-          TE.add_env_extension typing_env env_extension)
+          typing_env)
         (Or_bottom.Ok typing_env) tys
   in
   match env_extension with

@@ -299,9 +299,9 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
                 kind)
             level initial_env
         in
-        let ext = (TEL.as_extension_without_bindings level).TG.equations in
-        let ext = TG.Env_extension.create ~equations:ext in
-        TE.add_env_extension_strict initial_env ext ~meet_type:(New meet_type))
+        let ext = TEL.as_extension_with_extra_variables level in
+        TE.add_env_extension_with_extra_variables_strict initial_env ext
+          ~meet_type:(New meet_type))
   in
   let env_a, env_b = Or_bottom.Ok env, Or_bottom.Ok env in
   let env_a, env_b =
@@ -354,7 +354,9 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
     direct_return (Ok (result, env))
   | Ok (a_result, env_a), Ok (b_result, env_b) ->
     let when_a_level = TE.cut env_a ~cut_after:join_scope in
+    let when_a = TEL.as_extension_with_extra_variables when_a_level in
     let when_b_level = TE.cut env_b ~cut_after:join_scope in
+    let when_b = TEL.as_extension_with_extra_variables when_b_level in
     let env =
       TEL.fold_on_defined_vars
         (fun var kind env ->
@@ -371,10 +373,8 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
             kind)
         when_b_level env
     in
-    let when_a = (TEL.as_extension when_a_level).TG.equations in
-    let when_a = TG.Env_extension.create ~equations:when_a in
-    let when_b = (TEL.as_extension when_b_level).TG.equations in
-    let when_b = TG.Env_extension.create ~equations:when_b in
+    let when_a = TG.Env_extension.create ~equations:when_a.equations in
+    let when_b = TG.Env_extension.create ~equations:when_b.equations in
     let extensions =
       if TEE.is_empty when_a && TEE.is_empty when_b
       then
@@ -425,7 +425,9 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
             kind)
         result_level initial_env
     in
-    let result_extension = (TEL.as_extension result_level).TG.equations in
+    let result_extension =
+      (TEL.as_extension_with_extra_variables result_level).equations
+    in
     let result_extension =
       TG.Env_extension.create ~equations:result_extension
     in
@@ -2496,19 +2498,11 @@ let meet env ty1 ty2 : _ Or_bottom.t =
   if TE.is_bottom env
   then Bottom
   else
-    let scope = TE.current_scope env in
-    let scoped_env = TE.increment_scope env in
-    match meet scoped_env ty1 ty2 with
+    match meet env ty1 ty2 with
     | Bottom _ -> Bottom
-    | Ok (r, scoped_env) ->
+    | Ok (r, env) ->
       let res_ty = extract_value r ty1 ty2 in
-      if TG.is_obviously_bottom res_ty
-      then Bottom
-      else
-        let env_extension =
-          TEL.as_extension (TE.cut scoped_env ~cut_after:scope)
-        in
-        Ok (res_ty, env_extension)
+      if TG.is_obviously_bottom res_ty then Bottom else Ok (res_ty, env)
 
 let meet_shape env t ~shape ~result_var ~result_kind : _ Or_bottom.t =
   if TE.is_bottom env
@@ -2516,9 +2510,16 @@ let meet_shape env t ~shape ~result_var ~result_kind : _ Or_bottom.t =
   else
     let result = Bound_name.create_var result_var in
     let env = TE.add_definition env result result_kind in
-    match meet env t shape with
+    let scope = TE.current_scope env in
+    let scoped_env = TE.increment_scope env in
+    match meet scoped_env t shape with
     | Bottom -> Bottom
-    | Ok (_, env_extension) -> Ok env_extension
+    | Ok (_, scoped_env) ->
+      let env_extension =
+        TEL.as_extension_with_extra_variables
+          (TE.cut scoped_env ~cut_after:scope)
+      in
+      Ok env_extension
 
 let meet_env_extension env ext1 ext2 : _ Or_bottom.t =
   if TE.is_bottom env
