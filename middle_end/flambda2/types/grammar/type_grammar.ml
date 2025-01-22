@@ -3561,6 +3561,10 @@ module Head_of_kind_value = struct
 
   let create_array_with_contents ~element_kind ~length contents alloc_mode =
     mk_non_null (Array { element_kind; length; contents; alloc_mode })
+
+  let free_names = free_names_head_of_kind_value
+
+  let apply_renaming = apply_renaming_head_of_kind_value
 end
 
 module Head_of_kind_value_non_null = struct

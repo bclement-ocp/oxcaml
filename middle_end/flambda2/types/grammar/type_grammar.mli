@@ -711,6 +711,8 @@ module Head_of_kind_value : sig
     t
 
   val null : t
+
+  include Contains_names.S with type t := t
 end
 
 module Head_of_kind_value_non_null : sig

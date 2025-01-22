@@ -23,8 +23,6 @@ module TEE = Typing_env_extension
 module TEL = Typing_env_level
 module Vec128 = Vector_types.Vec128.Bit_pattern
 
-let depth = ref 0
-
 type 'a meet_return_value = 'a TE.meet_return_value =
   | Left_input
   | Right_input
@@ -548,7 +546,6 @@ let rec meet env (t1 : TG.t) (t2 : TG.t) : TG.t meet_result =
         ~min_name_mode:Name_mode.in_types
     with
     | exception Not_found -> None
-    | exception _ -> assert false
     | canonical_simple -> Some canonical_simple
   in
   let simple2 =
@@ -1591,111 +1588,22 @@ and meet_function_type (env : TE.t)
       ~right_a:code_id2 ~meet_b:meet ~left_b:rec_info1 ~right_b:rec_info2
 
 and meet_type env t1 t2 : _ Or_bottom.t =
-  incr depth;
-  if !depth >= 100
-  then (
-    let bt = Printexc.get_callstack 100_000 in
-    Format.eprintf "@[<v>trace:@ %s@]@." (Printexc.raw_backtrace_to_string bt);
-    assert false);
-  let out : _ Or_bottom.t =
-    if TE.is_bottom env
-    then Bottom
-    else
-      match meet env t1 t2 with
-      | Ok (res, env) -> Ok (res, env)
-      | Bottom _ -> Bottom
-  in
-  decr depth;
-  out
+  if TE.is_bottom env
+  then Bottom
+  else
+    match meet env t1 t2 with
+    | Ok (res, env) -> Ok (res, env)
+    | Bottom _ -> Bottom
 
-and mark_for_join env t1 t2 : TG.t join_result =
+and mark_for_join env t1 t2 : _ join_result =
   if not (K.equal (TG.kind t1) (TG.kind t2))
   then
     Misc.fatal_errorf "Kind mismatch upon join:@ %a@ versus@ %a" TG.print t1
       TG.print t2;
   let kind = TG.kind t1 in
-  let t1 = TG.recover_some_aliases t1 in
-  let t2 = TG.recover_some_aliases t2 in
-  if TG.is_obviously_bottom t2
-  then
-    ( Known t1,
-      import_names
-        ~from_env:(Join_env.Binary.left_join_env env)
-        env (TG.free_names t1) )
-  else if TG.is_obviously_bottom t1
-  then
-    ( Known t2,
-      import_names
-        ~from_env:(Join_env.Binary.right_join_env env)
-        env (TG.free_names t2) )
-  else
-    let canonical_simple1 =
-      match
-        TE.get_alias_then_canonical_simple_exn
-          (Join_env.Binary.left_join_env env)
-          t1 ~min_name_mode:Name_mode.in_types
-      with
-      | exception Not_found -> None
-      | canonical_simple -> Some canonical_simple
-    in
-    let canonical_simple2 =
-      match
-        TE.get_alias_then_canonical_simple_exn
-          (Join_env.Binary.right_join_env env)
-          t2 ~min_name_mode:Name_mode.in_types
-      with
-      | exception Not_found -> None
-      | canonical_simple -> Some canonical_simple
-    in
-    match canonical_simple1, canonical_simple2 with
-    | Some canonical_simple1, None when TG.is_obviously_bottom t2 ->
-      ( Known (TG.alias_type_of kind canonical_simple1),
-        Simple.pattern_match canonical_simple1
-          ~const:(fun _ -> env)
-          ~name:(fun name ~coercion:_ ->
-            Join_env.Binary.import_name ~meet_type:(New meet_type) env kind name)
-      )
-    | None, Some canonical_simple2 when TG.is_obviously_bottom t1 ->
-      ( Known (TG.alias_type_of kind canonical_simple2),
-        Simple.pattern_match canonical_simple2
-          ~const:(fun _ -> env)
-          ~name:(fun name ~coercion:_ ->
-            Join_env.Binary.import_name ~meet_type:(New meet_type) env kind name)
-      )
-    | None, None -> join env t1 t2
-    | Some _, None | None, Some _ ->
-      let ty, env =
-        Join_env.Binary.now_joining_types env kind t1 t2
-          ~meet_type:(New meet_type)
-      in
-      if Flambda_features.debug_flambda2 ()
-      then (
-        let expanded1 =
-          Expand_head.expand_head (Join_env.Binary.left_join_env env) t1
-        in
-        let expanded2 =
-          Expand_head.expand_head (Join_env.Binary.right_join_env env) t2
-        in
-        (* TODO: doing the join now is not OK because we do not necessarily have
-           the proper join value for the other identifiers (in the right env) --
-           they might be added at a later depth if they are themselves created
-           from a join. *)
-        Format.eprintf "@[<v>expanded join:@ %a@ and@ %a]@." TG.print
-          (ET.to_type expanded1) TG.print (ET.to_type expanded2);
-        Format.eprintf
-          "@[<v>loss of precision; unnamed join:@ %a@ and@ %a@ is:@ %a@]@."
-          TG.print t1 TG.print t2
-          (Or_unknown.print TG.print)
-          ty);
-      ty, env
-    | Some canonical_simple1, Some canonical_simple2 -> (
-      let joined_simple, env =
-        Join_env.Binary.now_joining_simple env kind canonical_simple1
-          canonical_simple2 ~meet_type:(New meet_type)
-      in
-      match joined_simple with
-      | Unknown -> Unknown, env
-      | Known simple -> Known (TG.alias_type_of kind simple), env)
+  match TG.get_alias_opt t2 with
+  | None -> join env t1 t2
+  | Some _ -> Join_env.Binary.join_type0 env kind t1 t2
 
 and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
   if not (K.equal (TG.kind t1) (TG.kind t2))
@@ -1724,12 +1632,13 @@ and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
   let already_known, env =
     match canonical_simple1, canonical_simple2 with
     | Some canonical_simple1, Some canonical_simple2 ->
-      Join_env.Binary.now_joining_simple env kind canonical_simple1
-        canonical_simple2 ~meet_type:(New meet_type)
+      Join_env.Binary.join_type0 env kind
+        (TG.alias_type_of kind canonical_simple1)
+        (TG.alias_type_of kind canonical_simple2)
     | _, _ -> Or_unknown.Unknown, env
   in
   match already_known with
-  | Known simple -> Known (TG.alias_type_of kind simple), env
+  | Known ty -> Known ty, env
   | Unknown ->
     let expanded1 =
       Expand_head.expand_head0
@@ -1746,14 +1655,17 @@ and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
       (join_expanded_head env kind expanded1 expanded2)
 
 and import_names ~from_env env names =
-  Name_occurrences.fold_names names ~init:env ~f:(fun env name ->
-      if not (TE.mem ~min_name_mode:Name_mode.in_types from_env name)
-      then env
-      else
-        let kind = TG.kind (TE.find from_env name None) in
-        (* XXX: importing is broken if the name is not canonical!!! use a
-           specific mechanism? *)
-        Join_env.Binary.import_name env kind name ~meet_type:(New meet_type))
+  Name_occurrences.fold_names names ~init:(Renaming.empty, env)
+    ~f:(fun (renaming, env) name ->
+      let kind = TG.kind (TE.find from_env name None) in
+      Name.pattern_match name
+        ~symbol:(fun symbol ->
+          let env = Join_env.Binary.import_symbol env kind symbol in
+          renaming, env)
+        ~var:(fun var ->
+          let import_var, env = Join_env.Binary.import_var env kind var in
+          let renaming = Renaming.add_variable renaming var import_var in
+          renaming, env))
 
 and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) :
     ET.t join_result =
@@ -1762,11 +1674,19 @@ and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) :
   | Ok _, Bottom ->
     let free_names = TG.free_names (ET.to_type expanded1) in
     let left_env = Join_env.Binary.left_join_env env in
-    Known expanded1, import_names ~from_env:left_env env free_names
+    let renaming, env = import_names ~from_env:left_env env free_names in
+    let type1 = ET.to_type expanded1 in
+    let type1 = TG.apply_renaming type1 renaming in
+    let expanded1 = Expand_head.expand_head left_env type1 in
+    Known expanded1, env
   | Bottom, Ok _ ->
     let free_names = TG.free_names (ET.to_type expanded2) in
     let right_env = Join_env.Binary.right_join_env env in
-    Known expanded2, import_names ~from_env:right_env env free_names
+    let renaming, env = import_names ~from_env:right_env env free_names in
+    let type2 = ET.to_type expanded2 in
+    let type2 = TG.apply_renaming type2 renaming in
+    let expanded2 = Expand_head.expand_head right_env type2 in
+    Known expanded2, env
   | Unknown, _ | _, Unknown -> Known (ET.create_unknown kind), env
   | Ok descr1, Ok descr2 -> (
     let expanded_or_unknown, env =
@@ -1818,21 +1738,21 @@ and join_head_of_kind_value env (head1 : TG.head_of_kind_value)
     | Unknown, _ | _, Unknown -> Or_unknown_or_bottom.Unknown, env
     | Bottom, Bottom -> Bottom, env
     | Bottom, Ok x ->
-      let env =
+      let renaming, env =
         import_names
           ~from_env:(Join_env.Binary.right_join_env env)
           env
           (TG.Head_of_kind_value_non_null.free_names x)
       in
-      Ok x, env
+      Ok (TG.Head_of_kind_value_non_null.apply_renaming x renaming), env
     | Ok x, Bottom ->
-      let env =
+      let renaming, env =
         import_names
           ~from_env:(Join_env.Binary.left_join_env env)
           env
           (TG.Head_of_kind_value_non_null.free_names x)
       in
-      Ok x, env
+      Ok (TG.Head_of_kind_value_non_null.apply_renaming x renaming), env
     | Ok head1, Ok head2 -> (
       match join_head_of_kind_value_non_null env head1 head2 with
       | Unknown, env -> Or_unknown_or_bottom.Unknown, env
@@ -2104,6 +2024,9 @@ and join_row_like :
       free_names_maps_to:('maps_to -> Name_occurrences.t) ->
       free_names_index:('lattice -> Name_occurrences.t) ->
       free_names_shape:('shape -> Name_occurrences.t) ->
+      apply_renaming_maps_to:('maps_to -> Renaming.t -> 'maps_to) ->
+      apply_renaming_index:('lattice -> Renaming.t -> 'lattice) ->
+      apply_renaming_shape:('shape -> Renaming.t -> 'shape) ->
       join_maps_to:
         (Join_env.Binary.t ->
         'shape ->
@@ -2128,9 +2051,10 @@ and join_row_like :
       other2:('lattice, 'shape, 'maps_to) TG.Row_like_case.t Or_bottom.t ->
       ('known * ('lattice, 'shape, 'maps_to) TG.Row_like_case.t Or_bottom.t)
       join_result =
- fun ~free_names_maps_to ~free_names_index ~free_names_shape ~join_maps_to
-     ~equal_index ~inter_index ~join_shape ~merge_map_known join_env ~known1
-     ~known2 ~other1 ~other2 ->
+ fun ~free_names_maps_to ~free_names_index ~free_names_shape
+     ~apply_renaming_maps_to ~apply_renaming_index ~apply_renaming_shape
+     ~join_maps_to ~equal_index ~inter_index ~join_shape ~merge_map_known
+     join_env ~known1 ~known2 ~other1 ~other2 ->
   let join_index (i1 : ('lattice, 'shape) TG.row_like_index)
       (i2 : ('lattice, 'shape) TG.row_like_index) :
       ('lattice, 'shape) TG.row_like_index Or_unknown.t =
@@ -2161,6 +2085,18 @@ and join_row_like :
     in
     Name_occurrences.union free_names_domain (free_names_shape index.shape)
   in
+  let apply_renaming_index (index : ('lattice, 'shape) TG.row_like_index)
+      renaming : ('lattice, 'shape) TG.row_like_index =
+    let domain =
+      match index.domain with
+      | Known domain ->
+        TG.Row_like_index_domain.known (apply_renaming_index domain renaming)
+      | At_least domain ->
+        TG.Row_like_index_domain.at_least (apply_renaming_index domain renaming)
+    in
+    let shape = apply_renaming_shape index.shape renaming in
+    TG.Row_like_index.create ~domain ~shape
+  in
   let join_case join_env
       (case1 : ('lattice, 'shape, 'maps_to) TG.Row_like_case.t)
       (case2 : ('lattice, 'shape, 'maps_to) TG.Row_like_case.t) : _ join_result
@@ -2183,6 +2119,15 @@ and join_row_like :
         free_names_maps_to case.maps_to;
         TEE.free_names case.env_extension ]
   in
+  let apply_renaming_case
+      (case : ('lattice, 'shape, 'maps_to) TG.Row_like_case.t) renaming :
+      ('lattice, 'shape, 'maps_to) TG.Row_like_case.t =
+    TG.Row_like_case.create
+      ~index:(apply_renaming_index case.index renaming)
+      ~maps_to:(apply_renaming_maps_to case.maps_to renaming)
+      ~env_extension:
+        (TG.Env_extension.apply_renaming case.env_extension renaming)
+  in
   let join_knowns join_env
       (case1 :
         ('lattice, 'shape, 'maps_to) TG.Row_like_case.t Or_unknown.t option)
@@ -2195,17 +2140,17 @@ and join_row_like :
     | Some (Known case1), None -> (
       match other2 with
       | Bottom ->
-        let join_env =
+        let renaming, join_env =
           import_names
             ~from_env:(Join_env.Binary.left_join_env join_env)
             join_env (free_names_case case1)
         in
-        Some (Known case1, join_env)
+        Some (Known (apply_renaming_case case1 renaming), join_env)
       | Ok other_case -> Some (join_case join_env case1 other_case))
     | None, Some (Known case2) -> (
       match other1 with
       | Bottom ->
-        let join_env =
+        let renaming, join_env =
           (* try *)
           import_names
             ~from_env:(Join_env.Binary.right_join_env join_env)
@@ -2215,7 +2160,7 @@ and join_row_like :
              names: %a" Name_occurrences.print (free_names_case case2); assert
              false *)
         in
-        Some (Known case2, join_env)
+        Some (Known (apply_renaming_case case2 renaming), join_env)
       | Ok other_case -> Some (join_case join_env other_case case2))
     | Some (Known case1), Some (Known case2) ->
       Some (join_case join_env case1 case2)
@@ -2239,19 +2184,19 @@ and join_row_like :
     match other1, other2 with
     | Bottom, Bottom -> Known Bottom, join_env
     | Ok other1, Bottom ->
-      let join_env =
+      let renaming, join_env =
         import_names
           ~from_env:(Join_env.Binary.left_join_env join_env)
           join_env (free_names_case other1)
       in
-      Known (Ok other1), join_env
+      Known (Ok (apply_renaming_case other1 renaming)), join_env
     | Bottom, Ok other2 ->
-      let join_env =
+      let renaming, join_env =
         import_names
           ~from_env:(Join_env.Binary.right_join_env join_env)
           join_env (free_names_case other2)
       in
-      Known (Ok other2), join_env
+      Known (Ok (apply_renaming_case other2 renaming)), join_env
     | Ok other1, Ok other2 ->
       map_join_result (join_case join_env other1 other2) ~f:(fun case ->
           Or_bottom.Ok case)
@@ -2272,6 +2217,9 @@ and join_row_like_for_blocks env
     (join_row_like ~free_names_maps_to:TG.Product.Int_indexed.free_names
        ~free_names_index:(fun _ -> Name_occurrences.empty)
        ~free_names_shape:(fun _ -> Name_occurrences.empty)
+       ~apply_renaming_maps_to:TG.Product.Int_indexed.apply_renaming
+       ~apply_renaming_index:(fun index _ -> index)
+       ~apply_renaming_shape:(fun shape _ -> shape)
        ~join_maps_to:join_int_indexed_product ~equal_index:TG.Block_size.equal
        ~inter_index:TG.Block_size.inter ~join_shape
        ~merge_map_known:Tag.Map.merge env ~known1 ~known2 ~other1 ~other2)
@@ -2300,6 +2248,9 @@ and join_row_like_for_closures env
     join_row_like ~free_names_maps_to:TG.Closures_entry.free_names
       ~free_names_index:Set_of_closures_contents.free_names
       ~free_names_shape:(fun () -> Name_occurrences.empty)
+      ~apply_renaming_maps_to:TG.Closures_entry.apply_renaming
+      ~apply_renaming_index:Set_of_closures_contents.apply_renaming
+      ~apply_renaming_shape:(fun () _ -> ())
       ~join_maps_to:(fun env () x y -> join_closures_entry env x y)
       ~equal_index:Set_of_closures_contents.equal
       ~inter_index:Set_of_closures_contents.inter
@@ -2448,21 +2399,21 @@ and join_function_type (env : Join_env.Binary.t)
   | Bottom, Bottom -> Bottom, env
   | Bottom, Unknown | Unknown, Bottom -> Unknown, env
   | Bottom, Ok func_type ->
-    let env =
+    let renaming, env =
       import_names
         ~from_env:(Join_env.Binary.right_join_env env)
         env
         (TG.Function_type.free_names func_type)
     in
-    Ok func_type, env
+    Ok (TG.Function_type.apply_renaming func_type renaming), env
   | Ok func_type, Bottom ->
-    let env =
+    let renaming, env =
       import_names
         ~from_env:(Join_env.Binary.left_join_env env)
         env
         (TG.Function_type.free_names func_type)
     in
-    Ok func_type, env
+    Ok (TG.Function_type.apply_renaming func_type renaming), env
   | Unknown, _ | _, Unknown -> Unknown, env
   | ( Ok { code_id = code_id1; rec_info = rec_info1 },
       Ok { code_id = code_id2; rec_info = rec_info2 } ) -> (

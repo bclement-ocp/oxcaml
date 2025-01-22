@@ -127,11 +127,10 @@ end = struct
 
   let equal_env_extension ~equal_type (t1 : TG.env_extension)
       (t2 : TG.env_extension) =
-    true
-    || Name.Set.equal (Name.Map.keys t1.equations) (Name.Map.keys t2.equations)
-       && Name.Map.for_all
-            (fun name ty1 -> equal_type ty1 (Name.Map.find name t2.equations))
-            t1.equations
+    Name.Set.equal (Name.Map.keys t1.equations) (Name.Map.keys t2.equations)
+    && Name.Map.for_all
+         (fun name ty1 -> equal_type ty1 (Name.Map.find name t2.equations))
+         t1.equations
 
   let equal_row_like_case ~equal_type ~equal_maps_to ~equal_lattice ~equal_shape
       (t1 : (_, _, _) TG.row_like_case) (t2 : (_, _, _) TG.row_like_case) =
