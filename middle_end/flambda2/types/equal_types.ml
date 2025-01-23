@@ -7,8 +7,27 @@ module Equal_types = struct
   type env =
     { left_env : TE.t;
       right_env : TE.t;
-      meet_type : TE.meet_type
+      meet_type : TE.meet_type;
+      mutable cache : Simple.Set.t Simple.Map.t
     }
+
+  let create_env ~meet_type left_env right_env =
+    { left_env; right_env; meet_type; cache = Simple.Map.empty }
+
+  let extension_env env left_env right_env =
+    create_env ~meet_type:env.meet_type left_env right_env
+
+  let recursive_check env left right =
+    match Simple.Map.find_opt left env.cache with
+    | None ->
+      env.cache <- Simple.Map.add left (Simple.Set.singleton right) env.cache;
+      false
+    | Some set ->
+      if Simple.Set.mem right set
+      then true
+      else (
+        env.cache <- Simple.Map.add left (Simple.Set.add right set) env.cache;
+        false)
 
   let equal_row_like_index_domain ~equal_lattice
       (t1 : _ TG.row_like_index_domain) (t2 : _ TG.row_like_index_domain) =
@@ -44,9 +63,9 @@ module Equal_types = struct
       TE.add_env_extension env.left_env ext1 ~meet_type:env.meet_type
     in
     let right_env =
-      TE.add_env_extension env.left_env ext1 ~meet_type:env.meet_type
+      TE.add_env_extension env.right_env ext2 ~meet_type:env.meet_type
     in
-    let env = { env with left_env; right_env } in
+    let env = extension_env env left_env right_env in
     Name.Map.for_all
       (fun name kind ->
         let left_canonical =
@@ -71,10 +90,7 @@ module Equal_types = struct
                 (TE.find env.right_env name (Some kind))
                 coercion)
         in
-        let is_equal = equal_type env left_ty right_ty in
-        if (not is_equal) && Flambda_features.debug_flambda2 ()
-        then Format.eprintf "NOT equal: %a@." Name.print name;
-        is_equal)
+        equal_type env left_ty right_ty)
       shared_names
 
   let equal_row_like_case ~equal_type ~equal_maps_to ~equal_lattice ~equal_shape
@@ -89,7 +105,7 @@ module Equal_types = struct
     | Or_bottom.Ok _, Or_bottom.Bottom | Or_bottom.Bottom, Or_bottom.Ok _ ->
       false
     | Or_bottom.Ok left_env, Or_bottom.Ok right_env ->
-      let both_env = { env with left_env; right_env } in
+      let both_env = extension_env env left_env right_env in
       equal_row_like_index ~equal_lattice ~equal_shape t1.index t2.index
       && equal_maps_to both_env t1.maps_to t2.maps_to
       && equal_env_extension ~equal_type both_env t1.env_extension
@@ -180,7 +196,7 @@ module Equal_types = struct
     | Bottom, Bottom -> Some Or_bottom.Bottom
     | Bottom, Ok _ | Ok _, Bottom -> None
     | Ok left_env, Ok right_env ->
-      Some (Or_bottom.Ok { env with left_env; right_env })
+      Some (Or_bottom.Ok (extension_env env left_env right_env))
 
   let equal_head_of_kind_value_non_null ~equal_type env
       (t1 : TG.head_of_kind_value_non_null)
@@ -341,57 +357,129 @@ module Equal_types = struct
       | _, _ -> false)
 end
 
-let equal_type env t1 t2 =
-  let renaming = ref Variable.Map.empty in
+type renaming =
+  { mutable left_renaming : Variable.t Variable.Map.t;
+    mutable right_renaming : Variable.t Variable.Map.t
+  }
+
+let create_renaming () =
+  { left_renaming = Variable.Map.empty; right_renaming = Variable.Map.empty }
+
+let equal_type ~renaming env t1 t2 =
   let rec equal_type env t1 t2 =
-    let is_equal =
-      t1 == t2
-      ||
-      match
-        ( TE.get_alias_then_canonical_simple_exn
-            ~min_name_mode:Name_mode.in_types env.Equal_types.left_env t1,
-          TE.get_alias_then_canonical_simple_exn
-            ~min_name_mode:Name_mode.in_types env.Equal_types.right_env t2 )
-      with
-      | simple1, simple2 ->
-        let is_equal =
-          match Simple.must_be_var simple1, Simple.must_be_var simple2 with
-          | None, None -> Simple.equal simple1 simple2
-          | None, Some _ | Some _, None -> false
-          | Some (var1, coercion1), Some (var2, coercion2) ->
-            let coercion =
-              Coercion.compose_exn coercion1 ~then_:(Coercion.inverse coercion2)
-            in
-            if Coercion.is_id coercion
-            then (
-              Variable.equal var1 var2
-              ||
-              match Variable.Map.find_opt var1 !renaming with
-              | Some var1' -> Variable.equal var1' var2
-              | None ->
-                renaming := Variable.Map.add var1 var2 !renaming;
-                true)
-            else
-              Equal_types.equal_expanded_head ~equal_type env
-                (Expand_head.expand_head0 env.Equal_types.left_env t1
-                   ~known_canonical_simple_at_in_types_mode:(Some simple1))
-                (Expand_head.expand_head0 env.Equal_types.right_env t2
-                   ~known_canonical_simple_at_in_types_mode:(Some simple2))
-        in
-        if not is_equal
-        then
-          Format.eprintf "%a <> %a@." Simple.print simple1 Simple.print simple2;
-        is_equal
-      | exception Not_found ->
-        Equal_types.equal_expanded_head ~equal_type env
-          (Expand_head.expand_head env.Equal_types.left_env t1)
-          (Expand_head.expand_head env.Equal_types.right_env t2)
+    let canonical_simple1 =
+      try
+        Some
+          (TE.get_alias_then_canonical_simple_exn
+             ~min_name_mode:Name_mode.in_types env.Equal_types.left_env t1)
+      with Not_found -> None
     in
-    if (not is_equal) && Flambda_features.debug_flambda2 ()
-    then Format.eprintf "NOT equal: %a <> %a@." TG.print t1 TG.print t2;
-    is_equal
+    let canonical_simple2 =
+      try
+        Some
+          (TE.get_alias_then_canonical_simple_exn
+             ~min_name_mode:Name_mode.in_types env.Equal_types.right_env t2)
+      with Not_found -> None
+    in
+    t1 == t2
+    ||
+    match canonical_simple1, canonical_simple2 with
+    | Some simple1, Some simple2 -> (
+      Simple.equal simple1 simple2
+      || Equal_types.recursive_check env simple1 simple2
+      ||
+      match Simple.must_be_var simple1, Simple.must_be_var simple2 with
+      | None, None -> Simple.equal simple1 simple2
+      | None, Some _ | Some _, None -> false
+      | Some (var1, coercion1), Some (var2, coercion2) ->
+        let coercion =
+          Coercion.compose_exn coercion1 ~then_:(Coercion.inverse coercion2)
+        in
+        let can_unify_vars =
+          (not
+             (TE.mem ~min_name_mode:Name_mode.in_types env.Equal_types.left_env
+                (Name.var var2)))
+          && not
+               (TE.mem ~min_name_mode:Name_mode.in_types
+                  env.Equal_types.right_env (Name.var var1))
+        in
+        if Coercion.is_id coercion
+        then
+          Variable.equal var1 var2
+          || can_unify_vars
+             &&
+             match Variable.Map.find_opt var1 renaming.left_renaming with
+             | Some var1' -> Variable.equal var1' var2
+             | None -> (
+               match Variable.Map.find_opt var2 renaming.right_renaming with
+               | Some _ -> false
+               | None ->
+                 renaming.left_renaming
+                   <- Variable.Map.add var1 var2 renaming.left_renaming;
+                 renaming.right_renaming
+                   <- Variable.Map.add var2 var1 renaming.right_renaming;
+                 true)
+        else
+          assert false
+          && can_unify_vars
+          && Equal_types.equal_expanded_head ~equal_type env
+               (Expand_head.expand_head0 env.Equal_types.left_env t1
+                  ~known_canonical_simple_at_in_types_mode:(Some simple1))
+               (Expand_head.expand_head0 env.Equal_types.right_env t2
+                  ~known_canonical_simple_at_in_types_mode:(Some simple2)))
+    | None, Some simple2
+      when not
+             (TE.mem_simple ~min_name_mode:Name_mode.in_types
+                env.Equal_types.left_env simple2) ->
+      Equal_types.equal_expanded_head ~equal_type env
+        (Expand_head.expand_head env.Equal_types.left_env t1)
+        (Expand_head.expand_head env.Equal_types.right_env t2)
+    | Some simple1, None
+      when not
+             (TE.mem_simple ~min_name_mode:Name_mode.in_types
+                env.Equal_types.right_env simple1) ->
+      Equal_types.equal_expanded_head ~equal_type env
+        (Expand_head.expand_head env.Equal_types.left_env t1)
+        (Expand_head.expand_head env.Equal_types.right_env t2)
+    | Some _, None | None, Some _ -> false
+    | None, None ->
+      Equal_types.equal_expanded_head ~equal_type env
+        (Expand_head.expand_head env.Equal_types.left_env t1)
+        (Expand_head.expand_head env.Equal_types.right_env t2)
   in
   equal_type env t1 t2
 
+let equal_env_extension ~meet_type left_env right_env ext1 ext2 =
+  let renaming = create_renaming () in
+  Equal_types.equal_env_extension ~equal_type:(equal_type ~renaming)
+    (Equal_types.create_env ~meet_type left_env right_env)
+    ext1 ext2
+
 let equal_type ~meet_type left_env right_env t1 t2 =
-  equal_type { Equal_types.left_env; right_env; meet_type } t1 t2
+  let renaming = create_renaming () in
+  equal_type ~renaming
+    (Equal_types.create_env ~meet_type left_env right_env)
+    t1 t2
+
+let equal_level ~meet_type left_env right_env level1 level2 =
+  let left_env =
+    Typing_env_level.fold_on_defined_vars
+      (fun var kind left_env ->
+        TE.add_definition left_env
+          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+          kind)
+      level1 left_env
+  in
+  let right_env =
+    Typing_env_level.fold_on_defined_vars
+      (fun var kind right_env ->
+        TE.add_definition right_env
+          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+          kind)
+      level2 right_env
+  in
+  let ext1 = Typing_env_level.as_extension_with_extra_variables level1 in
+  let ext2 = Typing_env_level.as_extension_with_extra_variables level2 in
+  equal_env_extension ~meet_type left_env right_env
+    (TEE.from_map ext1.TEE.With_extra_variables.equations)
+    (TEE.from_map ext2.TEE.With_extra_variables.equations)

@@ -14,7 +14,6 @@
 (*                                                                        *)
 (**************************************************************************)
 
-module MTC = More_type_creators
 module TE = Typing_env
 module TEE = Typing_env_extension
 module TEL = Typing_env_level
@@ -46,8 +45,8 @@ let check_join_inputs ~env_at_fork _envs_with_levels ~params
           Symbol.print symbol)
     extra_lifted_consts_in_use_envs
 
-let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-    ~extra_lifted_consts_in_use_envs ~extra_allowed_names:_ =
+let cut_and_n_way_join_unchecked definition_typing_env ts_and_use_ids ~params
+    ~cut_after ~extra_lifted_consts_in_use_envs ~extra_allowed_names:_ =
   let params = Bound_parameters.to_list params in
   check_join_inputs ~env_at_fork:definition_typing_env ts_and_use_ids ~params
     ~extra_lifted_consts_in_use_envs;
@@ -75,7 +74,7 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
       joined_envs;
     Printexc.raise_with_backtrace Stack_overflow bt
 
-module Equal_types = struct
+module Equal_types0 = struct
   type env =
     { left_env : TE.t;
       right_env : TE.t;
@@ -421,15 +420,15 @@ module Equal_types = struct
       | _, _ -> false)
 end
 
-let rec equal_type env t1 t2 =
+let rec equal_type0 env t1 t2 =
   let is_equal =
     t1 == t2
     ||
     match
       ( TE.get_alias_then_canonical_simple_exn ~min_name_mode:Name_mode.in_types
-          env.Equal_types.left_env t1,
+          env.Equal_types0.left_env t1,
         TE.get_alias_then_canonical_simple_exn ~min_name_mode:Name_mode.in_types
-          env.Equal_types.right_env t2 )
+          env.Equal_types0.right_env t2 )
     with
     | canonical_simple1, canonical_simple2 ->
       let is_equal =
@@ -445,20 +444,20 @@ let rec equal_type env t1 t2 =
           if Coercion.is_id coercion
           then
             Variable.equal
-              (Renaming.apply_variable env.Equal_types.left_renaming var1)
+              (Renaming.apply_variable env.Equal_types0.left_renaming var1)
               var2
             ||
             let left_renaming =
-              Renaming.add_variable env.Equal_types.left_renaming var1 var2
+              Renaming.add_variable env.Equal_types0.left_renaming var1 var2
             in
-            let env = { env with Equal_types.left_renaming } in
-            Equal_types.equal_expanded_head ~equal_type env
-              (Expand_head.expand_head env.Equal_types.left_env t1)
-              (Expand_head.expand_head env.Equal_types.right_env t2)
+            let env = { env with Equal_types0.left_renaming } in
+            Equal_types0.equal_expanded_head ~equal_type:equal_type0 env
+              (Expand_head.expand_head env.Equal_types0.left_env t1)
+              (Expand_head.expand_head env.Equal_types0.right_env t2)
           else
-            Equal_types.equal_expanded_head ~equal_type env
-              (Expand_head.expand_head env.Equal_types.left_env t1)
-              (Expand_head.expand_head env.Equal_types.right_env t2)
+            Equal_types0.equal_expanded_head ~equal_type:equal_type0 env
+              (Expand_head.expand_head env.Equal_types0.left_env t1)
+              (Expand_head.expand_head env.Equal_types0.right_env t2)
       in
       if (not is_equal) && Flambda_features.debug_flambda2 ()
       then
@@ -466,106 +465,23 @@ let rec equal_type env t1 t2 =
           canonical_simple1 Simple.print canonical_simple2;
       is_equal
     | exception Not_found ->
-      Equal_types.equal_expanded_head ~equal_type env
-        (Expand_head.expand_head env.Equal_types.left_env t1)
-        (Expand_head.expand_head env.Equal_types.right_env t2)
+      Equal_types0.equal_expanded_head ~equal_type:equal_type0 env
+        (Expand_head.expand_head env.Equal_types0.left_env t1)
+        (Expand_head.expand_head env.Equal_types0.right_env t2)
   in
   if (not is_equal) && Flambda_features.debug_flambda2 ()
   then Format.eprintf "%a <> %a@." TG.print t1 TG.print t2;
   is_equal
 
-let check_env_extension_from_level t left_level right_level =
-  let left_env =
-    TE.add_env_extension_from_level t left_level
-      ~meet_type:(Meet_and_join.meet_type ())
-  in
-  let right_env =
-    TE.add_env_extension_from_level t right_level
-      ~meet_type:(Meet_and_join.meet_type ())
-  in
-  let env_for_equality =
-    { Equal_types.left_env; right_env; left_renaming = Renaming.empty }
-  in
-  let t = left_env in
-  let level = right_level in
-  let defined_names = TEL.defined_names level in
-  let t =
-    TEL.fold_on_defined_vars
-      (fun var kind t ->
-        TE.add_definition t
-          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
-          kind)
-      level t
-  in
-  let t =
-    Name.Map.fold
-      (fun name ty t ->
-        if Name.Set.mem name defined_names
-        then TE.add_equation t name ty ~meet_type:(Meet_and_join.meet_type ())
-        else t)
-      (TEL.equations level) t
-  in
-  let t =
-    Variable.Map.fold
-      (fun var proj t -> TE.add_symbol_projection t var proj)
-      (TEL.symbol_projections level)
-      t
-  in
-  let cut_after = TE.current_scope t in
-  Equal_types.equal_env_extension ~equal_type env_for_equality
-    (TG.Env_extension.create ~equations:(TEL.equations left_level))
-    (TG.Env_extension.create ~equations:(TEL.equations right_level))
-  ||
-  let t = TE.increment_scope t in
-  Name.Map.for_all
-    (fun name ty ->
-      Name.Set.mem name defined_names
-      || (try
-            ignore (TG.get_alias_exn ty);
-            true
-          with Not_found -> false)
-      ||
-      let t' =
-        TE.add_equation t name ty ~meet_type:(Meet_and_join.meet_type ())
-      in
-      let level = TE.cut t' ~cut_after in
-      TEL.is_empty level
-      ||
-      match Meet_and_join.meet_type () with
-      | TE.New meet_type_new -> (
-        let canonical =
-          TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types t
-            (Simple.name name)
-        in
-        let existing_ty =
-          Simple.pattern_match canonical
-            ~const:(fun const -> MTC.type_for_const const)
-            ~name:(fun name ~coercion ->
-              TG.apply_coercion (TE.find t name None) coercion)
-        in
-        match meet_type_new t ty existing_ty with
-        | Bottom ->
-          Format.eprintf "for %a, bottom meet!@." Name.print name;
-          Format.eprintf "left: %a@." TG.print ty;
-          Format.eprintf "right: %a@." TG.print existing_ty;
-          false
-        | Ok (meet_ty, _) -> (
-          match meet_ty with
-          | Left_input ->
-            (* Format.eprintf "for %a, got left only@." Name.print name;
-               Format.eprintf "left: %a@." TG.print ty; Format.eprintf "right:
-               %a@." TG.print existing_ty; *)
-            true
-          | Right_input | Both_inputs -> true
-          | New_result ty' ->
-            Format.eprintf "for %a, got a new type: %a@." Name.print name
-              TG.print ty';
-            false))
-      | TE.Old _ -> assert false)
-    (TEL.equations level)
+let _ = ignore equal_type0
 
-let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-    ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
+let check_env_extension_from_level t left_level right_level =
+  Equal_types.equal_level
+    ~meet_type:(Meet_and_join.meet_type ())
+    t t left_level right_level
+
+let cut_and_n_way_join_checked definition_typing_env ts_and_use_ids ~params
+    ~cut_after ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
   (* TODO: symbol projections!! *)
   if Flambda_features.debug_flambda2 ()
   then
@@ -583,7 +499,7 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
   in
   let old_joined_level = TE.cut old_joined_env ~cut_after:scope in
   let new_joined_env =
-    cut_and_n_way_join typing_env ts_and_use_ids ~params ~cut_after
+    cut_and_n_way_join_unchecked typing_env ts_and_use_ids ~params ~cut_after
       ~extra_lifted_consts_in_use_envs ~extra_allowed_names
   in
   let new_joined_level = TE.cut new_joined_env ~cut_after:scope in
@@ -603,7 +519,9 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
       ts_and_use_ids;
     if false then Format.eprintf "@[<v>ENV:@ %a@]@." TE.print old_joined_env;
     Format.eprintf "@[<v>OLD:@ %a@]@." TEL.print old_joined_level;
-    Format.eprintf "@[<v>NEW:@ %a@]@." TEL.print new_joined_level;
-    assert false);
+    Format.eprintf "@[<v>NEW:@ %a@]@." TEL.print new_joined_level);
   TE.add_env_extension_from_level definition_typing_env old_joined_level
     ~meet_type:(Meet_and_join.meet_type ())
+
+let cut_and_n_way_join =
+  if true then cut_and_n_way_join_unchecked else cut_and_n_way_join_checked

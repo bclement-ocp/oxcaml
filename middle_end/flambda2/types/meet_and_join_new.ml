@@ -404,36 +404,17 @@ let meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_type ~join_ty
           val_a, val_b, extensions)
     in
     (* NB: we might get new variables! *)
-    let result_env, _result_extension =
+    let result_env =
       Join_env.Superjoin.join_env_extensions ~meet_type:(TE.New meet_type)
         ~join_ty env
         [env_a, when_a; env_b, when_b]
     in
-    if false
-    then (
-      Format.eprintf "when a: %a@." TEE.print when_a;
-      Format.eprintf "when b: %a@." TEE.print when_b;
-      Format.eprintf "result: %a@." TEE.print _result_extension);
     let result_level = TE.cut result_env ~cut_after:join_scope in
-    let initial_env =
-      TEL.fold_on_defined_vars
-        (fun var kind env ->
-          TE.add_definition env
-            (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
-            kind)
-        result_level initial_env
-    in
-    let result_extension =
-      (TEL.as_extension_with_extra_variables result_level).equations
-    in
-    let result_extension =
-      TG.Env_extension.create ~equations:result_extension
-    in
-    if false then Format.eprintf "TRUE result: %a@." TEE.print result_extension;
+    let result_extension = TEL.as_extension_with_extra_variables result_level in
     let result_env =
       (* Not strict, as we don't expect to be able to get bottom equations from
          joining non-bottom ones *)
-      TE.add_env_extension initial_env result_extension
+      TE.add_env_extension_with_extra_variables initial_env result_extension
         ~meet_type:(New meet_type)
     in
     Ok (result, result_env)
@@ -1602,8 +1583,20 @@ and mark_for_join env t1 t2 : _ join_result =
       TG.print t2;
   let kind = TG.kind t1 in
   match TG.get_alias_opt t2 with
-  | None -> join env t1 t2
-  | Some _ -> Join_env.Binary.join_type0 env kind t1 t2
+  | None -> (
+    (* HACK *)
+    let canonical_simple =
+      if TG.is_obviously_bottom t2
+      then
+        match TG.get_alias_opt t1 with
+        | Some simple when Simple.is_const simple -> Some simple
+        | _ -> None
+      else None
+    in
+    match canonical_simple with
+    | Some simple -> Known (TG.alias_type_of kind simple), env
+    | None -> join env t1 t2)
+  | Some _ -> Join_env.Join_env.join_type0 env kind t1 t2
 
 and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
   if not (K.equal (TG.kind t1) (TG.kind t2))
@@ -1632,7 +1625,7 @@ and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
   let already_known, env =
     match canonical_simple1, canonical_simple2 with
     | Some canonical_simple1, Some canonical_simple2 ->
-      Join_env.Binary.join_type0 env kind
+      Join_env.Join_env.join_type0 env kind
         (TG.alias_type_of kind canonical_simple1)
         (TG.alias_type_of kind canonical_simple2)
     | _, _ -> Or_unknown.Unknown, env
@@ -1654,16 +1647,18 @@ and join ?bound_name:_ env (t1 : TG.t) (t2 : TG.t) : TG.t join_result =
     map_join_result ~f:ET.to_type
       (join_expanded_head env kind expanded1 expanded2)
 
-and import_names ~from_env env names =
+and import_names ~import_from ~from_env env names =
   Name_occurrences.fold_names names ~init:(Renaming.empty, env)
     ~f:(fun (renaming, env) name ->
       let kind = TG.kind (TE.find from_env name None) in
       Name.pattern_match name
         ~symbol:(fun symbol ->
-          let env = Join_env.Binary.import_symbol env kind symbol in
+          let env = Join_env.Join_env.import_symbol env symbol in
           renaming, env)
         ~var:(fun var ->
-          let import_var, env = Join_env.Binary.import_var env kind var in
+          let import_var, env =
+            Join_env.Join_env.import_var ~import_from env kind var
+          in
           let renaming = Renaming.add_variable renaming var import_var in
           renaming, env))
 
@@ -1674,18 +1669,34 @@ and join_expanded_head env kind (expanded1 : ET.t) (expanded2 : ET.t) :
   | Ok _, Bottom ->
     let free_names = TG.free_names (ET.to_type expanded1) in
     let left_env = Join_env.Binary.left_join_env env in
-    let renaming, env = import_names ~from_env:left_env env free_names in
-    let type1 = ET.to_type expanded1 in
-    let type1 = TG.apply_renaming type1 renaming in
-    let expanded1 = Expand_head.expand_head left_env type1 in
+    let renaming, env =
+      import_names ~import_from:Join_env.Join_env.Left_env ~from_env:left_env
+        env free_names
+    in
+    let expanded1 =
+      if Renaming.is_identity renaming
+      then expanded1
+      else
+        let type1 = ET.to_type expanded1 in
+        let type1 = TG.apply_renaming type1 renaming in
+        Expand_head.expand_head left_env type1
+    in
     Known expanded1, env
   | Bottom, Ok _ ->
     let free_names = TG.free_names (ET.to_type expanded2) in
     let right_env = Join_env.Binary.right_join_env env in
-    let renaming, env = import_names ~from_env:right_env env free_names in
-    let type2 = ET.to_type expanded2 in
-    let type2 = TG.apply_renaming type2 renaming in
-    let expanded2 = Expand_head.expand_head right_env type2 in
+    let renaming, env =
+      import_names ~import_from:Join_env.Join_env.Right_env ~from_env:right_env
+        env free_names
+    in
+    let expanded2 =
+      if Renaming.is_identity renaming
+      then expanded2
+      else
+        let type2 = ET.to_type expanded2 in
+        let type2 = TG.apply_renaming type2 renaming in
+        Expand_head.expand_head right_env type2
+    in
     Known expanded2, env
   | Unknown, _ | _, Unknown -> Known (ET.create_unknown kind), env
   | Ok descr1, Ok descr2 -> (
@@ -1739,7 +1750,7 @@ and join_head_of_kind_value env (head1 : TG.head_of_kind_value)
     | Bottom, Bottom -> Bottom, env
     | Bottom, Ok x ->
       let renaming, env =
-        import_names
+        import_names ~import_from:Join_env.Join_env.Right_env
           ~from_env:(Join_env.Binary.right_join_env env)
           env
           (TG.Head_of_kind_value_non_null.free_names x)
@@ -1747,7 +1758,7 @@ and join_head_of_kind_value env (head1 : TG.head_of_kind_value)
       Ok (TG.Head_of_kind_value_non_null.apply_renaming x renaming), env
     | Ok x, Bottom ->
       let renaming, env =
-        import_names
+        import_names ~import_from:Join_env.Join_env.Left_env
           ~from_env:(Join_env.Binary.left_join_env env)
           env
           (TG.Head_of_kind_value_non_null.free_names x)
@@ -2141,7 +2152,7 @@ and join_row_like :
       match other2 with
       | Bottom ->
         let renaming, join_env =
-          import_names
+          import_names ~import_from:Join_env.Join_env.Left_env
             ~from_env:(Join_env.Binary.left_join_env join_env)
             join_env (free_names_case case1)
         in
@@ -2152,7 +2163,7 @@ and join_row_like :
       | Bottom ->
         let renaming, join_env =
           (* try *)
-          import_names
+          import_names ~import_from:Join_env.Join_env.Right_env
             ~from_env:(Join_env.Binary.right_join_env join_env)
             join_env (free_names_case case2)
           (* with Misc.Fatal_error -> Format.eprintf "Right env: %a@." TE.print
@@ -2185,14 +2196,14 @@ and join_row_like :
     | Bottom, Bottom -> Known Bottom, join_env
     | Ok other1, Bottom ->
       let renaming, join_env =
-        import_names
+        import_names ~import_from:Join_env.Join_env.Left_env
           ~from_env:(Join_env.Binary.left_join_env join_env)
           join_env (free_names_case other1)
       in
       Known (Ok (apply_renaming_case other1 renaming)), join_env
     | Bottom, Ok other2 ->
       let renaming, join_env =
-        import_names
+        import_names ~import_from:Join_env.Join_env.Right_env
           ~from_env:(Join_env.Binary.right_join_env join_env)
           join_env (free_names_case other2)
       in
@@ -2400,7 +2411,7 @@ and join_function_type (env : Join_env.Binary.t)
   | Bottom, Unknown | Unknown, Bottom -> Unknown, env
   | Bottom, Ok func_type ->
     let renaming, env =
-      import_names
+      import_names ~import_from:Join_env.Join_env.Right_env
         ~from_env:(Join_env.Binary.right_join_env env)
         env
         (TG.Function_type.free_names func_type)
@@ -2408,7 +2419,7 @@ and join_function_type (env : Join_env.Binary.t)
     Ok (TG.Function_type.apply_renaming func_type renaming), env
   | Ok func_type, Bottom ->
     let renaming, env =
-      import_names
+      import_names ~import_from:Join_env.Join_env.Left_env
         ~from_env:(Join_env.Binary.left_join_env env)
         env
         (TG.Function_type.free_names func_type)
