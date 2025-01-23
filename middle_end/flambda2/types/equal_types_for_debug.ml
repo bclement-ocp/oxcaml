@@ -1,3 +1,18 @@
+(**************************************************************************)
+(*                                                                        *)
+(*                                 OCaml                                  *)
+(*                                                                        *)
+(*                       Basile Clément, OCamlPro                         *)
+(*                                                                        *)
+(*   Copyright 2025 OCamlPro SAS                                          *)
+(*   Copyright 2025 Jane Street Group LLC                                 *)
+(*                                                                        *)
+(*   All rights reserved.  This file is distributed under the terms of    *)
+(*   the GNU Lesser General Public License version 2.1, with the          *)
+(*   special exception on linking described in the file LICENSE.          *)
+(*                                                                        *)
+(**************************************************************************)
+
 module TE = Typing_env
 module TEE = Typing_env_extension
 module TG = Type_grammar
@@ -91,23 +106,13 @@ let equal_env_extension ~equal_type env (ext1 : TG.env_extension)
         TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
           env.left_env (Simple.name name)
       in
-      let left_ty =
-        Simple.pattern_match left_canonical
-          ~const:(fun _ -> TG.alias_type_of kind left_canonical)
-          ~name:(fun name ~coercion ->
-            TG.apply_coercion (TE.find env.left_env name (Some kind)) coercion)
-      in
       let right_canonical =
         TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
           env.right_env (Simple.name name)
       in
-      let right_ty =
-        Simple.pattern_match right_canonical
-          ~const:(fun _ -> TG.alias_type_of kind right_canonical)
-          ~name:(fun name ~coercion ->
-            TG.apply_coercion (TE.find env.right_env name (Some kind)) coercion)
-      in
-      equal_type env left_ty right_ty)
+      equal_type env
+        (TG.alias_type_of kind left_canonical)
+        (TG.alias_type_of kind right_canonical))
     shared_names
 
 let equal_row_like_case ~equal_type ~equal_maps_to ~equal_lattice ~equal_shape
@@ -195,7 +200,7 @@ let equal_array_contents ~equal_type env (t1 : TG.array_contents)
 let equal_head_of_kind_value_non_null ~equal_type env
     (t1 : TG.head_of_kind_value_non_null) (t2 : TG.head_of_kind_value_non_null)
     =
-  match[@warning "-fragile-match"] t1, t2 with
+  match t1, t2 with
   | Variant t1, Variant t2 -> (
     Bool.equal t1.is_unique t2.is_unique
     &&
@@ -259,7 +264,11 @@ let equal_head_of_kind_value_non_null ~equal_type env
          (equal_array_contents ~equal_type env)
          t1.contents t2.contents
     && Alloc_mode.For_types.equal t1.alloc_mode t2.alloc_mode
-  | _, _ -> false
+  | ( ( Variant _ | Mutable_block _ | Boxed_float _ | Boxed_float32 _
+      | Boxed_int32 _ | Boxed_vec128 _ | Boxed_int64 _ | Boxed_nativeint _
+      | Closures _ | String _ | Array _ ),
+      _ ) ->
+    false
 
 let equal_head_of_kind_value ~equal_type env (t1 : TG.head_of_kind_value)
     (t2 : TG.head_of_kind_value) =
@@ -279,9 +288,7 @@ let equal_head_of_kind_naked_immediate ~equal_type env
   | Is_int t1, Is_int t2 -> equal_type env t1 t2
   | Get_tag t1, Get_tag t2 -> equal_type env t1 t2
   | Is_null t1, Is_null t2 -> equal_type env t1 t2
-  | ( (Naked_immediates _ | Is_int _ | Get_tag _ | Is_null _),
-      (Naked_immediates _ | Is_int _ | Get_tag _ | Is_null _) ) ->
-    false
+  | (Naked_immediates _ | Is_int _ | Get_tag _ | Is_null _), _ -> false
 
 let equal_head_of_kind_naked_float32 (t1 : TG.head_of_kind_naked_float32)
     (t2 : TG.head_of_kind_naked_float32) =
@@ -351,9 +358,7 @@ let equal_expanded_head ~equal_type env (t1 : ET.t) (t2 : ET.t) =
     | ( ( Value _ | Naked_immediate _ | Naked_float32 _ | Naked_float _
         | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
         | Rec_info _ | Region _ ),
-        ( Value _ | Naked_immediate _ | Naked_float32 _ | Naked_float _
-        | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
-        | Rec_info _ | Region _ ) ) ->
+        _ ) ->
       false)
 
 let rec equal_type env t1 t2 =
@@ -396,31 +401,26 @@ let rec equal_type env t1 t2 =
       (Expand_head.expand_head env.right_env t2)
 
 let equal_level_ignoring_name_mode ~meet_type env level1 level2 =
-  let ext1 = Typing_env_level.as_extension_with_extra_variables level1 in
-  let ext2 = Typing_env_level.as_extension_with_extra_variables level2 in
-  let equations1, left_env =
-    TEE.With_extra_variables.fold ext1 (Name.Map.empty, env)
-      ~variable:(fun var kind (equations1, left_env) ->
-        ( equations1,
-          TE.add_definition left_env
-            (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
-            kind ))
-      ~equation:(fun name ty (equations1, left_env) ->
-        Name.Map.add name ty equations1, left_env)
+  let left_env =
+    Typing_env_level.fold_on_defined_vars
+      (fun var kind left_env ->
+        TE.add_definition left_env
+          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+          kind)
+      level1 env
   in
-  let equations2, right_env =
-    TEE.With_extra_variables.fold ext2 (Name.Map.empty, env)
-      ~variable:(fun var kind (equations2, right_env) ->
-        ( equations2,
-          TE.add_definition right_env
-            (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
-            kind ))
-      ~equation:(fun name ty (equations2, right_env) ->
-        Name.Map.add name ty equations2, right_env)
+  let right_env =
+    Typing_env_level.fold_on_defined_vars
+      (fun var kind right_env ->
+        TE.add_definition right_env
+          (Bound_name.create_var (Bound_var.create var Name_mode.in_types))
+          kind)
+      level2 env
   in
   equal_env_extension ~equal_type
     (create_env ~meet_type env left_env right_env)
-    (TEE.from_map equations1) (TEE.from_map equations2)
+    (TEE.from_map (Typing_env_level.equations level1))
+    (TEE.from_map (Typing_env_level.equations level2))
 
 let equal_env_extension ~meet_type env ext1 ext2 =
   equal_env_extension ~equal_type (create_env ~meet_type env env env) ext1 ext2

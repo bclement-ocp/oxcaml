@@ -117,4 +117,4 @@ let cut_and_n_way_join_checked definition_typing_env ts_and_use_ids ~params
     ~meet_type:(Meet_and_join.meet_type ())
 
 let cut_and_n_way_join =
-  if false then cut_and_n_way_join_unchecked else cut_and_n_way_join_checked
+  if true then cut_and_n_way_join_unchecked else cut_and_n_way_join_checked
