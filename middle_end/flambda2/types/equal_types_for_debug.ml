@@ -87,8 +87,13 @@ let equal_row_like_index ~equal_lattice ~equal_shape
 
 let names_with_non_equal_types_env_extension ~equal_type env
     (ext1 : TG.env_extension) (ext2 : TG.env_extension) =
-  (* Only consider names that are defined in both environments and have a new
-     equation in at least one environment. *)
+  (* Only consider names that are defined in the parent environment and have a
+     new equation in at least one environment.
+
+     Note that there is a loss of precision here with existential variables (not
+     present in the parent env): if two existential variables have been (or will
+     be!) linked, we don't check that the new types added by each extension for
+     the linked variables are equal. *)
   let shared_names =
     Name.Map.merge
       (fun name ty1 ty2 ->
