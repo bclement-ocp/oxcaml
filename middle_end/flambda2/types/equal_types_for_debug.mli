@@ -19,7 +19,10 @@
 
    {b Warning}: This module should only be used for debugging purposes. It has
    high computational complexity, and no guarantees is made on the precision of
-   the equality test, in particular for types containing env extensions. *)
+   the equality test, in particular for types containing env extensions.
+
+   {b Note}: The functions operating on levels treat all variables defined by
+   the levels as existentials. *)
 
 val equal_type :
   meet_type:Typing_env.meet_type ->
@@ -35,10 +38,23 @@ val equal_env_extension :
   Typing_env_extension.t ->
   bool
 
-(* Variables defined by the levels are treated as existentials. *)
+val names_with_non_equal_types_env_extension :
+  meet_type:Typing_env.meet_type ->
+  Typing_env.t ->
+  Typing_env_extension.t ->
+  Typing_env_extension.t ->
+  Name.Set.t
+
 val equal_level_ignoring_name_mode :
   meet_type:Typing_env.meet_type ->
   Typing_env.t ->
   Typing_env_level.t ->
   Typing_env_level.t ->
   bool
+
+val names_with_non_equal_types_level_ignoring_name_mode :
+  meet_type:Typing_env.meet_type ->
+  Typing_env.t ->
+  Typing_env_level.t ->
+  Typing_env_level.t ->
+  Name.Set.t

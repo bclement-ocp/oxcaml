@@ -85,35 +85,40 @@ let equal_row_like_index ~equal_lattice ~equal_shape
   equal_row_like_index_domain ~equal_lattice t1.domain t2.domain
   && equal_shape t1.shape t2.shape
 
-let equal_env_extension ~equal_type env (ext1 : TG.env_extension)
-    (ext2 : TG.env_extension) =
+let names_with_non_equal_types_env_extension ~equal_type env
+    (ext1 : TG.env_extension) (ext2 : TG.env_extension) =
   (* Only consider names that are defined in both environments and have a new
      equation in at least one environment. *)
   let shared_names =
     Name.Map.merge
       (fun name ty1 ty2 ->
         match ty1, ty2 with
-        | Some ty1, Some _ -> Some (TG.kind ty1)
-        | (Some ty, None | None, Some ty) when exists_in_parent_env env name ->
+        | (Some ty, _ | _, Some ty) when exists_in_parent_env env name ->
           Some (TG.kind ty)
-        | None, None | Some _, None | None, Some _ -> None)
+        | _ -> None)
       (TEE.to_map ext1) (TEE.to_map ext2)
   in
   let env = add_env_extension env ext1 ext2 in
-  Name.Map.for_all
-    (fun name kind ->
-      let left_canonical =
-        TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
-          env.left_env (Simple.name name)
-      in
-      let right_canonical =
-        TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
-          env.right_env (Simple.name name)
-      in
-      equal_type env
-        (TG.alias_type_of kind left_canonical)
-        (TG.alias_type_of kind right_canonical))
-    shared_names
+  Name.Map.keys
+    (Name.Map.filter
+       (fun name kind ->
+         let left_canonical =
+           TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
+             env.left_env (Simple.name name)
+         in
+         let right_canonical =
+           TE.get_canonical_simple_exn ~min_name_mode:Name_mode.in_types
+             env.right_env (Simple.name name)
+         in
+         not
+           (equal_type env
+              (TG.alias_type_of kind left_canonical)
+              (TG.alias_type_of kind right_canonical)))
+       shared_names)
+
+let equal_env_extension ~equal_type env ext1 ext2 =
+  Name.Set.is_empty
+    (names_with_non_equal_types_env_extension ~equal_type env ext1 ext2)
 
 let equal_row_like_case ~equal_type ~equal_maps_to ~equal_lattice ~equal_shape
     env (t1 : (_, _, _) TG.row_like_case) (t2 : (_, _, _) TG.row_like_case) =
@@ -396,11 +401,17 @@ let rec equal_type env t1 t2 =
     when simple_exists_in_parent_env env simple ->
     false
   | None, None | Some _, None | None, Some _ ->
+    (* We lose some precision here: if the same named type from one of the
+       environments is checked for equality against multiple anonymous types
+       from the other environment, we know more equalities in the first
+       environment than in the second. This is probably acceptable since this
+       check is only intended for debugging. *)
     equal_expanded_head ~equal_type env
       (Expand_head.expand_head env.left_env t1)
       (Expand_head.expand_head env.right_env t2)
 
-let equal_level_ignoring_name_mode ~meet_type env level1 level2 =
+let names_with_non_equal_types_level_ignoring_name_mode ~meet_type env level1
+    level2 =
   let left_env =
     Typing_env_level.fold_on_defined_vars
       (fun var kind left_env ->
@@ -417,13 +428,24 @@ let equal_level_ignoring_name_mode ~meet_type env level1 level2 =
           kind)
       level2 env
   in
-  equal_env_extension ~equal_type
+  names_with_non_equal_types_env_extension ~equal_type
     (create_env ~meet_type env left_env right_env)
     (TEE.from_map (Typing_env_level.equations level1))
     (TEE.from_map (Typing_env_level.equations level2))
 
+let equal_level_ignoring_name_mode ~meet_type env level1 level2 =
+  Name.Set.is_empty
+    (names_with_non_equal_types_level_ignoring_name_mode ~meet_type env level1
+       level2)
+
+let names_with_non_equal_types_env_extension ~meet_type env ext1 ext2 =
+  names_with_non_equal_types_env_extension ~equal_type
+    (create_env ~meet_type env env env)
+    ext1 ext2
+
 let equal_env_extension ~meet_type env ext1 ext2 =
-  equal_env_extension ~equal_type (create_env ~meet_type env env env) ext1 ext2
+  Name.Set.is_empty
+    (names_with_non_equal_types_env_extension ~meet_type env ext1 ext2)
 
 let equal_type ~meet_type env t1 t2 =
   equal_type (create_env ~meet_type env env env) t1 t2
