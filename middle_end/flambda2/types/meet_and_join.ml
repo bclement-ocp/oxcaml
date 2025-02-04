@@ -40,12 +40,6 @@ let meet_shape env t ~shape =
         (Typing_env.add_env_extension env env_extension
            ~meet_type:(Old Meet_and_join_old.meet))
 
-let meet_env_extension env t1 t2 =
-  if Flambda_features.use_better_meet ()
-  then Meet_and_join_new.meet_env_extension env t1 t2
-  else
-    Meet_and_join_old.meet_env_extension (Typing_env.Meet_env.create env) t1 t2
-
 let[@inline] join () =
   if Flambda_features.use_better_meet ()
   then Misc.fatal_error "binary join not available"
