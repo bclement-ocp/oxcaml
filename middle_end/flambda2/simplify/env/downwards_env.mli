@@ -223,3 +223,5 @@ val replay_history : t -> Replay_history.t
 val with_replay_history : (Replay_history.t * bool) option -> t -> t
 
 val denv_for_lifted_continuation : denv_for_join:t -> denv:t -> t
+
+val add_continuation_use : t -> Continuation.t -> Apply_cont_rewrite_id.t -> t

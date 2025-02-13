@@ -103,10 +103,14 @@ end = struct
   let bump_scope t = { t with scope = Scope.next t.scope }
 end
 
-type t =
+type shared_data =
   { resolver : Compilation_unit.t -> serializable option;
     binding_time_resolver : Name.t -> Binding_time.With_name_mode.t;
-    get_imported_names : unit -> Name.Set.t;
+    get_imported_names : unit -> Name.Set.t
+  }
+
+and t =
+  { shared_data : shared_data;
     defined_symbols : Symbol.Set.t;
     code_age_relation : Code_age_relation.t;
     prev_levels : One_level.t list;
@@ -116,6 +120,13 @@ type t =
     next_binding_time : Binding_time.t;
     min_binding_time : Binding_time.t;
         (* Earlier variables have mode In_types *)
+    new_types : TG.t Name.Map.t;
+    database_before_last_reduction : Database.snapshot;
+    changes_since_last_reduction : Database.difference;
+    (* continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t
+
+       These are the continuation uses that have been refined since the last
+       call to [flush_continuation_uses]. *)
     is_bottom : bool
   }
 
@@ -139,12 +150,18 @@ let is_bottom t = t.is_bottom
 let aliases t =
   Cached_level.aliases (One_level.just_after_level t.current_level)
 
+let database t =
+  Database.from_snapshot
+    (Cached_level.database (One_level.just_after_level t.current_level))
+
 (* CR-someday mshinwell: Should print name occurrence kinds *)
 let [@ocamlformat "disable"] print ppf
-      ({ resolver = _; binding_time_resolver = _;get_imported_names = _;
+      ({ shared_data = _;
          prev_levels; current_level; next_binding_time = _;
          defined_symbols; code_age_relation; min_binding_time;
-         is_bottom;
+         new_types = _ ; is_bottom;
+         database_before_last_reduction = _;
+         changes_since_last_reduction = _;
        } as t) =
   if is_empty t then
     Format.pp_print_string ppf "Empty"
@@ -163,7 +180,8 @@ let [@ocamlformat "disable"] print ppf
          @[<hov 1>(defined_symbols@ %a)@]@ \
          @[<hov 1>(code_age_relation@ %a)@]@ \
          @[<hov 1>(levels@ %a)@]@ \
-         @[<hov 1>(aliases@ %a)@]\
+         @[<hov 1>(aliases@ %a)@]@ \
+         @[<hov 1>(database@ %a)@]\
        )@]"
       Symbol.Set.print defined_symbols
       Code_age_relation.print code_age_relation
@@ -171,6 +189,7 @@ let [@ocamlformat "disable"] print ppf
          (One_level.print ~min_binding_time))
       levels
       Aliases.print (aliases t)
+      Database.print (database t)
 
 let [@ocamlformat "disable"] print_serializable ppf
     { defined_symbols_without_equations; code_age_relation; just_after_level } =
@@ -346,19 +365,27 @@ let binding_time_resolver resolver name =
         Name.print name print_serializable t
     | _, binding_time_and_mode -> binding_time_and_mode)
 
-let resolver t = t.resolver
+let resolver t = t.shared_data.resolver
+
+let get_imported_names t = t.shared_data.get_imported_names ()
+
+let get_binding_time_resolver t = t.shared_data.binding_time_resolver
 
 let code_age_relation_resolver t comp_unit =
-  match t.resolver comp_unit with
+  match t.shared_data.resolver comp_unit with
   | None -> None
   | Some t -> Some t.code_age_relation
 
 let current_scope t = One_level.scope t.current_level
 
 let create ~resolver ~get_imported_names =
-  { resolver;
-    binding_time_resolver = binding_time_resolver resolver;
-    get_imported_names;
+  let shared_data =
+    { resolver;
+      binding_time_resolver = binding_time_resolver resolver;
+      get_imported_names
+    }
+  in
+  { shared_data;
     prev_levels = [];
     (* Since [Scope.prev] may be used in the simplifier on this scope, in order
        to allow an efficient implementation of [cut] (see below), we always
@@ -368,6 +395,9 @@ let create ~resolver ~get_imported_names =
     defined_symbols = Symbol.Set.empty;
     code_age_relation = Code_age_relation.empty;
     min_binding_time = Binding_time.earliest_var;
+    new_types = Name.Map.empty;
+    database_before_last_reduction = Database.empty_snapshot;
+    changes_since_last_reduction = Database.empty_extension;
     is_bottom = false
   }
 
@@ -558,7 +588,7 @@ let mem ?min_name_mode t name =
       let name_mode =
         match Name.Map.find name (names_to_types t) with
         | exception Not_found ->
-          if Name.Set.mem name (t.get_imported_names ())
+          if Name.Set.mem name (get_imported_names t)
           then Some Name_mode.in_types
           else None
         | _ty, binding_time_and_mode ->
@@ -579,7 +609,7 @@ let mem ?min_name_mode t name =
       (* CR mshinwell: This might not take account of symbols in missing .cmx
          files *)
       Symbol.Set.mem sym t.defined_symbols
-      || Name.Set.mem name (t.get_imported_names ()))
+      || Name.Set.mem name (get_imported_names t))
 
 let mem_simple ?min_name_mode t simple =
   Simple.pattern_match simple
@@ -608,6 +638,26 @@ let with_aliases t ~aliases =
   with_current_level t ~current_level
 
 let cached t = One_level.just_after_level t.current_level
+
+let with_database t ~database =
+  let database, database_extension = Database.tick database in
+  let just_after_level = Cached_level.with_database (cached t) ~database in
+  let level =
+    TEL.add_database_extension
+      (One_level.level t.current_level)
+      database_extension
+  in
+  let current_level =
+    One_level.create (current_scope t) level ~just_after_level
+  in
+  let t =
+    { t with
+      changes_since_last_reduction =
+        Database.concat_extension ~earlier:t.changes_since_last_reduction
+          ~later:database_extension
+    }
+  in
+  with_current_level t ~current_level
 
 let add_variable_definition t var kind name_mode =
   (* We can add equations in our own compilation unit on variables and symbols
@@ -710,7 +760,7 @@ let invariant_for_new_equation (t : t) name ty =
     invariant_for_alias t name ty;
     let defined_names =
       Name_occurrences.create_names
-        (Name.Set.union (name_domain t) (t.get_imported_names ()))
+        (Name.Set.union (name_domain t) (get_imported_names t))
         Name_mode.in_types
     in
     let free_names = Name_occurrences.without_code_ids (TG.free_names ty) in
@@ -948,6 +998,217 @@ let add_env_extension_with_extra_variables t
       with Bottom_equation -> make_bottom t)
     env_extension t
 
+let record_demotions_in_types ~raise_on_bottom ~meet_type t
+    { Database.Aliases0.aliases; demotions } =
+  let t = with_aliases t ~aliases in
+  let t, extra_types =
+    Name.Map.fold
+      (fun demoted canonical (t, extra_types) ->
+        let existing_ty = find t demoted None in
+        let kind = TG.kind existing_ty in
+        let t =
+          replace_equation_by_alias t demoted (TG.alias_type_of kind canonical)
+        in
+        let extra_types = (demoted, canonical, existing_ty) :: extra_types in
+        t, extra_types)
+      demotions (t, [])
+  in
+  List.fold_left
+    (fun t (demoted, canonical, ty) ->
+      add_non_alias_equation ~original_name:demoted ~raise_on_bottom t canonical
+        ty ~meet_type)
+    t extra_types
+
+let _rebuild ~raise_on_bottom ~meet_type t =
+  let rec rebuild0 t =
+    if Name.Map.is_empty t.new_types
+    then t
+    else
+      let database = database t in
+      let demotions = Database.make_demotions database t.new_types in
+      let t = { t with new_types = Name.Map.empty } in
+      if Name.Map.is_empty demotions
+      then t
+      else
+        let aliases0 =
+          Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+        in
+        let original_database = database in
+        match
+          Database.rebuild ~demotions
+            ~binding_time_resolver:(get_binding_time_resolver t)
+            ~binding_times_and_modes:(names_to_types t) aliases0 database
+        with
+        | Bottom ->
+          if raise_on_bottom then raise Bottom_equation else make_bottom t
+        | Ok (database, aliases0) ->
+          if database == original_database
+          then t
+          else
+            let t = with_database t ~database in
+            let t =
+              record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
+            in
+            rebuild0 t
+  in
+  rebuild0 t
+
+let reduce ~raise_on_bottom ~meet_type t =
+  let t = _rebuild ~raise_on_bottom ~meet_type t in
+  let difference = t.changes_since_last_reduction in
+  if Database.is_empty_extension difference
+  then t
+  else
+    let database = database t in
+    let previous = t.database_before_last_reduction in
+    let t =
+      { t with
+        database_before_last_reduction = fst (Database.tick database);
+        changes_since_last_reduction = Database.empty_extension
+      }
+    in
+    let t =
+      match
+        Database.interreduce ~previous ~current:database ~difference (aliases t)
+      with
+      | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
+      | Ok database' ->
+        if database == database' then t else with_database t ~database:database'
+    in
+    let t =
+      Database.fold_relations
+        (fun rel relext t ->
+          Database.fold_constant_relations
+            (fun name const t ->
+              Format.eprintf "%a(%a) = %a@." TG.Relation.print rel Name.print
+                name Reg_width_const.print const;
+              let module I = Targetint_31_63 in
+              match
+                (rel : TG.relation), Reg_width_const.is_naked_immediate const
+              with
+              | Is_int, Some is_int ->
+                if I.equal I.zero is_int
+                then
+                  add_equation ~raise_on_bottom ~meet_type t name MTC.any_block
+                else if I.equal I.one is_int
+                then
+                  add_equation ~raise_on_bottom ~meet_type t name
+                    MTC.any_tagged_immediate
+                else (* TODO: bottom *)
+                  t
+              | Get_tag, Some get_tag -> (
+                match Tag.create_from_targetint get_tag with
+                | None -> (* TODO: bottom *) t
+                | Some tag -> (
+                  let tags = Tag.Set.singleton tag in
+                  match
+                    MTC.blocks_with_these_tags tags
+                      (Alloc_mode.For_types.unknown ())
+                  with
+                  | Known ty ->
+                    add_equation ~raise_on_bottom ~meet_type t name ty
+                  | Unknown -> (* ??? *) t))
+              | Is_null, Some is_null ->
+                if I.equal I.zero is_null
+                then
+                  add_equation ~raise_on_bottom ~meet_type t name
+                    TG.any_non_null_value
+                else if I.equal I.one is_null
+                then add_equation ~raise_on_bottom ~meet_type t name TG.null
+                else (* TODO: bottom *)
+                  t
+              | (Is_int | Get_tag | Is_null), None -> assert false)
+            relext t)
+        difference t
+    in
+    t
+
+let add_equation ~raise_on_bottom t name ty ~meet_type =
+  reduce ~raise_on_bottom ~meet_type
+    (add_equation ~raise_on_bottom t name ty ~meet_type)
+
+let add_relation ~raise_on_bottom t relation ~scrutinee value ~meet_type =
+  let scrutinee =
+    Simple.pattern_match scrutinee
+      ~const:(fun _ -> scrutinee)
+      ~name:(fun name ~coercion ->
+        Simple.apply_coercion_exn
+          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+          coercion)
+  in
+  let value =
+    Simple.pattern_match value
+      ~const:(fun _ -> value)
+      ~name:(fun name ~coercion ->
+        let canonical =
+          Simple.apply_coercion_exn
+            (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+            coercion
+        in
+        canonical)
+  in
+  let aliases0 =
+    Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+  in
+  let original_database = database t in
+  match
+    Database.add_relation
+      ~binding_time_resolver:(get_binding_time_resolver t)
+      ~binding_times_and_modes:(names_to_types t) aliases0 original_database
+      relation ~scrutinee value
+  with
+  | Or_bottom.Bottom ->
+    if raise_on_bottom then raise Bottom_equation else make_bottom t
+  | Or_bottom.Ok (database, aliases0) ->
+    let t = record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0 in
+    let t = with_database t ~database in
+    reduce ~raise_on_bottom ~meet_type t
+
+let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
+  let database = Database.add_continuation_use cont id (database t) in
+  with_database t ~database
+
+let add_continuation_use ~meet_type t cont id =
+  try add_continuation_use ~raise_on_bottom:true ~meet_type t cont id
+  with Bottom_equation -> make_bottom t
+
+let continuation_uses t = Database.continuation_uses (database t)
+
+let add_switch_on_name ~meet_type name ?default ~arms t =
+  let canon = Aliases.get_canonical_ignoring_name_mode (aliases t) name in
+  Simple.pattern_match canon
+    ~const:(fun _ -> t)
+    ~name:(fun name ~coercion ->
+      assert (Coercion.is_id coercion);
+      match Database.add_switch_on_name name ?default ~arms (database t) with
+      | Bottom -> Misc.fatal_error "Unexpected bottom"
+      | Ok database -> (
+        let t = with_database t ~database in
+        try reduce ~raise_on_bottom:true ~meet_type t
+        with Bottom_equation -> make_bottom t))
+
+let add_switch_on_relation ~meet_type relation name ?default ~arms t =
+  (* TODO: create variable, then add switch on name *)
+  match
+    Database.add_switch_on_relation relation name ?default ~arms (database t)
+  with
+  | Bottom -> Misc.fatal_error "Unexpected bottom"
+  | Ok database -> (
+    let t = with_database t ~database in
+    try reduce ~raise_on_bottom:true ~meet_type t
+    with Bottom_equation -> make_bottom t)
+
+let switch_on_scrutinee t ~scrutinee =
+  let scrutinee =
+    Simple.pattern_match scrutinee
+      ~const:(fun _ -> scrutinee)
+      ~name:(fun name ~coercion ->
+        Simple.apply_coercion_exn
+          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+          coercion)
+  in
+  Database.switch_on_scrutinee (database t) ~scrutinee
+
 let add_env_extension_from_level t level ~meet_type : t =
   let t =
     TEL.fold_on_defined_vars
@@ -961,10 +1222,16 @@ let add_env_extension_from_level t level ~meet_type : t =
         with Bottom_equation -> make_bottom t)
       (TEL.equations level) t
   in
-  Variable.Map.fold
-    (fun var proj t -> add_symbol_projection t var proj)
-    (TEL.symbol_projections level)
-    t
+  let t =
+    Variable.Map.fold
+      (fun var proj t -> add_symbol_projection t var proj)
+      (TEL.symbol_projections level)
+      t
+  in
+  (* Do not use [add_database_extension]. *)
+  let database_extension = TEL.database_extension level in
+  let database = Database.add_extension (database t) database_extension in
+  with_database t ~database
 
 let add_equation_strict t name ty ~meet_type : _ Or_bottom.t =
   if t.is_bottom
@@ -985,6 +1252,10 @@ let add_env_extension_maybe_bottom t env_extension ~meet_type =
 
 let add_equation t name ty ~meet_type =
   try add_equation ~raise_on_bottom:true t name ty ~meet_type
+  with Bottom_equation -> make_bottom t
+
+let add_relation t relation ~scrutinee simple ~meet_type =
+  try add_relation ~raise_on_bottom:true t relation ~scrutinee simple ~meet_type
   with Bottom_equation -> make_bottom t
 
 let add_env_extension t env_extension ~meet_type =
@@ -1058,6 +1329,10 @@ let cut t ~cut_after =
        included in the result. *)
     loop (One_level.level t.current_level) t.prev_levels
 
+let rebuild ~meet_type t =
+  try reduce ~raise_on_bottom:true ~meet_type t
+  with Bottom_equation -> make_bottom t
+
 let cut_as_extension t ~cut_after =
   Typing_env_level.as_extension_without_bindings (cut t ~cut_after)
 
@@ -1093,9 +1368,9 @@ let type_simple_in_term_exn t ?min_name_mode simple =
   in
   match
     Aliases.get_canonical_element_exn
-      ~binding_time_resolver:t.binding_time_resolver (aliases t)
-      ~binding_times_and_modes:(names_to_types t) simple name_mode_simple
-      ~min_name_mode ~min_binding_time:t.min_binding_time
+      ~binding_time_resolver:(get_binding_time_resolver t)
+      (aliases t) ~binding_times_and_modes:(names_to_types t) simple
+      name_mode_simple ~min_name_mode ~min_binding_time:t.min_binding_time
   with
   | exception Misc.Fatal_error ->
     let bt = Printexc.get_raw_backtrace () in
@@ -1122,9 +1397,9 @@ let get_canonical_simple_exn t ?min_name_mode ?name_mode_of_existing_simple
   in
   match
     Aliases.get_canonical_element_exn
-      ~binding_time_resolver:t.binding_time_resolver (aliases t) simple
-      ~binding_times_and_modes:(names_to_types t) name_mode_simple
-      ~min_name_mode ~min_binding_time:t.min_binding_time
+      ~binding_time_resolver:(get_binding_time_resolver t)
+      (aliases t) simple ~binding_times_and_modes:(names_to_types t)
+      name_mode_simple ~min_name_mode ~min_binding_time:t.min_binding_time
   with
   | exception Misc.Fatal_error ->
     let bt = Printexc.get_raw_backtrace () in
@@ -1177,7 +1452,7 @@ let compute_joined_aliases base_env alias_candidates envs_at_uses =
           then new_aliases
           else
             Aliases.add_alias_set
-              ~binding_time_resolver:base_env.binding_time_resolver
+              ~binding_time_resolver:(get_binding_time_resolver base_env)
               ~binding_times_and_modes:(names_to_types base_env) new_aliases
               name alias_set)
         alias_candidates (aliases base_env)

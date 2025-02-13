@@ -33,6 +33,13 @@ type is_null =
   | Not_null
   | Maybe_null
 
+type relation =
+  | Is_int
+  | Get_tag
+  | Is_null
+
+module Relation : Container_types.S with type t = relation
+
 type t = private
   | Value of head_of_kind_value Type_descr.t
   | Naked_immediate of head_of_kind_naked_immediate Type_descr.t

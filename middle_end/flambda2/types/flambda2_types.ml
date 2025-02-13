@@ -29,6 +29,24 @@ module Typing_env = struct
   let add_get_tag_relation t name ~scrutinee =
     add_equation t name (Type_grammar.get_tag_for_block ~block:scrutinee)
 
+  let add_is_int_for_scrutinee t simple ~scrutinee =
+    add_relation
+      ~meet_type:(Meet_and_join.meet_type ())
+      t Is_int ~scrutinee simple
+
+  let add_is_null_for_scrutinee t simple ~scrutinee =
+    add_relation
+      ~meet_type:(Meet_and_join.meet_type ())
+      t Is_null ~scrutinee simple
+
+  let add_continuation_use t cont id =
+    add_continuation_use ~meet_type:(Meet_and_join.meet_type ()) t cont id
+
+  let add_get_tag_for_block t simple ~block =
+    add_relation
+      ~meet_type:(Meet_and_join.meet_type ())
+      t Get_tag ~scrutinee:block simple
+
   let add_equations_on_params t ~params ~param_types =
     add_equations_on_params t ~params ~param_types
       ~meet_type:(Meet.meet_type ())

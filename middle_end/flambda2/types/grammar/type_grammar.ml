@@ -42,6 +42,42 @@ type is_null =
   | Not_null
   | Maybe_null
 
+type relation =
+  | Is_int
+  | Get_tag
+  | Is_null
+
+module Relation = struct
+  module T0 = struct
+    type t = relation
+
+    let print ppf = function
+      | Is_int -> Format.fprintf ppf "is_int"
+      | Get_tag -> Format.fprintf ppf "get_tag"
+      | Is_null -> Format.fprintf ppf "is_null"
+
+    let hash : t -> int = Hashtbl.hash
+
+    let compare t1 t2 =
+      match t1, t2 with
+      | Is_null, Is_null -> 0
+      | Is_null, _ -> -1
+      | _, Is_null -> 1
+      | Is_int, Is_int -> 0
+      | Is_int, _ -> -1
+      | _, Is_int -> 1
+      | Get_tag, Get_tag -> 0
+
+    let equal t1 t2 =
+      match t1, t2 with
+      | Is_int, Is_int | Get_tag, Get_tag | Is_null, Is_null -> true
+      | (Is_int | Get_tag | Is_null), _ -> false
+  end
+
+  include T0
+  include Container_types.Make (T0)
+end
+
 (* The grammar of Flambda types. *)
 type t =
   | Value of head_of_kind_value TD.t

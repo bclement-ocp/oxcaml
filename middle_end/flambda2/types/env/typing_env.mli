@@ -113,6 +113,42 @@ val add_definition : t -> Bound_name.t -> Flambda_kind.t -> t
 
 val add_equation : t -> Name.t -> Type_grammar.t -> meet_type:meet_type -> t
 
+val add_relation :
+  t ->
+  Type_grammar.relation ->
+  scrutinee:Simple.t ->
+  Simple.t ->
+  meet_type:meet_type ->
+  t
+
+val add_continuation_use :
+  meet_type:meet_type -> t -> Continuation.t -> Apply_cont_rewrite_id.t -> t
+
+val continuation_uses : t -> Apply_cont_rewrite_id.Set.t Continuation.Map.t
+
+val add_switch_on_relation :
+  meet_type:meet_type ->
+  Type_grammar.relation ->
+  Name.t ->
+  ?default:Apply_cont_rewrite_id.Set.t Continuation.Map.t ->
+  arms:Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t ->
+  t ->
+  t
+
+val add_switch_on_name :
+  meet_type:meet_type ->
+  Name.t ->
+  ?default:Apply_cont_rewrite_id.Set.t Continuation.Map.t ->
+  arms:Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t ->
+  t ->
+  t
+
+val switch_on_scrutinee :
+  t ->
+  scrutinee:Simple.t ->
+  Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t
+  Or_unknown.t
+
 val add_equation_strict :
   t -> Name.t -> Type_grammar.t -> meet_type:meet_type -> t Or_bottom.t
 
@@ -199,6 +235,8 @@ val add_to_code_age_relation :
 val code_age_relation : t -> Code_age_relation.t
 
 val with_code_age_relation : t -> Code_age_relation.t -> t
+
+val rebuild : meet_type:meet_type -> t -> t
 
 val cut : t -> cut_after:Scope.t -> Typing_env_level.t
 

@@ -213,7 +213,7 @@ module type Map = sig
   val print :
     (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a t -> unit
 
-  val diff_domains : 'a t -> 'a t -> 'a t
+  val diff_domains : 'a t -> 'b t -> 'a t
 
   val inter : (key -> 'a -> 'b -> 'c) -> 'a t -> 'b t -> 'c t
 

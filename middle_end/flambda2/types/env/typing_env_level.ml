@@ -21,6 +21,7 @@ type t =
   { defined_vars : K.t Variable.Map.t;
     binding_times : Variable.Set.t Binding_time.Map.t;
     equations : TG.t Name.Map.t;
+    database_extension : Database.difference;
     symbol_projections : Symbol_projection.t Variable.Map.t
   }
 
@@ -59,7 +60,7 @@ let print_symbol_projections ppf symbol_projections =
 
 let [@ocamlformat "disable"] print ppf
       { defined_vars; binding_times = _; equations;
-        symbol_projections } =
+        symbol_projections ; database_extension } =
   (* CR mshinwell: Print [defined_vars] when not called from
      [Typing_env.print] *)
   Format.fprintf ppf "@[<hov 1>(";
@@ -71,6 +72,10 @@ let [@ocamlformat "disable"] print ppf
     Format.fprintf ppf
       "@[<hov 1>(symbol_projections@ @[<hov 1>%a@])@]@ "
       print_symbol_projections symbol_projections ;
+  if not (Database.is_empty_extension database_extension) then
+    Format.fprintf ppf
+      "@[<hov 1>(relations@ @[<hov 1>%a@])@]@ "
+      Database.print_extension database_extension ;
   Format.fprintf ppf
     "@[<hov 1>(equations@ @[<v 1>%a@])@])"
     print_equations equations;
@@ -90,14 +95,22 @@ let empty =
   { defined_vars = Variable.Map.empty;
     binding_times = Binding_time.Map.empty;
     equations = Name.Map.empty;
-    symbol_projections = Variable.Map.empty
+    symbol_projections = Variable.Map.empty;
+    database_extension = Database.empty_extension
   }
 
-let is_empty { defined_vars; binding_times; equations; symbol_projections } =
+let is_empty
+    { defined_vars;
+      binding_times;
+      equations;
+      symbol_projections;
+      database_extension
+    } =
   Variable.Map.is_empty defined_vars
   && Binding_time.Map.is_empty binding_times
   && Name.Map.is_empty equations
   && Variable.Map.is_empty symbol_projections
+  && Database.is_empty_extension database_extension
 
 let create ~defined_vars ~binding_times ~equations ~symbol_projections =
   (if Flambda_features.check_invariants ()
@@ -111,11 +124,18 @@ let create ~defined_vars ~binding_times ~equations ~symbol_projections =
       Misc.fatal_error
         "[defined_vars] and [binding_times] disagree on the set of variables \
          involved");
-  { defined_vars; binding_times; equations; symbol_projections }
+  { defined_vars;
+    binding_times;
+    equations;
+    symbol_projections;
+    database_extension = Database.empty_extension
+  }
 
 let equations t = t.equations
 
 let symbol_projections t = t.symbol_projections
+
+let database_extension t = t.database_extension
 
 let add_symbol_projection t var proj =
   let symbol_projections = Variable.Map.add var proj t.symbol_projections in
@@ -144,6 +164,13 @@ let add_or_replace_equation t name ty =
   if TG.is_obviously_unknown ty
   then { t with equations = Name.Map.remove name t.equations }
   else { t with equations = Name.Map.add name ty t.equations }
+
+let add_database_extension t database_extension =
+  { t with
+    database_extension =
+      Database.concat_extension ~earlier:t.database_extension
+        ~later:database_extension
+  }
 
 let concat ~earlier:(t1 : t) ~later:(t2 : t) =
   let defined_vars =
@@ -177,7 +204,16 @@ let concat ~earlier:(t1 : t) ~later:(t2 : t) =
       (fun _var _proj1 proj2 -> Some proj2)
       t1.symbol_projections t2.symbol_projections
   in
-  { defined_vars; binding_times; equations; symbol_projections }
+  let database_extension =
+    Database.concat_extension ~earlier:t1.database_extension
+      ~later:t2.database_extension
+  in
+  { defined_vars;
+    binding_times;
+    equations;
+    symbol_projections;
+    database_extension
+  }
 
 let ids_for_export t =
   let variables = Variable.Map.keys t.defined_vars in
@@ -193,10 +229,16 @@ let ids_for_export t =
     in
     Ids_for_export.add_variable ids var
   in
+  (* TODO: database_extension? *)
   Variable.Map.fold symbol_projection t.symbol_projections ids
 
 let as_extension_without_bindings
-    ({ defined_vars; binding_times; equations; symbol_projections } as t) =
+    ({ defined_vars;
+       binding_times;
+       equations;
+       symbol_projections;
+       database_extension = _
+     } as t) =
   if Flambda_features.check_light_invariants ()
   then
     if Variable.Map.is_empty defined_vars
@@ -207,4 +249,5 @@ let as_extension_without_bindings
       Misc.fatal_errorf
         "Typing_env_level.as_extension_without_bindings:@ level %a has bindings"
         print t;
+  (* CR bclement: Store relations in env extensions. *)
   TG.Env_extension.create ~equations
