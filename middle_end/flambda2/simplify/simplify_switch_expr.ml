@@ -581,6 +581,22 @@ let simplify_switch0 dacc switch ~down_to_up =
   in
   let dacc_before_switch = dacc in
   let typing_env_at_use = DA.typing_env dacc in
+  let () =
+    match TE.switch_on_scrutinee typing_env_at_use ~scrutinee with
+    | Unknown ->
+      if Flambda_features.debug_flambda2 ()
+      then
+        Format.eprintf "@[<v>When switchong on %a, no uses:@ %a@]@."
+          Simple.print scrutinee TE.print typing_env_at_use
+    | Known switch ->
+      if Flambda_features.debug_flambda2 ()
+      then
+        Format.eprintf "@[<v>When switching on %a:@ %a@]@." Simple.print
+          scrutinee
+          (Reg_width_const.Map.print
+             (Continuation.Map.print Apply_cont_rewrite_id.Set.print))
+          switch
+  in
   let arms, dacc =
     TI.Map.fold
       (simplify_arm ~typing_env_at_use ~scrutinee_ty)

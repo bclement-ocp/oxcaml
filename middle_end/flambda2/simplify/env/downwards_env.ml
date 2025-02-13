@@ -321,6 +321,10 @@ let add_equation_on_symbol t sym ty =
   in
   { t with typing_env }
 
+let add_continuation_use t cont id =
+  let typing_env = TE.add_continuation_use t.typing_env cont id in
+  { t with typing_env }
+
 let mem_symbol t sym = mem_name t (Name.symbol sym)
 
 let find_symbol t sym = TE.find (typing_env t) (Name.symbol sym) (Some K.value)

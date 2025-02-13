@@ -174,6 +174,18 @@ module Typing_env : sig
 
   val add_equation : t -> Name.t -> flambda_type -> t
 
+  val add_is_int_for_scrutinee : t -> Simple.t -> scrutinee:Name.t -> t
+
+  val add_get_tag_for_block : t -> Simple.t -> block:Name.t -> t
+
+  val add_continuation_use : t -> Continuation.t -> Apply_cont_rewrite_id.t -> t
+
+  val switch_on_scrutinee :
+    t ->
+    scrutinee:Simple.t ->
+    Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t
+    Or_unknown.t
+
   val add_equations_on_params :
     t -> params:Bound_parameters.t -> param_types:flambda_type list -> t
 

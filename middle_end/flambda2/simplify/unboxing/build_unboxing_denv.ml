@@ -102,6 +102,11 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
           DE.add_equation_on_variable denv is_int.param
             (T.is_int_for_scrutinee ~scrutinee:(Simple.var param_var))
         in
+        let denv =
+          DE.map_typing_env denv ~f:(fun typing_env ->
+              TE.add_is_int_for_scrutinee typing_env
+                ~scrutinee:(Name.var param_var) (Simple.var is_int.param))
+        in
         let is_int_prim =
           P.Eligible_for_cse.create_is_int ~variant_only:true
             ~immediate_or_block:(Name.var param_var)

@@ -211,3 +211,5 @@ val cost_of_lifting_continuations_out_of_current_one : t -> int
 val add_lifting_cost : int -> t -> t
 
 val denv_for_lifted_continuation : denv_for_join:t -> denv:t -> t
+
+val add_continuation_use : t -> Continuation.t -> Apply_cont_rewrite_id.t -> t

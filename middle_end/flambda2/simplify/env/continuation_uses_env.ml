@@ -28,6 +28,7 @@ let empty = { continuation_uses = Continuation.Map.empty }
 
 let record_continuation_use t cont kind ~env_at_use ~arg_types =
   let id = Apply_cont_rewrite_id.create () in
+  let env_at_use = Downwards_env.add_continuation_use env_at_use cont id in
   let continuation_uses =
     Continuation.Map.update cont
       (function

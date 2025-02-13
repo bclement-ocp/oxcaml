@@ -116,6 +116,11 @@ type t =
     next_binding_time : Binding_time.t;
     min_binding_time : Binding_time.t;
         (* Earlier variables have mode In_types *)
+    new_types : TG.t Name.Map.t;
+    (* continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t
+
+       These are the continuation uses that have been refined since the last
+       call to [flush_continuation_uses]. *)
     is_bottom : bool
   }
 
@@ -139,12 +144,15 @@ let is_bottom t = t.is_bottom
 let aliases t =
   Cached_level.aliases (One_level.just_after_level t.current_level)
 
+let database t =
+  Cached_level.database (One_level.just_after_level t.current_level)
+
 (* CR-someday mshinwell: Should print name occurrence kinds *)
 let [@ocamlformat "disable"] print ppf
       ({ resolver = _; binding_time_resolver = _;get_imported_names = _;
          prev_levels; current_level; next_binding_time = _;
          defined_symbols; code_age_relation; min_binding_time;
-         is_bottom;
+         new_types = _ ; is_bottom;
        } as t) =
   if is_empty t then
     Format.pp_print_string ppf "Empty"
@@ -163,7 +171,8 @@ let [@ocamlformat "disable"] print ppf
          @[<hov 1>(defined_symbols@ %a)@]@ \
          @[<hov 1>(code_age_relation@ %a)@]@ \
          @[<hov 1>(levels@ %a)@]@ \
-         @[<hov 1>(aliases@ %a)@]\
+         @[<hov 1>(aliases@ %a)@]@ \
+         @[<hov 1>(database@ %a)@]\
        )@]"
       Symbol.Set.print defined_symbols
       Code_age_relation.print code_age_relation
@@ -171,6 +180,7 @@ let [@ocamlformat "disable"] print ppf
          (One_level.print ~min_binding_time))
       levels
       Aliases.print (aliases t)
+      Database.print (database t)
 
 let [@ocamlformat "disable"] print_serializable ppf
     { defined_symbols_without_equations; code_age_relation; just_after_level } =
@@ -396,6 +406,7 @@ let create ~resolver ~get_imported_names =
     defined_symbols = Symbol.Set.empty;
     code_age_relation = Code_age_relation.empty;
     min_binding_time = Binding_time.earliest_var;
+    new_types = Name.Map.empty;
     is_bottom = false
   }
 
@@ -637,6 +648,19 @@ let with_aliases t ~aliases =
 
 let cached t = One_level.just_after_level t.current_level
 
+let with_database t ~database =
+  let database, database_extension = Database.tick database in
+  let just_after_level = Cached_level.with_database (cached t) ~database in
+  let level =
+    TEL.add_database_extension
+      (One_level.level t.current_level)
+      database_extension
+  in
+  let current_level =
+    One_level.create (current_scope t) level ~just_after_level
+  in
+  with_current_level t ~current_level, database_extension
+
 let add_variable_definition t var kind name_mode =
   (* We can add equations in our own compilation unit on variables and symbols
      defined in another compilation unit. However we can't define other
@@ -787,6 +811,7 @@ let rec replace_equation (t : t) name ty =
            canonical (its canonical is %a): %a"
           Name.print name Simple.print canonical TG.print ty);
   invariant_for_new_equation t name ty;
+  let t = { t with new_types = Name.Map.add name ty t.new_types } in
   let level =
     TEL.add_or_replace_equation (One_level.level t.current_level) name ty
   in
@@ -820,6 +845,10 @@ let rec replace_equation (t : t) name ty =
   in
   with_current_level t ~current_level
 
+(* reduce: first rebuild the database so that everything is canonical
+
+   then perform inter-reductions *)
+
 and replace_equation_or_add_alias_to_const t name ty =
   match TG.recover_const_alias ty with
   | None -> replace_equation t name ty
@@ -830,12 +859,12 @@ and replace_equation_or_add_alias_to_const t name ty =
         ~canonical_element1:(Simple.name name)
         ~canonical_element2:(Simple.const const)
     with
-    | Ok { canonical_element = _; alias_of_demoted_element; t = aliases } ->
+    | Ok { canonical_element; alias_of_demoted_element; t = aliases } ->
       if not (Simple.equal alias_of_demoted_element (Simple.name name))
       then Misc.fatal_error "Unexpected demotion of constant.";
       let t = with_aliases t ~aliases in
       let kind = MTC.kind_for_const const in
-      let ty = TG.alias_type_of kind (Simple.const const) in
+      let ty = TG.alias_type_of kind canonical_element in
       replace_equation t name ty
     | Bottom ->
       Misc.fatal_error "Unexpected bottom while adding alias to constant.")
@@ -1031,6 +1060,135 @@ and add_env_extension_with_extra_variables t
       with Bottom_equation -> make_bottom t)
     env_extension t
 
+let process_demotions ~raise_on_bottom ~meet_type t
+    { Database.Aliases0.aliases; demotions } =
+  Profile.record_call ~accumulate:true "process_demotions" @@ fun () ->
+  let t = with_aliases t ~aliases in
+  let new_types = t.new_types in
+  let t, extra_types =
+    Name.Map.fold
+      (fun demoted canonical (t, extra_types) ->
+        let canonical =
+          Simple.pattern_match canonical
+            ~const:(fun _ -> canonical)
+            ~name:(fun name ~coercion ->
+              Simple.apply_coercion_exn
+                (Aliases.get_canonical_ignoring_name_mode aliases name)
+                coercion)
+        in
+        let existing_ty = find t demoted None in
+        let kind = TG.kind existing_ty in
+        let t = replace_equation t demoted (TG.alias_type_of kind canonical) in
+        let extra_types = (demoted, canonical, existing_ty) :: extra_types in
+        t, extra_types)
+      demotions (t, [])
+  in
+  let t = { t with new_types } in
+  List.fold_left
+    (fun t (demoted, canonical, ty) ->
+      add_non_alias_equation ~original_name:demoted ~raise_on_bottom t canonical
+        ty ~meet_type)
+    t extra_types
+
+let _rebuild ~raise_on_bottom ~meet_type
+    ?(database_extension = Database.empty_extension) t =
+  let db0 = database t in
+  let rec rebuild0 new_types database_extension t =
+    if Name.Map.is_empty t.new_types
+    then (
+      let database = database t in
+      match
+        Database.interreduce ~previous:db0 ~current:database
+          ~difference:database_extension
+      with
+      | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
+      | Ok database ->
+        let t, database_extension = with_database t ~database in
+        ignore database_extension;
+        t)
+    else
+      let database = database t in
+      let demotions = Database.make_demotions database t.new_types in
+      let new_types =
+        Name.Map.union (fun _ _ty1 ty2 -> Some ty2) new_types t.new_types
+      in
+      let t = { t with new_types = Name.Map.empty } in
+      let aliases0 = Database.Aliases0.{ aliases = aliases t; demotions } in
+      let database0 = database in
+      match
+        Database.rebuild ~binding_time_resolver:t.binding_time_resolver
+          ~binding_times_and_modes:(names_to_types t) aliases0 database
+      with
+      | Bottom ->
+        if raise_on_bottom then raise Bottom_equation else make_bottom t
+      | Ok (database, aliases0) ->
+        if database == database0
+        then t
+        else
+          let t, extra_database_extension = with_database t ~database in
+          let t = process_demotions ~raise_on_bottom ~meet_type t aliases0 in
+          rebuild0 new_types
+            (Database.concat_extension ~earlier:database_extension
+               ~later:extra_database_extension)
+            t
+  in
+  Profile.record_call ~accumulate:true "rebuild" (fun () ->
+      rebuild0 Name.Map.empty database_extension t)
+
+let add_equation ~raise_on_bottom t name ty ~meet_type =
+  (* _rebuild ~raise_on_bottom ~meet_type *)
+  add_equation ~raise_on_bottom t name ty ~meet_type
+
+let add_relation ~raise_on_bottom t relation name simple ~meet_type =
+  let simple =
+    Simple.pattern_match simple
+      ~const:(fun _ -> simple)
+      ~name:(fun name ~coercion ->
+        Simple.apply_coercion_exn
+          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+          coercion)
+  in
+  let aliases0 =
+    Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+  in
+  let original_database = database t in
+  match
+    Database.add_relation ~binding_time_resolver:t.binding_time_resolver
+      ~binding_times_and_modes:(names_to_types t) aliases0 original_database
+      relation name simple
+  with
+  | Or_bottom.Bottom ->
+    if raise_on_bottom then raise Bottom_equation else make_bottom t
+  | Or_bottom.Ok (database, aliases0) ->
+    let t, database_extension = with_database t ~database in
+    let t = process_demotions ~raise_on_bottom ~meet_type t aliases0 in
+    _rebuild ~raise_on_bottom ~meet_type ~database_extension t
+
+let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
+  let database = Database.add_continuation_use cont id (database t) in
+  let t, database_extension = with_database t ~database in
+  ignore database_extension;
+  t
+
+let add_continuation_use ~meet_type t cont id =
+  try add_continuation_use ~raise_on_bottom:true ~meet_type t cont id
+  with Bottom_equation -> make_bottom t
+
+let continuation_uses t = Database.continuation_uses (database t)
+
+let add_switch_on_relation ~meet_type relation name ?default ~arms t =
+  match
+    Database.add_switch_on_relation relation name ?default ~arms (database t)
+  with
+  | Bottom -> Misc.fatal_error "Unexpected bottom"
+  | Ok database -> (
+    let t, database_extension = with_database t ~database in
+    try _rebuild ~raise_on_bottom:true ~meet_type ~database_extension t
+    with Bottom_equation -> make_bottom t)
+
+let switch_on_scrutinee t ~scrutinee =
+  Database.switch_on_scrutinee (database t) ~scrutinee
+
 let add_env_extension_from_level t level ~meet_type : t =
   let t =
     TEL.fold_on_defined_vars
@@ -1044,10 +1202,17 @@ let add_env_extension_from_level t level ~meet_type : t =
         with Bottom_equation -> make_bottom t)
       (TEL.equations level) t
   in
-  Variable.Map.fold
-    (fun var proj t -> add_symbol_projection t var proj)
-    (TEL.symbol_projections level)
-    t
+  let t =
+    Variable.Map.fold
+      (fun var proj t -> add_symbol_projection t var proj)
+      (TEL.symbol_projections level)
+      t
+  in
+  (* Do not use [add_database_extension]. *)
+  let database_extension = TEL.database_extension level in
+  let database = Database.add_extension (database t) database_extension in
+  let t, _ = with_database t ~database in
+  t
 
 let add_equation_strict t name ty ~meet_type : _ Or_bottom.t =
   if t.is_bottom
@@ -1068,6 +1233,10 @@ let add_env_extension_maybe_bottom t env_extension ~meet_type =
 
 let add_equation t name ty ~meet_type =
   try add_equation ~raise_on_bottom:true t name ty ~meet_type
+  with Bottom_equation -> make_bottom t
+
+let add_relation t relation name simple ~meet_type =
+  try add_relation ~raise_on_bottom:true t relation name simple ~meet_type
   with Bottom_equation -> make_bottom t
 
 let add_env_extension t env_extension ~meet_type =
@@ -1140,6 +1309,10 @@ let cut t ~cut_after =
     (* Owing to the check above it is certain that we want [t.current_level]
        included in the result. *)
     loop (One_level.level t.current_level) t.prev_levels
+
+let rebuild ~meet_type t =
+  try _rebuild ~raise_on_bottom:true ~meet_type t
+  with Bottom_equation -> make_bottom t
 
 let cut_as_extension t ~cut_after =
   Typing_env_level.as_extension_without_bindings (cut t ~cut_after)

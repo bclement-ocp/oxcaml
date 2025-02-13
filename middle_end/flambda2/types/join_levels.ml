@@ -48,11 +48,18 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
   let params = Bound_parameters.to_list params in
   check_join_inputs ~env_at_fork:definition_typing_env ts_and_use_ids ~params
     ~extra_lifted_consts_in_use_envs;
-  let ts = List.rev_map (fun (t, _, _) -> t) ts_and_use_ids in
-  Join_env.cut_and_n_way_join
-    ~meet_type:(Meet_and_join.meet_type ())
-    ~n_way_join_type:Meet_and_join_new.n_way_join definition_typing_env
-    ~cut_after ts
+  let ts =
+    List.rev_map
+      (fun (t, _, _) -> TE.rebuild ~meet_type:(Meet_and_join.meet_type ()) t)
+      ts_and_use_ids
+  in
+  let t =
+    Join_env.cut_and_n_way_join
+      ~meet_type:(Meet_and_join.meet_type ())
+      ~n_way_join_type:Meet_and_join_new.n_way_join definition_typing_env
+      ~cut_after ts
+  in
+  t
 
 let ignore_names =
   String.split_on_char ','
@@ -88,7 +95,7 @@ let cut_and_n_way_join_checked definition_typing_env ts_and_use_ids ~params
          | None -> true)
        distinct_names
    in
-   if not (Name.Set.is_empty distinct_names)
+   if true || not (Name.Set.is_empty distinct_names)
    then (
      Format.eprintf "@[<v 1>%s Distinct joins %s@ " (String.make 22 '=')
        (String.make 22 '=');
