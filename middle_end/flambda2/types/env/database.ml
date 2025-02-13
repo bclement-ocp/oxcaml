@@ -1,5 +1,3 @@
-[@@@warning "-32-60-34"]
-
 module TG = Type_grammar
 
 type 'a or_gone =
@@ -176,57 +174,6 @@ end
 module Function = Unary_function0 (Name) (Simple)
 module Inverse = ZRel2 (Name) (Name)
 
-module V4 = struct
-  module Function = ZRel2 (Name) (Simple)
-  module Inverse = ZRel2 (Name) (Name)
-
-  type t =
-    { values : Function.t;
-      inverse : Inverse.t
-    }
-
-  let empty = { values = Function.empty; inverse = Inverse.empty }
-
-  let find_opt key t =
-    match Name.Map.find_opt key t.values with
-    | None -> None
-    | Some simples -> (
-      match Simple.Map.get_singleton simples with
-      | Some (simple, 1) -> Some simple
-      | _ -> Misc.fatal_error "Ill-formed.")
-
-  let remove key value t =
-    let values = Function.remove (key, value) t.values in
-    let inverse =
-      Simple.pattern_match value
-        ~const:(fun _ -> t.inverse)
-        ~name:(fun name ~coercion ->
-          assert (Coercion.is_id coercion);
-          Inverse.remove (name, key) t.inverse)
-    in
-    { values; inverse }
-
-  let add key value t =
-    let values = Function.add (key, value) t.values in
-    let inverse =
-      Simple.pattern_match value
-        ~const:(fun _ -> t.inverse)
-        ~name:(fun name ~coercion ->
-          assert (Coercion.is_id coercion);
-          Inverse.add (name, key) t.inverse)
-    in
-    { values; inverse }
-
-  let replace key ~existing_value value t =
-    let t = remove key existing_value t in
-    add key value t
-
-  let concat ~earlier ~later =
-    let values = Function.union earlier.values later.values in
-    let inverse = Inverse.union earlier.inverse later.inverse in
-    { values; inverse }
-end
-
 type 'a incremental =
   { current : 'a;
     difference : 'a
@@ -234,14 +181,6 @@ type 'a incremental =
 
 module Incremental0 = struct
   let find_opt ~find_opt key t = find_opt key t.current
-
-  let remove ~find_opt ~remove key t =
-    match find_opt key t.current with
-    | None -> t
-    | Some value ->
-      let current = remove key value t.current in
-      let difference = remove key value t.difference in
-      { current; difference }
 
   let replace ~find_opt ~add ~replace key value t =
     match find_opt key t.current with
@@ -253,18 +192,6 @@ module Incremental0 = struct
       let current = replace key ~existing_value value t.current in
       let difference = replace key ~existing_value value t.difference in
       { current; difference }
-end
-
-module Or_gone = struct
-  let find_opt ~find_opt key t =
-    match find_opt key t with
-    | None | Some Gone -> None
-    | Some (There value) -> Some value
-
-  let remove ~add ~remove key t =
-    let current = remove key t.current in
-    let difference = add key Gone t.difference in
-    { current; difference }
 end
 
 type 'a meet_return_value =
@@ -297,376 +224,6 @@ let generic_add ~find_opt ~replace ~meet key value env t : _ Or_bottom.t =
     Ok (replace key value t, env)
   | Some existing_value ->
     generic_meet_then_add ~replace ~meet ~existing_value key value env t
-
-module V5 = struct
-  type t =
-    { relations : V4.t TG.Relation.Map.t;
-      cached_free_names : unit Name.Map.t
-          (* We store these as a [Name.Map.t] rather than a [Name.Set.t] so that
-             we can use [diff_domain] with the demotions. *)
-    }
-
-  let get_relation relation t =
-    try TG.Relation.Map.find relation t.relations with Not_found -> V4.empty
-
-  let set_relation relation table t =
-    { t with relations = TG.Relation.Map.add relation table t.relations }
-
-  let add_free_names_of_name name t =
-    { t with cached_free_names = Name.Map.add name () t.cached_free_names }
-
-  let add_free_names_of_simple simple t =
-    match Simple.must_be_name simple with
-    | None -> t
-    | Some (name, _coercion) -> add_free_names_of_name name t
-
-  let add_relation ~meet relation key value env t : _ Or_bottom.t =
-    let current = get_relation relation t.current in
-    let difference = get_relation relation t.difference in
-    match
-      generic_add
-        ~find_opt:(Incremental0.find_opt ~find_opt:V4.find_opt)
-        ~replace:
-          (Incremental0.replace ~find_opt:V4.find_opt ~add:V4.add
-             ~replace:V4.replace)
-        ~meet key value env { current; difference }
-    with
-    | Bottom -> Bottom
-    | Ok ({ current; difference }, env) ->
-      let current = set_relation relation current t.current in
-      let current = add_free_names_of_name key current in
-      let current = add_free_names_of_simple value current in
-      let difference = set_relation relation difference t.difference in
-      let difference = add_free_names_of_name key difference in
-      let difference = add_free_names_of_simple value difference in
-      Ok ({ current; difference }, env)
-end
-
-let did_demote = ref 0
-
-let did_not_demote = ref 0
-
-let print_info () =
-  Format.eprintf "demoted %d/%d@." !did_demote (!did_demote + !did_not_demote)
-
-let generic_demote ~find_opt ~replace ~remove ~to_be_demoted ~canonical_key
-    ~meet env t : _ Or_bottom.t =
-  match find_opt to_be_demoted t with
-  | None ->
-    incr did_not_demote;
-    Ok (t, env)
-  | Some value_of_to_be_demoted -> (
-    incr did_demote;
-    let t = remove to_be_demoted t in
-    match find_opt canonical_key t with
-    | None ->
-      let t = replace canonical_key value_of_to_be_demoted t in
-      Ok (t, env)
-    | Some value_of_canonical_key ->
-      generic_meet_then_add ~replace ~meet
-        ~existing_value:value_of_canonical_key canonical_key
-        value_of_to_be_demoted env t)
-
-module V2 = struct
-  module Inverse = ZRel2 (Simple) (Name)
-
-  (* The [inverse] is a Z-relation that records all of the additions and
-     deletions of entries that have been made to the function since it was
-     [empty].
-
-     It satisfies the following invariants:
-
-     - The [inverse] map only contains entries exactly equal to [1];
-
-     - For any argument [arg], there is at most one [simple] such that the pair
-     [(simple, arg)] is in [inverse]. This is the case if, and only if, [f(arg)
-     = simple] is recorded in [values].
-
-     The [difference] field is a Z-relation that records all of the additions
-     and deletions of entries that have been made to the function since an
-     arbitrary point in the past.
-
-     The [difference] field satisfies the following invariants:
-
-     - The [difference] map only contains entries exactly equal to [-1] or [1];
-
-     - For any argument [arg], there is at most one [simple] such that the pair
-     [(simple, arg)] is in [difference] with a positive (hence equal to [1])
-     weight, in which case the entry [f(arg) = simple] is recorded in [values].
-
-     Positive entries in the [difference] and [inverse] fields only contain
-     canonical names. *)
-  type t =
-    { values : Simple.t Name.Map.t;
-      inverse : Inverse.t;
-      difference : Inverse.t
-    }
-
-  let apply_renaming_inverse inverse renaming =
-    Simple.Map.fold
-      (fun simple args inverse ->
-        Simple.Map.add
-          (Renaming.apply_simple renaming simple)
-          (Name.Map.map_keys (Renaming.apply_name renaming) args)
-          inverse)
-      inverse Simple.Map.empty
-
-  let apply_renaming t renaming =
-    let inverse = apply_renaming_inverse t.inverse renaming in
-    let difference = apply_renaming_inverse t.difference renaming in
-    let values =
-      Name.Map.fold
-        (fun name value values ->
-          Name.Map.add
-            (Renaming.apply_name renaming name)
-            (Renaming.apply_simple renaming value)
-            values)
-        t.values Name.Map.empty
-    in
-    { values; inverse; difference }
-
-  (* We only need to keep track of the inverses for extensions, as we can
-     recompute the changes to the function from the changes to the inverses. *)
-  type extension = Inverse.t
-
-  let apply_renaming_extension = apply_renaming_inverse
-
-  let tick t = { t with difference = Inverse.empty }, t.difference
-
-  let extension_bindings (extension : extension) =
-    Simple.Map.fold
-      (fun simple args bindings ->
-        Name.Map.fold
-          (fun arg count bindings ->
-            if count > 0 then (arg, simple) :: bindings else bindings)
-          args bindings)
-      extension []
-
-  let print_extension ppf (extension : extension) =
-    if Inverse.is_empty extension
-    then Format.fprintf ppf "{}"
-    else
-      Format.fprintf ppf "@[<hov 1>{%a}@]"
-        (Format.pp_print_list ~pp_sep:Format.pp_print_space
-           (fun ppf (key, datum) ->
-             Format.fprintf ppf "@[<hov 1>(%a@ %a)@]" Name.print key
-               Simple.print datum))
-        (extension_bindings extension)
-
-  let add_extension ext t =
-    let inverse = Inverse.union t.inverse ext in
-    let difference = Inverse.union t.difference ext in
-    (* We could make this part a bit simpler by dropping information related to
-       demoted elements through another mechanism, at the cost of increasing the
-       complexity of the interface. *)
-    let added, removed =
-      Simple.Map.fold
-        (fun value args (added, removed) ->
-          Name.Map.fold
-            (fun arg cnt (added, removed) ->
-              if cnt > 0
-              then Name.Map.add arg value added, removed
-              else added, Name.Map.add arg () removed)
-            args (added, removed))
-        ext
-        (Name.Map.empty, Name.Map.empty)
-    in
-    let removed = Name.Map.diff_domains removed added in
-    let values = Name.Map.diff_domains t.values removed in
-    let values =
-      Name.Map.union (fun _ _old_value value -> Some value) values added
-    in
-    { values; inverse; difference }
-
-  let concat_extension ~earlier ~later = Inverse.union earlier later
-
-  let empty =
-    { values = Name.Map.empty;
-      inverse = Inverse.empty;
-      difference = Inverse.empty
-    }
-
-  let find_opt key { values; _ } = Name.Map.find_opt key values
-
-  let replace_existing key value ~existing t =
-    let t =
-      match existing with
-      | None -> t
-      | Some existing_value ->
-        let inverse = Inverse.remove (existing_value, key) t.inverse in
-        let difference = Inverse.remove (existing_value, key) t.difference in
-        { t with inverse; difference }
-    in
-    let values = Name.Map.add key value t.values in
-    let inverse = Inverse.add (value, key) t.inverse in
-    let difference = Inverse.add (value, key) t.difference in
-    { values; inverse; difference }
-
-  let replace key value t =
-    replace_existing key value ~existing:(Name.Map.find_opt key t.values) t
-
-  let remove_existing key ~existing t =
-    match existing with
-    | None -> t
-    | Some existing_value ->
-      let values = Name.Map.remove key t.values in
-      let inverse = Inverse.remove (existing_value, key) t.inverse in
-      let difference = Inverse.remove (existing_value, key) t.difference in
-      { values; inverse; difference }
-
-  let remove key t =
-    remove_existing key ~existing:(Name.Map.find_opt key t.values) t
-
-  let add ~meet key value env t =
-    generic_add ~find_opt ~replace ~meet key value env t
-
-  let demote ~for_const ~to_be_demoted ~canonical_element ~meet env t =
-    (* First demote in values. Make sure we don't add names with coercions to
-       the mix, as we wouldn't properly keep track of them. *)
-    let t =
-      let to_be_demoted_simple = Simple.name to_be_demoted in
-      match Simple.Map.find_opt to_be_demoted_simple t.inverse with
-      | None -> t
-      | Some args ->
-        let has_coercion =
-          not (Coercion.is_id (Simple.coercion canonical_element))
-        in
-        Name.Map.fold
-          (fun name count t ->
-            if count > 0
-            then
-              if has_coercion
-              then remove_existing name ~existing:(Some to_be_demoted_simple) t
-              else
-                replace_existing name canonical_element
-                  ~existing:(Some to_be_demoted_simple) t
-            else t)
-          args t
-    in
-    (* Next demote in arguments. *)
-    Simple.pattern_match canonical_element
-      ~const:(fun const ->
-        match find_opt to_be_demoted t with
-        | None ->
-          incr did_not_demote;
-          Or_bottom.Ok (t, env)
-        | Some existing_value ->
-          incr did_demote;
-          let open Or_bottom.Let_syntax in
-          let<* value_for_const = for_const const in
-          let<+ _, env =
-            meet env existing_value (Simple.const value_for_const)
-          in
-          remove to_be_demoted t, env)
-      ~name:(fun name ~coercion ->
-        (* Supporting coercions here would require applying them to the value
-           during [meet], but we don't expect meaningful relations for names
-           with coercions anyways. *)
-        if not (Coercion.is_id coercion)
-        then Or_bottom.Ok (remove to_be_demoted t, env)
-        else
-          generic_demote ~find_opt ~replace ~remove ~to_be_demoted
-            ~canonical_key:name ~meet env t)
-end
-
-module Unfunc = V2
-
-(* TODO: also store switches.
- * is_int : 'a Reg_width_const.Map.t Name.Map.t
- *)
-
-module Continuation_uses = struct
-  include ZRel2 (Continuation) (Apply_cont_rewrite_id)
-
-  let apply_renaming t renaming =
-    Continuation.Map.map_keys (Renaming.apply_continuation renaming) t
-
-  let concat ~earlier ~later = union earlier later
-end
-
-module type S = sig
-  type t
-
-  val empty : t
-
-  val apply_renaming : t -> Renaming.t -> t
-
-  val concat : earlier:t -> later:t -> t
-end
-
-module type Lattice = sig
-  type t
-
-  val apply_renaming : t -> Renaming.t -> t
-end
-
-module type Incremental_lattice = sig
-  include Lattice
-
-  val concat : earlier:t -> later:t -> t
-end
-
-module Incremental_simple = struct
-  include Simple
-
-  let concat ~earlier:_ ~later = later
-end
-
-module Set_of_uses = struct
-  type t = Apply_cont_rewrite_id.Set.t
-
-  let apply_renaming t _renaming = t
-
-  let concat ~earlier:_ ~later = later
-end
-
-module Unary_function (Value : Incremental_lattice) = struct
-  type t = Value.t Name.Map.t
-
-  let concat ~earlier ~later =
-    Name.Map.union
-      (fun _ earlier later -> Some (Value.concat ~earlier ~later))
-      earlier later
-
-  let remove_demoted_names (t : t) demoted_names : t =
-    Name.Map.diff_domains t demoted_names
-
-  let apply_renaming t renaming =
-    Name.Map.fold
-      (fun name value t ->
-        Name.Map.add
-          (Renaming.apply_name renaming name)
-          (Value.apply_renaming value renaming)
-          t)
-      t Name.Map.empty
-end
-
-module Relation = Unary_function (Incremental_simple)
-
-module Extension = struct
-  module Id = struct
-    include Numeric_types.Int
-
-    let fresh =
-      let cnt = ref 0 in
-      fun () ->
-        incr cnt;
-        !cnt
-  end
-
-  type t =
-    { relations : Relation.t TG.Relation.Map.t;
-      continuation_uses : Continuation_uses.t
-    }
-
-  let apply_renaming { relations; continuation_uses } renaming =
-    let relations =
-      TG.Relation.Map.map
-        (fun relation -> Relation.apply_renaming relation renaming)
-        relations
-    in
-    { relations; continuation_uses }
-end
 
 module Row_like = struct
   type 'a case = 'a Or_bottom.t
@@ -745,548 +302,12 @@ module Row_like = struct
     | false, true -> Right_input, env
     | false, false -> New_result { known; other }, env
 
-  let empty =
-    { known = Reg_width_const.Map.empty; other = Ok Extension.Id.Set.empty }
-
   let find const { known; other } =
     match Reg_width_const.Map.find_opt const known with
     | None -> other
     | Some case -> Or_bottom.Ok case
 end
-
-module Switch = struct
-  type t =
-    { current : Extension.Id.Set.t Row_like.t or_gone Name.Map.t;
-      difference : Extension.Id.Set.t Row_like.t or_gone Name.Map.t
-    }
-
-  let print_extension ppf extension =
-    Name.Map.print
-      (print_or_gone (Row_like.print Extension.Id.Set.print))
-      ppf extension
-
-  let empty = { current = Name.Map.empty; difference = Name.Map.empty }
-
-  let is_empty { current; _ } = Name.Map.is_empty current
-
-  let find_opt name { current; _ } =
-    match Name.Map.find_opt name current with
-    | None | Some Gone -> None
-    | Some (There row_like) -> Some row_like
-
-  let remove name { current; difference } =
-    let current = Name.Map.remove name current in
-    let difference = Name.Map.add name Gone difference in
-    { current; difference }
-
-  let replace name row_like { current; difference } =
-    let current = Name.Map.add name (There row_like) current in
-    let difference = Name.Map.add name (There row_like) difference in
-    { current; difference }
-
-  type extension = Extension.Id.Set.t Row_like.t or_gone Name.Map.t
-
-  let empty_extension = Name.Map.empty
-
-  let is_empty_extension = Name.Map.is_empty
-
-  let concat_extension ~earlier ~later =
-    Name.Map.union (fun _ _row_like1 row_like2 -> Some row_like2) earlier later
-
-  let add_extension t extension =
-    let current =
-      Name.Map.fold
-        (fun name row_like current ->
-          match row_like with
-          | Gone -> Name.Map.remove name current
-          | There row_like -> Name.Map.add name (There row_like) current)
-        extension t.current
-    in
-    let difference = concat_extension ~earlier:t.difference ~later:extension in
-    { current; difference }
-
-  let apply_renaming_extension extension renaming =
-    Name.Map.map_keys (Renaming.apply_name renaming) extension
-
-  let apply_renaming { current; difference } renaming =
-    let current = Name.Map.map_keys (Renaming.apply_name renaming) current in
-    let difference =
-      Name.Map.map_keys (Renaming.apply_name renaming) difference
-    in
-    { current; difference }
-
-  let tick t = { t with difference = Name.Map.empty }, t.difference
-
-  let meet_row_like ~meet row_like1 row_like2 env =
-    Or_bottom.Ok (Row_like.meet ~meet row_like1 row_like2 env)
-
-  let meet_extension_id_set env set1 set2 : _ Or_bottom.t =
-    match
-      Extension.Id.Set.subset set1 set2, Extension.Id.Set.subset set2 set1
-    with
-    | true, true -> Ok (Both_inputs, env)
-    | true, false -> Ok (Right_input, env)
-    | false, true -> Ok (Left_input, env)
-    | false, false ->
-      let set = Extension.Id.Set.union set1 set2 in
-      Ok (New_result set, env)
-
-  let demote ~for_const ~to_be_demoted ~canonical_element env t =
-    Simple.pattern_match canonical_element
-      ~const:(fun const ->
-        match find_opt to_be_demoted t with
-        | None -> Or_bottom.Ok (t, env)
-        | Some row_like ->
-          let open Or_bottom.Let_syntax in
-          let<* const = for_const const in
-          let<+ extensions = Row_like.find const row_like in
-          t, Extension.Id.Set.union extensions env)
-      ~name:(fun name ~coercion ->
-        if not (Coercion.is_id coercion)
-        then Or_bottom.Ok (remove to_be_demoted t, env)
-        else
-          generic_demote ~find_opt ~replace ~remove ~to_be_demoted
-            ~canonical_key:name
-            ~meet:(meet_row_like ~meet:meet_extension_id_set)
-            env t)
-end
-
-module Switches = struct
-  type t =
-    { on_names : Switch.t;
-      on_relations : Switch.t TG.Relation.Map.t
-    }
-
-  type extension =
-    { on_names_extension : Switch.extension;
-      on_relations_extension : Switch.extension TG.Relation.Map.t
-    }
-
-  let empty_extension =
-    { on_names_extension = Switch.empty_extension;
-      on_relations_extension = TG.Relation.Map.empty
-    }
-
-  let tick { on_names; on_relations } =
-    let on_names, on_names_extension = Switch.tick on_names in
-    let on_relations, on_relations_extension =
-      TG.Relation.Map.fold
-        (fun relation switch (on_relations, on_relations_extension) ->
-          let switch, switch_extension = Switch.tick switch in
-          let on_relations = TG.Relation.Map.add relation switch on_relations in
-          let on_relations_extension =
-            if Switch.is_empty_extension switch_extension
-            then on_relations_extension
-            else
-              TG.Relation.Map.add relation switch_extension
-                on_relations_extension
-          in
-          on_relations, on_relations_extension)
-        on_relations
-        (TG.Relation.Map.empty, TG.Relation.Map.empty)
-    in
-    { on_names; on_relations }, { on_names_extension; on_relations_extension }
-
-  let empty = { on_names = Switch.empty; on_relations = TG.Relation.Map.empty }
-
-  let is_empty { on_names; on_relations } =
-    Switch.is_empty on_names && TG.Relation.Map.is_empty on_relations
-
-  let is_empty_extension { on_names_extension; on_relations_extension } =
-    Switch.is_empty_extension on_names_extension
-    && TG.Relation.Map.is_empty on_relations_extension
-
-  let apply_renaming_extension { on_names_extension; on_relations_extension }
-      renaming =
-    let on_names_extension =
-      Switch.apply_renaming_extension on_names_extension renaming
-    in
-    let on_relations_extension =
-      TG.Relation.Map.map
-        (fun switch -> Switch.apply_renaming_extension switch renaming)
-        on_relations_extension
-    in
-    { on_names_extension; on_relations_extension }
-
-  let apply_renaming { on_names; on_relations } renaming =
-    let on_names = Switch.apply_renaming on_names renaming in
-    let on_relations =
-      TG.Relation.Map.map
-        (fun switch -> Switch.apply_renaming switch renaming)
-        on_relations
-    in
-    { on_names; on_relations }
-
-  let concat_extension ~earlier ~later =
-    let on_names_extension =
-      Switch.concat_extension ~earlier:earlier.on_names_extension
-        ~later:later.on_names_extension
-    in
-    let on_relations_extension =
-      TG.Relation.Map.union
-        (fun _ earlier later -> Some (Switch.concat_extension ~earlier ~later))
-        earlier.on_relations_extension later.on_relations_extension
-    in
-    { on_names_extension; on_relations_extension }
-
-  let add_extension { on_names; on_relations }
-      { on_names_extension; on_relations_extension } =
-    let on_names = Switch.add_extension on_names on_names_extension in
-    let on_relations =
-      TG.Relation.Map.fold
-        (fun relation switch_extension on_relations ->
-          TG.Relation.Map.update relation
-            (function
-              | None -> None
-              | Some switch ->
-                let switch = Switch.add_extension switch switch_extension in
-                if Switch.is_empty switch then None else Some switch)
-            on_relations)
-        on_relations_extension on_relations
-    in
-    { on_names; on_relations }
-
-  exception Bottom_equation
-
-  let demote ~to_be_demoted ~canonical_element env t =
-    let open Or_bottom.Let_syntax in
-    let<* on_names, env =
-      Switch.demote
-        ~for_const:(fun const -> Or_bottom.Ok const)
-        ~to_be_demoted ~canonical_element env t.on_names
-    in
-    match
-      TG.Relation.Map.fold
-        (fun relation switch (on_relations, env) ->
-          match
-            Switch.demote
-              ~for_const:(relation_for_const relation)
-              ~to_be_demoted ~canonical_element env switch
-          with
-          | Ok (switch, env) ->
-            TG.Relation.Map.add relation switch on_relations, env
-          | Bottom -> raise Bottom_equation)
-        t.on_relations
-        (TG.Relation.Map.empty, env)
-    with
-    | on_relations, env -> Ok ({ on_names; on_relations }, env)
-    | exception Bottom_equation -> Bottom
-end
-
-module Incremental = struct
-  module Make (Full : S) = struct
-    type t =
-      { current : Full.t;
-        difference : Full.t
-      }
-
-    type extension = Full.t
-
-    let empty = { current = Full.empty; difference = Full.empty }
-
-    let apply_renaming { current; difference } renaming =
-      { current = Full.apply_renaming current renaming;
-        difference = Full.apply_renaming difference renaming
-      }
-
-    let tick { current; difference } =
-      { current; difference = Full.empty }, difference
-
-    let add_extension ext t =
-      { current = Full.concat ~earlier:t.current ~later:ext;
-        difference = Full.concat ~earlier:t.difference ~later:ext
-      }
-  end
-
-  module Continuation_uses = Make (Continuation_uses)
-end
-
-type ('a, 'b, 'c) relations =
-  { is_int : 'a;
-    get_tag : 'a;
-    is_null : 'a;
-    where : unit Name.Map.t;
-    continuation_uses : 'b;
-    extensions : legacy_extension Or_unknown_or_bottom.t Extension.Id.Map.t;
-    switches : 'c
-  }
-
-and legacy = (Unfunc.t, Incremental.Continuation_uses.t, Switches.t) relations
-
-and legacy_extension =
-  (Unfunc.extension, Continuation_uses.t, Switches.extension) relations
-
-let invariant t =
-  let inverse_invariant (inverse : Unfunc.Inverse.t) =
-    Simple.Map.for_all
-      (fun _ args -> Name.Map.for_all (fun _ cnt -> cnt = 1) args)
-      inverse
-  in
-  inverse_invariant t.is_int.Unfunc.inverse
-  && inverse_invariant t.get_tag.Unfunc.inverse
-  && inverse_invariant t.is_null.Unfunc.inverse
-
-let extension_invariant t =
-  let inverse_invariant (inverse : Unfunc.Inverse.t) =
-    Simple.Map.for_all
-      (fun _ args -> Name.Map.for_all (fun _ cnt -> cnt = 1 || cnt = -1) args)
-      inverse
-  in
-  inverse_invariant t.is_int
-  && inverse_invariant t.get_tag
-  && inverse_invariant t.is_null
-
-let empty_extension =
-  { is_int = Unfunc.Inverse.empty;
-    get_tag = Unfunc.Inverse.empty;
-    is_null = Unfunc.Inverse.empty;
-    where = Name.Map.empty;
-    continuation_uses = Continuation_uses.empty;
-    extensions = Extension.Id.Map.empty;
-    switches = Switches.empty_extension
-  }
-
-let rec apply_renaming_extension
-    { is_int; get_tag; is_null; where; continuation_uses; extensions; switches }
-    renaming =
-  let is_int = Unfunc.apply_renaming_extension is_int renaming in
-  let get_tag = Unfunc.apply_renaming_extension get_tag renaming in
-  let is_null = Unfunc.apply_renaming_extension is_null renaming in
-  let where = Name.Map.map_keys (Renaming.apply_name renaming) where in
-  let continuation_uses =
-    Continuation_uses.apply_renaming continuation_uses renaming
-  in
-  let extensions =
-    Extension.Id.Map.map
-      (fun extension ->
-        Or_unknown_or_bottom.map extension ~f:(fun extension ->
-            apply_renaming_extension extension renaming))
-      extensions
-  in
-  let switches = Switches.apply_renaming_extension switches renaming in
-  { is_int; get_tag; is_null; where; continuation_uses; extensions; switches }
-
-let apply_renaming
-    { is_int; get_tag; is_null; where; continuation_uses; extensions; switches }
-    renaming =
-  let is_int = Unfunc.apply_renaming is_int renaming in
-  let get_tag = Unfunc.apply_renaming get_tag renaming in
-  let is_null = Unfunc.apply_renaming is_null renaming in
-  let where = Name.Map.map_keys (Renaming.apply_name renaming) where in
-  let continuation_uses =
-    Incremental.Continuation_uses.apply_renaming continuation_uses renaming
-  in
-  let extensions =
-    Extension.Id.Map.map
-      (fun extension ->
-        Or_unknown_or_bottom.map extension ~f:(fun extension ->
-            apply_renaming_extension extension renaming))
-      extensions
-  in
-  let switches = Switches.apply_renaming switches renaming in
-  { is_int; get_tag; is_null; where; continuation_uses; extensions; switches }
-
-let is_empty_extension
-    { is_int;
-      get_tag;
-      is_null;
-      continuation_uses;
-      extensions;
-      switches;
-      where = _
-    } =
-  Unfunc.Inverse.is_empty is_int
-  && Unfunc.Inverse.is_empty get_tag
-  && Unfunc.Inverse.is_empty is_null
-  && Continuation_uses.is_empty continuation_uses
-  && Extension.Id.Map.is_empty extensions
-  && Switches.is_empty_extension switches
-
-let tick (t : legacy) =
-  let is_int, is_int_extension = Unfunc.tick t.is_int in
-  let get_tag, get_tag_extension = Unfunc.tick t.get_tag in
-  let is_null, is_null_extension = Unfunc.tick t.is_null in
-  let continuation_uses, continuation_uses_extension =
-    Incremental.Continuation_uses.tick t.continuation_uses
-  in
-  let where = t.where in
-  let switches, switches_extension = Switches.tick t.switches in
-  ( { is_int;
-      get_tag;
-      is_null;
-      continuation_uses;
-      where;
-      extensions = t.extensions;
-      switches
-    },
-    { is_int = is_int_extension;
-      get_tag = get_tag_extension;
-      is_null = is_null_extension;
-      continuation_uses = continuation_uses_extension;
-      extensions = Extension.Id.Map.empty;
-      where;
-      switches = switches_extension
-    } )
-
-let print ppf (ext : legacy) =
-  Format.fprintf ppf "@[<hov 1>(is_int@ %a)@]" Unfunc.print_extension
-    ext.is_int.inverse;
-  Format.fprintf ppf "@[<hov 1>(get_tag@ %a)@]" Unfunc.print_extension
-    ext.get_tag.inverse;
-  Format.fprintf ppf "@[<hov 1>(continuation_uses@ %a)@]"
-    Continuation_uses.print ext.continuation_uses.current
-
-let print_extension ppf (ext : legacy_extension) =
-  Format.fprintf ppf "@[<hov 1>(is_int@ %a)@]" Unfunc.print_extension ext.is_int;
-  Format.fprintf ppf "@[<hov 1>(get_tag@ %a)@]" Unfunc.print_extension
-    ext.get_tag;
-  Format.fprintf ppf "@[<hov 1>(is_null@ %a)@]" Unfunc.print_extension
-    ext.is_null;
-  Format.fprintf ppf "@[<hov 1>(continuation_uses@ %a)@]"
-    Continuation_uses.print ext.continuation_uses
-
-let concat_extension ~earlier ~later =
-  { is_int = Unfunc.concat_extension ~earlier:earlier.is_int ~later:later.is_int;
-    get_tag =
-      Unfunc.concat_extension ~earlier:earlier.get_tag ~later:later.get_tag;
-    is_null =
-      Unfunc.concat_extension ~earlier:earlier.is_null ~later:later.is_null;
-    continuation_uses =
-      Continuation_uses.union earlier.continuation_uses later.continuation_uses;
-    extensions =
-      Extension.Id.Map.union
-        (fun _ _ext1 ext2 -> Some ext2)
-        earlier.extensions later.extensions;
-    switches =
-      Switches.concat_extension ~earlier:earlier.switches ~later:later.switches;
-    where = later.where
-  }
-
-let add_extension t ext =
-  { is_int = Unfunc.add_extension ext.is_int t.is_int;
-    get_tag = Unfunc.add_extension ext.get_tag t.get_tag;
-    is_null = Unfunc.add_extension ext.is_null t.is_null;
-    continuation_uses =
-      Incremental.Continuation_uses.add_extension ext.continuation_uses
-        t.continuation_uses;
-    extensions =
-      Extension.Id.Map.union
-        (fun _ _ext1 ext2 -> Some ext2)
-        t.extensions ext.extensions;
-    switches = Switches.add_extension t.switches ext.switches;
-    where = ext.where
-  }
-
-let empty =
-  { is_int = Unfunc.empty;
-    get_tag = Unfunc.empty;
-    is_null = Unfunc.empty;
-    continuation_uses = Incremental.Continuation_uses.empty;
-    extensions = Extension.Id.Map.empty;
-    where = Name.Map.empty;
-    switches = Switches.empty
-  }
-
-let add_to_where key value where =
-  Name.Map.add key ()
-  @@ Simple.pattern_match value
-       ~const:(fun _ -> where)
-       ~name:(fun name ~coercion:_ -> Name.Map.add name () where)
-
-let add_is_int ~meet key value env t =
-  let open Or_bottom.Let_syntax in
-  let<+ is_int, env = Unfunc.add ~meet key value env t.is_int in
-  let where = add_to_where key value t.where in
-  { t with is_int; where }, env
-
-let add_get_tag ~meet key value env t =
-  let open Or_bottom.Let_syntax in
-  let<+ get_tag, env = Unfunc.add ~meet key value env t.get_tag in
-  let where = add_to_where key value t.where in
-  { t with get_tag; where }, env
-
-let add_is_null ~meet key value env t =
-  let open Or_bottom.Let_syntax in
-  let<+ is_null, env = Unfunc.add ~meet key value env t.is_null in
-  let where = add_to_where key value t.where in
-  { t with is_null; where }, env
-
-let add_continuation_use cont id (t : legacy) =
-  let current = t.continuation_uses.current in
-  if Continuation_uses.mem (cont, id) current
-  then t
-  else
-    let current = Continuation_uses.add (cont, id) current in
-    let difference = t.continuation_uses.difference in
-    let difference = Continuation_uses.add (cont, id) difference in
-    let continuation_uses =
-      { Incremental.Continuation_uses.current; difference }
-    in
-    { t with continuation_uses }
-
-let activate eid (t : legacy) : legacy Or_bottom.t =
-  match Extension.Id.Map.find_opt eid t.extensions with
-  | None -> Ok t
-  | Some extension -> (
-    match extension with
-    | Bottom -> Bottom
-    | Unknown -> Ok t
-    | Ok extension ->
-      (* XXX: need to canonicalise etc. *)
-      let extensions =
-        Extension.Id.Map.add eid Or_unknown_or_bottom.Unknown t.extensions
-      in
-      let t = { t with extensions } in
-      Ok (add_extension t extension))
-
-let demote ~to_be_demoted ~canonical_element ~meet env t =
-  let open Or_bottom.Let_syntax in
-  let<* is_int, env =
-    Unfunc.demote
-      ~for_const:(fun const ->
-        match Reg_width_const.is_tagged_immediate const with
-        | None -> Or_bottom.Bottom
-        | Some _ ->
-          Or_bottom.Ok (Reg_width_const.naked_immediate Targetint_31_63.one))
-      ~to_be_demoted ~canonical_element ~meet env t.is_int
-  in
-  let<* is_null, env =
-    Unfunc.demote
-      ~for_const:(fun const ->
-        match Reg_width_const.is_tagged_immediate const with
-        | None -> Or_bottom.Bottom
-        | Some _ ->
-          Or_bottom.Ok (Reg_width_const.naked_immediate Targetint_31_63.zero))
-      ~to_be_demoted ~canonical_element ~meet env t.is_null
-  in
-  let<* get_tag, env =
-    Unfunc.demote
-      ~for_const:(fun _ -> Or_bottom.Bottom)
-      ~to_be_demoted ~canonical_element ~meet env t.get_tag
-  in
-  let<* switches, to_activate =
-    Switches.demote ~to_be_demoted ~canonical_element Extension.Id.Set.empty
-      t.switches
-  in
-  let where =
-    Name.Map.remove to_be_demoted
-    @@ Simple.pattern_match canonical_element
-         ~const:(fun _ -> t.where)
-         ~name:(fun name ~coercion:_ -> Name.Map.add name () t.where)
-  in
-  let continuation_uses = t.continuation_uses in
-  let extensions = t.extensions in
-  let t =
-    { is_int; get_tag; is_null; where; continuation_uses; extensions; switches }
-  in
-  let<+ t =
-    Extension.Id.Set.fold
-      (fun extension_id t ->
-        let<* t = t in
-        activate extension_id t)
-      to_activate (Or_bottom.Ok t)
-  in
-  t, env
+[@@warning "-32"]
 
 module Aliases0 = struct
   type t =
@@ -1373,13 +394,45 @@ module Aliases0 = struct
     rebuild Name.Map.empty t acc
 end
 
+module Z_lattice (Key : Container_types.S) = struct
+  type 'a t = 'a or_gone Key.Map.t
+
+  let find_opt key t =
+    match Key.Map.find_opt key t with
+    | None | Some Gone -> None
+    | Some (There value) -> Some value
+
+  let add key value t = Name.Map.add key (There value) t
+
+  let replace name ~existing_value:_ value t = add name value t
+
+  let remove name t = Key.Map.add name Gone t
+end
+
+module Z_lattice_on_names = Z_lattice (Name)
+
+let find_z_lattice_on_names =
+  Incremental0.find_opt ~find_opt:Z_lattice_on_names.find_opt
+
+let remove_z_lattice_on_names name _value t =
+  let current = Z_lattice_on_names.remove name t.current in
+  let difference = Z_lattice_on_names.remove name t.difference in
+  { current; difference }
+
+let add_z_lattice_on_names ~meet name value env t =
+  generic_add ~find_opt:find_z_lattice_on_names
+    ~replace:
+      (Incremental0.replace ~find_opt:Z_lattice_on_names.find_opt
+         ~add:Z_lattice_on_names.add ~replace:Z_lattice_on_names.replace)
+    ~meet name value env t
+
 module Final = struct
   type 'a t =
     { relations : Function.t TG.Relation.Map.t;
       inverse_relations : Inverse.t TG.Relation.Map.t;
-      switches_on_names : 'a Row_like.t or_gone Name.Map.t;
+      switches_on_names : 'a Row_like.t Z_lattice_on_names.t;
       switches_on_relations :
-        'a Row_like.t or_gone Name.Map.t TG.Relation.Map.t;
+        'a Row_like.t Z_lattice_on_names.t TG.Relation.Map.t;
       continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t;
       free_names : unit Name.Map.t
     }
@@ -1489,6 +542,11 @@ module Final = struct
   let map_incremental f t =
     { current = f t.current; difference = f t.difference }
 
+  let get_switches_on_relations t = t.switches_on_relations
+
+  let set_switches_on_relations switches_on_relations t =
+    { t with switches_on_relations }
+
   let get_switches_on_names t = t.switches_on_names
 
   let set_switches_on_names switches_on_names t = { t with switches_on_names }
@@ -1503,13 +561,17 @@ module Final = struct
     in
     { t with switches_on_relations }
 
-  let get_relations t = t.relations
-
   let create_switch ~default ~arms:known =
     let other : _ Or_bottom.t =
       match default with None -> Bottom | Some other -> Ok other
     in
     Row_like.{ known; other }
+
+  let meet_row_like ~meet env case1 case2 =
+    let meet env case1 case2 =
+      Or_bottom.map ~f:(fun case -> case, env) (meet env case1 case2)
+    in
+    Or_bottom.Ok (Row_like.meet ~meet env case1 case2)
 
   let add_switch0 ~meet name row_like env t =
     let open Or_bottom.Let_syntax in
@@ -1519,22 +581,7 @@ module Final = struct
       in
       Or_bottom.Ok (Row_like.meet ~meet env case1 case2)
     in
-    let find_opt name switches =
-      match Name.Map.find_opt name switches with
-      | None | Some Gone -> None
-      | Some (There value) -> Some value
-    in
-    let add name value switches = Name.Map.add name (There value) switches in
-    let replace name ~existing_value:_ value switches =
-      add name value switches
-    in
-    let<+ t, new_env =
-      generic_add
-        ~find_opt:(Incremental0.find_opt ~find_opt)
-        ~replace:
-          (Incremental0.replace ~find_opt:Name.Map.find_opt ~add ~replace)
-        ~meet name row_like env t
-    in
+    let<+ t, new_env = add_z_lattice_on_names ~meet name row_like env t in
     (* We can't modify the environment from a switch. *)
     assert (env == new_env);
     t
@@ -1563,11 +610,6 @@ module Final = struct
       ~name:(fun name ~coercion ->
         assert (Coercion.is_id coercion);
         add_switch_on_name ~meet name row_like t)
-
-  let find_relation_on_name relation name t =
-    Option.bind
-      (TG.Relation.Map.find_opt relation t.relations)
-      (Function.find_opt name)
 
   let remove_switch_on_relation relation name t =
     let switches_on_relation =
@@ -1856,7 +898,7 @@ module Final = struct
 end
 
 module Old_api = struct
-  type t = Set_of_uses.t Continuation.Map.t Final.t incremental
+  type t = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t incremental
 
   let print ppf t =
     Final.print
@@ -1868,7 +910,7 @@ module Old_api = struct
   let apply_renaming t renaming =
     Final.map_incremental (fun t -> Final.apply_renaming t renaming) t
 
-  type extension = Set_of_uses.t Continuation.Map.t Final.t
+  type extension = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t
 
   let print_extension ppf t =
     Final.print (Continuation.Map.print Apply_cont_rewrite_id.Set.print) ppf t
@@ -1934,6 +976,20 @@ module Old_api = struct
           t.current.relations
           (Or_bottom.Ok (t, aliases)))
 
+  let demote_switch ~apply_coercion ~to_be_demoted ~canonical_element aliases
+      switches : _ Or_bottom.t =
+    match find_z_lattice_on_names to_be_demoted switches with
+    | None -> Ok (switches, aliases)
+    | Some value ->
+      let switches = remove_z_lattice_on_names to_be_demoted value switches in
+      Simple.pattern_match canonical_element
+        ~const:(fun _const -> Or_bottom.Ok (switches, aliases))
+        ~name:(fun canonical_name ~coercion ->
+          let value = apply_coercion value (Coercion.inverse coercion) in
+          add_z_lattice_on_names
+            ~meet:(Final.meet_row_like ~meet:Final.meet_continuation_uses)
+            canonical_name value aliases switches)
+
   let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases (t : t)
       =
     let open Or_bottom.Let_syntax in
@@ -1961,6 +1017,43 @@ module Old_api = struct
 
   let demote ~to_be_demoted ~canonical_element ~meet aliases t =
     let open Or_bottom.Let_syntax in
+    let<* switches_on_names, () =
+      demote_switch
+        ~apply_coercion:(fun switch coercion ->
+          assert (Coercion.is_id coercion);
+          switch)
+        ~to_be_demoted ~canonical_element ()
+        (Final.get_incremental Final.get_switches_on_names t)
+    in
+    let t =
+      Final.set_incremental Final.set_switches_on_names switches_on_names t
+    in
+    let<* switches_on_relations =
+      TG.Relation.Map.fold
+        (fun relation switches switches_on_relations ->
+          let<* switches_on_relations = switches_on_relations in
+          let switches_diff =
+            try TG.Relation.Map.find relation switches_on_relations.difference
+            with Not_found -> Name.Map.empty
+          in
+          let<+ switches, () =
+            demote_switch
+              ~apply_coercion:(fun row_like coercion ->
+                assert (Coercion.is_id coercion);
+                row_like)
+              ~to_be_demoted ~canonical_element ()
+              { current = switches; difference = switches_diff }
+          in
+          Final.set_incremental
+            (TG.Relation.Map.add relation)
+            switches switches_on_relations)
+        t.current.switches_on_relations
+        (Or_bottom.Ok (Final.get_incremental Final.get_switches_on_relations t))
+    in
+    let t =
+      Final.set_incremental Final.set_switches_on_relations
+        switches_on_relations t
+    in
     let<* t, aliases =
       demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
     in
