@@ -400,7 +400,7 @@ let get_imported_names t = t.shared_data.get_imported_names ()
 let get_binding_time_resolver t = t.shared_data.binding_time_resolver
 
 let code_age_relation_resolver t comp_unit =
-  match t.resolver comp_unit with
+  match t.shared_data.resolver comp_unit with
   | None -> None
   | Some t -> Some t.code_age_relation
 
