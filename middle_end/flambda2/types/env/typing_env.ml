@@ -103,10 +103,14 @@ end = struct
   let bump_scope t = { t with scope = Scope.next t.scope }
 end
 
-type t =
+type shared_data =
   { resolver : Compilation_unit.t -> serializable option;
     binding_time_resolver : Name.t -> Binding_time.With_name_mode.t;
-    get_imported_names : unit -> Name.Set.t;
+    get_imported_names : unit -> Name.Set.t
+  }
+
+and t =
+  { shared_data : shared_data;
     defined_symbols : Symbol.Set.t;
     code_age_relation : Code_age_relation.t;
     prev_levels : One_level.t list;
@@ -152,7 +156,7 @@ let database t =
 
 (* CR-someday mshinwell: Should print name occurrence kinds *)
 let [@ocamlformat "disable"] print ppf
-      ({ resolver = _; binding_time_resolver = _;get_imported_names = _;
+      ({ shared_data = _;
          prev_levels; current_level; next_binding_time = _;
          defined_symbols; code_age_relation; min_binding_time;
          new_types = _ ; is_bottom;
@@ -389,7 +393,11 @@ let binding_time_resolver resolver name =
         Name.print name print_serializable t
     | _, binding_time_and_mode -> binding_time_and_mode)
 
-let resolver t = t.resolver
+let resolver t = t.shared_data.resolver
+
+let get_imported_names t = t.shared_data.get_imported_names ()
+
+let get_binding_time_resolver t = t.shared_data.binding_time_resolver
 
 let code_age_relation_resolver t comp_unit =
   match t.resolver comp_unit with
@@ -399,9 +407,13 @@ let code_age_relation_resolver t comp_unit =
 let current_scope t = One_level.scope t.current_level
 
 let create ~resolver ~get_imported_names =
-  { resolver;
-    binding_time_resolver = binding_time_resolver resolver;
-    get_imported_names;
+  let shared_data =
+    { resolver;
+      binding_time_resolver = binding_time_resolver resolver;
+      get_imported_names
+    }
+  in
+  { shared_data;
     prev_levels = [];
     (* Since [Scope.prev] may be used in the simplifier on this scope, in order
        to allow an efficient implementation of [cut] (see below), we always
@@ -604,7 +616,7 @@ let mem ?min_name_mode t name =
       let name_mode =
         match Name.Map.find name (names_to_types t) with
         | exception Not_found ->
-          if Name.Set.mem name (t.get_imported_names ())
+          if Name.Set.mem name (get_imported_names t)
           then Some Name_mode.in_types
           else None
         | _ty, binding_time_and_mode ->
@@ -625,7 +637,7 @@ let mem ?min_name_mode t name =
       (* CR mshinwell: This might not take account of symbols in missing .cmx
          files *)
       Symbol.Set.mem sym t.defined_symbols
-      || Name.Set.mem name (t.get_imported_names ()))
+      || Name.Set.mem name (get_imported_names t))
 
 let mem_simple ?min_name_mode t simple =
   Simple.pattern_match simple
@@ -776,7 +788,7 @@ let invariant_for_new_equation (t : t) name ty =
     invariant_for_alias t name ty;
     let defined_names =
       Name_occurrences.create_names
-        (Name.Set.union (name_domain t) (t.get_imported_names ()))
+        (Name.Set.union (name_domain t) (get_imported_names t))
         Name_mode.in_types
     in
     let free_names = Name_occurrences.without_code_ids (TG.free_names ty) in
@@ -868,7 +880,8 @@ and replace_equation_or_add_alias_to_const t name ty =
   | None -> replace_equation t name ty
   | Some const -> (
     match
-      Aliases.add ~binding_time_resolver:t.binding_time_resolver
+      Aliases.add
+        ~binding_time_resolver:(get_binding_time_resolver t)
         ~binding_times_and_modes:(names_to_types t) (aliases t)
         ~canonical_element1:(Simple.name name)
         ~canonical_element2:(Simple.const const)
@@ -1018,8 +1031,9 @@ and orient_and_add_equation ~raise_on_bottom t name ty ~meet_type =
         let kind = TG.kind ty in
         match
           (* This may raise [Binding_time_resolver_failure]. *)
-          Aliases.add ~binding_time_resolver:t.binding_time_resolver aliases
-            ~binding_times_and_modes:(names_to_types t)
+          Aliases.add
+            ~binding_time_resolver:(get_binding_time_resolver t)
+            aliases ~binding_times_and_modes:(names_to_types t)
             ~canonical_element1:alias_lhs ~canonical_element2:alias_rhs
         with
         | Ok { canonical_element; alias_of_demoted_element; t = aliases } ->
@@ -1112,7 +1126,7 @@ let _rebuild ~raise_on_bottom ~meet_type t =
       let original_database = database in
       match
         Database.rebuild ~demotions
-          ~binding_time_resolver:t.binding_time_resolver
+          ~binding_time_resolver:(get_binding_time_resolver t)
           ~binding_times_and_modes:(names_to_types t) aliases0 database
       with
       | Bottom ->
@@ -1173,7 +1187,8 @@ let add_relation ~raise_on_bottom t relation name simple ~meet_type =
     in
     let original_database = database t in
     match
-      Database.add_relation ~binding_time_resolver:t.binding_time_resolver
+      Database.add_relation
+        ~binding_time_resolver:(get_binding_time_resolver t)
         ~binding_times_and_modes:(names_to_types t) aliases0 original_database
         relation name simple
     with
@@ -1398,9 +1413,9 @@ let type_simple_in_term_exn t ?min_name_mode simple =
   in
   match
     Aliases.get_canonical_element_exn
-      ~binding_time_resolver:t.binding_time_resolver (aliases t)
-      ~binding_times_and_modes:(names_to_types t) simple name_mode_simple
-      ~min_name_mode ~min_binding_time:t.min_binding_time
+      ~binding_time_resolver:(get_binding_time_resolver t)
+      (aliases t) ~binding_times_and_modes:(names_to_types t) simple
+      name_mode_simple ~min_name_mode ~min_binding_time:t.min_binding_time
   with
   | exception Misc.Fatal_error ->
     let bt = Printexc.get_raw_backtrace () in
@@ -1427,9 +1442,9 @@ let get_canonical_simple_exn t ?min_name_mode ?name_mode_of_existing_simple
   in
   match
     Aliases.get_canonical_element_exn
-      ~binding_time_resolver:t.binding_time_resolver (aliases t) simple
-      ~binding_times_and_modes:(names_to_types t) name_mode_simple
-      ~min_name_mode ~min_binding_time:t.min_binding_time
+      ~binding_time_resolver:(get_binding_time_resolver t)
+      (aliases t) simple ~binding_times_and_modes:(names_to_types t)
+      name_mode_simple ~min_name_mode ~min_binding_time:t.min_binding_time
   with
   | exception Misc.Fatal_error ->
     let bt = Printexc.get_raw_backtrace () in
@@ -1482,7 +1497,7 @@ let compute_joined_aliases base_env alias_candidates envs_at_uses =
           then new_aliases
           else
             Aliases.add_alias_set
-              ~binding_time_resolver:base_env.binding_time_resolver
+              ~binding_time_resolver:(get_binding_time_resolver base_env)
               ~binding_times_and_modes:(names_to_types base_env) new_aliases
               name alias_set)
         alias_candidates (aliases base_env)
