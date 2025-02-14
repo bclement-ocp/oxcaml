@@ -13,8 +13,6 @@
 (*                                                                        *)
 (**************************************************************************)
 
-[@@@warning "-32-60-34"]
-
 module K = Flambda_kind
 module TG = Type_grammar
 module TE = Typing_env
@@ -145,6 +143,8 @@ module Simple_in_joined_envs : sig
     Container_types.S
       with type t = private Simple_in_one_joined_env.t Index.Map.t
 
+  val create : Simple_in_one_joined_env.t Index.Map.t -> t
+
   val fold :
     (Index.t -> Simple_in_one_joined_env.t -> 'a -> 'a) -> t -> 'a -> 'a
 
@@ -195,6 +195,8 @@ end = struct
   let empty = Index.Map.empty
 
   let add = Index.Map.add
+
+  let create t = t
 
   let apply_coercion t coercion =
     if Coercion.is_id coercion
@@ -253,8 +255,6 @@ end
 
 module Join_aliases : sig
   type t
-
-  val print : Format.formatter -> t -> unit
 
   val empty : t
 
@@ -370,11 +370,6 @@ end = struct
           (** Maps a variable in a joined environment to the set of
               (other) variables it is equal to in the target environment. *)
     }
-
-  let print ppf t =
-    Format.fprintf ppf "@[<hov 1>(names_in_target_env@ %a)@]"
-      (Index.Map.print (Variable.Map.print Variable.Set.print))
-      t.names_in_target_env
 
   let empty =
     { joined_simples = Simple_in_joined_envs.Map.empty;
@@ -1010,11 +1005,15 @@ type join_result =
   { demoted_in_target_env : Simple_in_target_env.t Name_in_target_env.Map.t;
     extra_variables : K.t Variable.Map.t;
     equations : TG.t Name_in_target_env.Map.t;
-    symbol_projections : Symbol_projection.t Variable.Map.t
-    relations : Simple.t Variable.Map.t TG.Relation.Map.t;
+    symbol_projections : Symbol_projection.t Variable.Map.t;
+    relations :
+      Simple_in_target_env.t Name_in_target_env.Map.t TG.Relation.Map.t;
+    switches_on_names :
+      Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t
+      Name_in_target_env.Map.t;
     switches_on_relations :
       Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t
-      Name.Map.t
+      Name_in_target_env.Map.t
       TG.Relation.Map.t
   }
 
@@ -1023,10 +1022,6 @@ type relations =
     get_tag : Reg_width_const.t Or_unknown_or_bottom.t;
     is_null : Reg_width_const.t Or_unknown_or_bottom.t
   }
-
-let ou_of_option = function
-  | Some value -> Or_unknown.Known value
-  | None -> Or_unknown.Unknown
 
 let relations ~is_int ~get_tag ~is_null = { is_int; get_tag; is_null }
 
@@ -1124,14 +1119,77 @@ let to_map { is_int; is_null; get_tag } =
   let map = add Get_tag get_tag map in
   map
 
+let expand_naked_immediate expanded : _ Or_unknown_or_bottom.t =
+  match ET.descr expanded with
+  | Ok (Naked_immediate head) -> (
+    match head with
+    | Naked_immediates immediates -> (
+      match Targetint_31_63.Set.get_singleton immediates with
+      | Some imm -> Ok imm
+      | None -> Unknown)
+    | Is_int _ | Get_tag _ | Is_null _ -> Unknown)
+  | Ok
+      ( Value _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
+      | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Rec_info _
+      | Region _ ) ->
+    Unknown
+  | Bottom -> Bottom
+  | Unknown -> Unknown
+
+let union_continuations =
+  Continuation.Map.union (fun _ uses1 uses2 ->
+      Some (Apply_cont_rewrite_id.Set.union uses1 uses2))
+
+let con_con_continuation join_envs indices =
+  Index.Set.fold
+    (fun index continuations ->
+      let env = get_nth_joined_env index join_envs in
+      union_continuations continuations (TE.continuation_uses env))
+    indices Continuation.Map.empty
+
+let make_the_switch joined_envs join_types =
+  Name_in_target_env.Map.filter_map
+    (fun _ types ->
+      let known, unknown =
+        Index.Map.fold
+          (fun index expanded (known, unknown) ->
+            match expand_naked_immediate expanded with
+            | Ok immediate ->
+              ( Reg_width_const.Map.update
+                  (Reg_width_const.naked_immediate immediate)
+                  (function
+                    | None -> Some (Index.Set.singleton index)
+                    | Some indices -> Some (Index.Set.add index indices))
+                  known,
+                unknown )
+            | Unknown -> known, Index.Set.add index unknown
+            | Bottom -> known, unknown)
+          types
+          (Reg_width_const.Map.empty, Index.Set.empty)
+      in
+      if Reg_width_const.Map.is_empty known || not (Index.Set.is_empty unknown)
+      then None
+      else
+        (* TODO: row_like *)
+        let unknown = con_con_continuation joined_envs unknown in
+        let known =
+          Reg_width_const.Map.map
+            (fun known ->
+              union_continuations unknown
+                (con_con_continuation joined_envs known))
+            known
+        in
+        Some known)
+    join_types
+
 let do_it ~touched_vars joined_envs join_types switches =
   let join_types =
-    Variable.Map.filter
-      (fun var _ -> Variable.Set.mem var touched_vars)
+    Name_in_target_env.Map.filter
+      (fun var _ -> Name_in_target_env.Set.mem var touched_vars)
       join_types
   in
   let inferred_relations =
-    Variable.Map.fold
+    Name_in_target_env.Map.fold
       (fun var types acc ->
         Index.Map.fold
           (fun index expanded acc ->
@@ -1142,9 +1200,11 @@ let do_it ~touched_vars joined_envs join_types switches =
                 (fun rel_name value acc ->
                   TG.Relation.Map.update rel_name
                     (fun rel ->
-                      let rel = Option.value ~default:Variable.Map.empty rel in
+                      let rel =
+                        Option.value ~default:Name_in_target_env.Map.empty rel
+                      in
                       Some
-                        (Variable.Map.update var
+                        (Name_in_target_env.Map.update var
                            (fun rel ->
                              let rel =
                                Option.value ~default:Index.Map.empty rel
@@ -1158,7 +1218,7 @@ let do_it ~touched_vars joined_envs join_types switches =
   in
   TG.Relation.Map.fold
     (fun rel map switches ->
-      Variable.Map.fold
+      Name_in_target_env.Map.fold
         (fun var vals switches ->
           let values, unknown =
             Index.Map.fold
@@ -1195,8 +1255,10 @@ let do_it ~touched_vars joined_envs join_types switches =
               in
               TG.Relation.Map.update rel
                 (fun map ->
-                  let map = Option.value ~default:Name.Map.empty map in
-                  Some (Name.Map.add (Name.var var) continuation_uses map))
+                  let map =
+                    Option.value ~default:Name_in_target_env.Map.empty map
+                  in
+                  Some (Name_in_target_env.Map.add var continuation_uses map))
                 switches
             | Some _ -> switches
           else switches)
@@ -1258,10 +1320,11 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
               let table =
                 Database.fold_relation_extension
                   (fun arg value acc ->
-                    match Name.must_be_var_opt arg with
-                    | None -> acc
-                    | Some var -> Variable.Map.add var value acc)
-                  extension Variable.Map.empty
+                    Name_in_one_joined_env.Map.add
+                      (Name_in_one_joined_env.create arg)
+                      (Simple_in_one_joined_env.create value)
+                      acc)
+                  extension Name_in_one_joined_env.Map.empty
               in
               let indexed = Option.value ~default:Index.Map.empty indexed in
               Some (Index.Map.add index table indexed))
@@ -1311,7 +1374,7 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
       Join_aliases.add_in_target_env ~exists_in_target_env join_aliases
         all_expanded_equations join_types
     in
-    let touched_by_relations = ref Variable.Set.empty in
+    let touched_by_relations = ref Name_in_target_env.Set.empty in
     let all_relations =
       (* Explicitly re-introduce relations for variables that got demoted to a
          constant in a joined env but not in the target env, which is critical
@@ -1320,46 +1383,66 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
          Note that this will not re-introduce relations for variables that have
          been demoted to constants in *all* environments. *)
       TG.Relation.Map.merge
-        (fun _relation_name relations_by_x relations_by_y ->
+        (fun _relation_name relations_by_x
+             (relations_by_y :
+               Simple_in_joined_envs.t Name_in_target_env.Map.t option) ->
           match relations_by_x with
           | None -> relations_by_y
           | Some relations_by_x ->
             let relations_by_y =
-              Option.value ~default:Variable.Map.empty relations_by_y
+              Option.value ~default:Name_in_target_env.Map.empty relations_by_y
             in
             let { Join_aliases.values_in_target_env = relations_by_y;
                   touched_variables
                 } =
-              Join_aliases.add_in_target_env ~mem_name join_aliases
-                relations_by_x relations_by_y
+              Join_aliases.add_in_target_env ~exists_in_target_env join_aliases
+                relations_by_x
+                (relations_by_y
+                  :> Simple_in_one_joined_env.t Index.Map.t
+                     Name_in_target_env.Map.t)
             in
             touched_by_relations
-              := Variable.Set.union touched_variables !touched_by_relations;
+              := Name_in_target_env.Set.union touched_variables
+                   !touched_by_relations;
             let relations_by_y =
-              Variable.Map.mapi
+              Name_in_target_env.Map.mapi
                 (fun var by_index ->
-                  match Variable.Map.find var demoted_in_some_envs with
-                  | exception Not_found -> by_index
+                  match
+                    Name_in_target_env.Map.find var demoted_in_some_envs
+                  with
+                  | exception Not_found -> Simple_in_joined_envs.create by_index
                   | simples_in_demoted_envs ->
-                    Index.Map.merge
-                      (fun _ arg_opt simple_opt ->
-                        match simple_opt, arg_opt with
-                        | None, None -> None
-                        | Some _, _ -> simple_opt
-                        | None, Some canonical_simple -> (
-                          match Simple.must_be_const canonical_simple with
-                          | None -> None
-                          | Some _ -> (
-                            match _relation_name with
-                            | Get_tag -> None
-                            | Is_null ->
-                              Some
-                                (Simple.const_int_of_kind K.naked_immediate 0)
-                            | Is_int ->
-                              Some
-                                (Simple.const_int_of_kind
-                                   Flambda_kind.naked_immediate 1))))
-                      simples_in_demoted_envs by_index)
+                    Simple_in_joined_envs.create
+                    @@ Index.Map.merge
+                         (fun _ arg_opt simple_opt ->
+                           match simple_opt, arg_opt with
+                           | None, None -> None
+                           | Some _, _ -> simple_opt
+                           | ( None,
+                               Some
+                                 (canonical_simple : Simple_in_one_joined_env.t)
+                             ) -> (
+                             match
+                               Simple.must_be_const
+                                 (canonical_simple :> Simple.t)
+                             with
+                             | None -> None
+                             | Some _ -> (
+                               match _relation_name with
+                               | Get_tag -> None
+                               | Is_null ->
+                                 Some
+                                   (Simple_in_one_joined_env.create
+                                      (Simple.const_int_of_kind
+                                         K.naked_immediate 0))
+                               | Is_int ->
+                                 Some
+                                   (Simple_in_one_joined_env.create
+                                      (Simple.const_int_of_kind
+                                         Flambda_kind.naked_immediate 1)))))
+                         (simples_in_demoted_envs
+                           :> Simple_in_one_joined_env.t Index.Map.t)
+                         by_index)
                 relations_by_y
             in
             Some relations_by_y)
@@ -1370,8 +1453,8 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
         (Name_in_target_env.Map.keys demoted_in_some_envs)
     in
     let _touched_by_relations =
-      Variable.Set.union !touched_by_relations
-        (Variable.Map.keys demoted_in_some_envs)
+      Name_in_target_env.Set.union !touched_by_relations
+        (Name_in_target_env.Map.keys demoted_in_some_envs)
     in
     let t = { t with join_aliases; join_types } in
     let all_indices = Index.Map.keys t.joined_envs in
@@ -1402,13 +1485,13 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
             Name_in_target_env.Map.add var types new_vars)
         touched_vars Name_in_target_env.Map.empty
     in
-    let rec loop equations_to_join joined_equations t =
+    let rec loop all_joined equations_to_join joined_equations t =
       let equations, t =
         Join_equations.n_way_join ~n_way_join_type equations_to_join
           joined_equations t
       in
       if Name_in_target_env.Map.is_empty t.pending_vars
-      then
+      then (
         let symbol_projections =
           n_way_join_symbol_projections ~exists_in_target_env
             ~is_bound_strictly_earlier t.join_aliases t.joined_envs
@@ -1417,33 +1500,64 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
         let relations =
           TG.Relation.Map.mapi
             (fun _ jojo ->
-              Variable.Map.filter_map
+              Name_in_target_env.Map.filter_map
                 (fun _ simple_by_index ->
                   if not
-                       (Index.Set.subset all_indices
-                          (Index.Map.keys simple_by_index))
+                       (Simple_in_joined_envs.is_defined_in all_indices
+                          simple_by_index)
                   then None
                   else
                     match
-                      Join_aliases.find ~mem_name ~is_bound_strictly_earlier
-                        simple_by_index t.join_aliases
+                      Join_aliases.find ~exists_in_target_env
+                        ~is_bound_strictly_earlier simple_by_index
+                        t.join_aliases
                     with
                     | Bottom | Unknown -> None
                     | Ok simple -> Some simple)
                 jojo)
             all_relations
         in
-        let switches_on_relations =
-          do_it ~touched_vars t.joined_envs join_types TG.Relation.Map.empty
+        let touched_types =
+          Name_in_target_env.Map.filter
+            (fun name _ ->
+              Name_in_target_env.Set.mem name touched_vars
+              ||
+              match Name.must_be_var_opt (name :> Name.t) with
+              | Some var -> Variable.Map.mem var t.existential_vars
+              | None -> false)
+            all_joined
         in
+        let switches_on_names =
+          if true
+          then Name_in_target_env.Map.empty
+          else make_the_switch t.joined_envs touched_types
+        in
+        let switches_on_relations =
+          if true
+          then TG.Relation.Map.empty
+          else
+            do_it ~touched_vars t.joined_envs touched_types
+              TG.Relation.Map.empty
+        in
+        assert (
+          Name_in_target_env.Set.is_empty
+            (Name_in_target_env.Set.inter
+               (Name_in_target_env.Map.keys all_joined)
+               (Name_in_target_env.Map.keys demoted_in_target_env)));
+        assert (
+          Name_in_target_env.Set.is_empty
+            (Name_in_target_env.Set.inter
+               (Name_in_target_env.Map.keys switches_on_names)
+               (Name_in_target_env.Map.keys demoted_in_target_env)));
         Or_bottom.Ok
           { demoted_in_target_env;
             extra_variables = t.existential_vars;
             equations;
             symbol_projections;
             relations;
+            switches_on_names;
             switches_on_relations
-          }
+          })
       else
         let join_types =
           Name_in_target_env.Map.fold
@@ -1455,25 +1569,32 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
                 name_in_target_env canonicals)
             t.pending_vars t.join_types
         in
-        let equations_to_join =
+        let new_equations_to_join =
           Name_in_target_env.Map.mapi
             (fun var _ -> Join_equations.find var join_types)
             t.pending_vars
         in
+        let all_joined =
+          Name_in_target_env.Map.disjoint_union all_joined new_equations_to_join
+        in
         let pending_vars = Name_in_target_env.Map.empty in
-        loop equations_to_join equations { t with pending_vars; join_types }
+        loop all_joined new_equations_to_join equations
+          { t with pending_vars; join_types }
     in
-    loop equations_to_join Name_in_target_env.Map.empty t
+    loop equations_to_join equations_to_join Name_in_target_env.Map.empty t
 
 let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
     joined_envs =
   let _, joined_envs, joined_levels =
     List.fold_left
       (fun (discriminant, joined_envs, joined_levels) typing_env ->
-        let level = TE.cut typing_env ~cut_after in
-        ( Index.succ discriminant,
-          Index.Map.add discriminant typing_env joined_envs,
-          Index.Map.add discriminant level joined_levels ))
+        if TE.is_bottom typing_env
+        then discriminant, joined_envs, joined_levels
+        else
+          let level = TE.cut typing_env ~cut_after in
+          ( Index.succ discriminant,
+            Index.Map.add discriminant typing_env joined_envs,
+            Index.Map.add discriminant level joined_levels ))
       (Index.zero, Index.Map.empty, Index.Map.empty)
       joined_envs
   in
@@ -1497,6 +1618,7 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
         equations;
         symbol_projections;
         relations;
+        switches_on_names;
         switches_on_relations
       } ->
     let target_env =
@@ -1519,6 +1641,23 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
     in
     let target_env =
       Name_in_target_env.Map.fold
+        (fun name arms target_env ->
+          TE.add_switch_on_name ~meet_type (name :> Name.t) ~arms target_env)
+        switches_on_names target_env
+    in
+    let target_env =
+      TG.Relation.Map.fold
+        (fun relation_name switches target_env ->
+          Name_in_target_env.Map.fold
+            (fun name arms target_env ->
+              TE.add_switch_on_relation ~meet_type relation_name
+                (name :> Name.t)
+                ~arms target_env)
+            switches target_env)
+        switches_on_relations target_env
+    in
+    let target_env =
+      Name_in_target_env.Map.fold
         (fun name ty target_env ->
           TE.add_equation ~meet_type target_env (name :> Name.t) ty)
         equations target_env
@@ -1532,22 +1671,14 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
     let target_env =
       TG.Relation.Map.fold
         (fun relation_name relation target_env ->
-          Variable.Map.fold
-            (fun variable simple target_env ->
-              TE.add_relation target_env relation_name (Name.var variable)
-                simple ~meet_type)
+          Name_in_target_env.Map.fold
+            (fun variable (simple : Simple_in_target_env.t) target_env ->
+              TE.add_relation target_env relation_name
+                (variable :> Name.t)
+                (simple :> Simple.t)
+                ~meet_type)
             relation target_env)
         relations target_env
-    in
-    let target_env =
-      TG.Relation.Map.fold
-        (fun relation_name switches target_env ->
-          Name.Map.fold
-            (fun name arms target_env ->
-              TE.add_switch_on_relation ~meet_type relation_name name ~arms
-                target_env)
-            switches target_env)
-        switches_on_relations target_env
     in
     target_env
 
@@ -1598,6 +1729,7 @@ let n_way_join_env_extension ~n_way_join_type ~meet_type t envs_with_extensions
         equations;
         symbol_projections;
         relations = _;
+        switches_on_names = _;
         switches_on_relations = _
       } ->
     if not (Variable.Map.is_empty symbol_projections)

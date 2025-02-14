@@ -19,7 +19,7 @@ type t =
       (Type_grammar.t * Binding_time.With_name_mode.t) Name.Map.t;
     aliases : Aliases.t;
     symbol_projections : Symbol_projection.t Variable.Map.t;
-    database : Database.t
+    database : Database.snapshot
   }
 
 let print_kind_and_mode ~min_binding_time ppf (ty, binding_time_and_mode) =
@@ -42,7 +42,7 @@ let empty =
   { names_to_types = Name.Map.empty;
     aliases = Aliases.empty;
     symbol_projections = Variable.Map.empty;
-    database = Database.empty
+    database = Database.empty_snapshot
   }
 
 let names_to_types t = t.names_to_types
@@ -117,7 +117,7 @@ let clean_for_export t ~reachable_names =
       t.names_to_types
   in
   let aliases = Aliases.empty in
-  let database = Database.empty in
+  let database = Database.empty_snapshot in
   { t with names_to_types; aliases; database }
 
 let apply_renaming { names_to_types; aliases; symbol_projections; database }
@@ -141,7 +141,7 @@ let apply_renaming { names_to_types; aliases; symbol_projections; database }
           acc)
       symbol_projections Variable.Map.empty
   in
-  let database = Database.apply_renaming database renaming in
+  let database = Database.apply_renaming_snapshot database renaming in
   { names_to_types; aliases; symbol_projections; database }
 
 let merge t1 t2 =
@@ -161,7 +161,7 @@ let merge t1 t2 =
             Symbol_projection.print proj2)
       t1.symbol_projections t2.symbol_projections
   in
-  let database = Database.empty in
+  let database = Database.empty_snapshot in
   { names_to_types; aliases; symbol_projections; database }
 
 let canonicalise t simple =

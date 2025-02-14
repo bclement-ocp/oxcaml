@@ -39,7 +39,7 @@ val defined_names : t -> Name.Set.t
 
 val equations : t -> Type_grammar.t Name.Map.t
 
-val database_extension : t -> Database.extension
+val database_extension : t -> Database.difference
 
 val symbol_projections : t -> Symbol_projection.t Variable.Map.t
 
@@ -49,7 +49,7 @@ val add_definition : t -> Variable.t -> Flambda_kind.t -> Binding_time.t -> t
 
 val add_or_replace_equation : t -> Name.t -> Type_grammar.t -> t
 
-val add_database_extension : t -> Database.extension -> t
+val add_database_extension : t -> Database.difference -> t
 
 val concat : earlier:t -> later:t -> t
 

@@ -6,17 +6,25 @@ val empty : t
 
 val apply_renaming : t -> Renaming.t -> t
 
-type extension
+type difference
 
-val print_extension : Format.formatter -> extension -> unit
+val print_extension : Format.formatter -> difference -> unit
 
-val empty_extension : extension
+val empty_extension : difference
 
-val is_empty_extension : extension -> bool
+val is_empty_extension : difference -> bool
 
-val tick : t -> t * extension
+type snapshot
 
-val concat_extension : earlier:extension -> later:extension -> extension
+val empty_snapshot : snapshot
+
+val apply_renaming_snapshot : snapshot -> Renaming.t -> snapshot
+
+val tick : t -> snapshot * difference
+
+val from_snapshot : snapshot -> t
+
+val concat_extension : earlier:difference -> later:difference -> difference
 
 module Aliases0 : sig
   type t =
@@ -28,6 +36,7 @@ end
 val make_demotions : t -> Type_grammar.t Name.Map.t -> Simple.t Name.Map.t
 
 val rebuild :
+  demotions:Simple.t Name.Map.t ->
   binding_time_resolver:(Name.t -> Binding_time.With_name_mode.t) ->
   binding_times_and_modes:('a * Binding_time.With_name_mode.t) Name.Map.t ->
   Aliases0.t ->
@@ -50,7 +59,7 @@ type relation_extension
 
 val fold_relations :
   (Type_grammar.relation -> relation_extension -> 'a -> 'a) ->
-  extension ->
+  difference ->
   'a ->
   'a
 
@@ -67,8 +76,15 @@ val add_switch_on_relation :
   t ->
   t Or_bottom.t
 
+val add_switch_on_name :
+  Name.t ->
+  ?default:Apply_cont_rewrite_id.Set.t Continuation.Map.t ->
+  arms:Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t ->
+  t ->
+  t Or_bottom.t
+
 val interreduce :
-  previous:t -> current:t -> difference:extension -> t Or_bottom.t
+  previous:snapshot -> current:t -> difference:difference -> t Or_bottom.t
 
 val switch_on_scrutinee :
   t ->
@@ -76,4 +92,4 @@ val switch_on_scrutinee :
   Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t
   Or_unknown.t
 
-val add_extension : t -> extension -> t
+val add_extension : t -> difference -> t

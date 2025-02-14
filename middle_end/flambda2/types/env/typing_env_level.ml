@@ -21,7 +21,7 @@ type t =
   { defined_vars : K.t Variable.Map.t;
     binding_times : Variable.Set.t Binding_time.Map.t;
     equations : TG.t Name.Map.t;
-    database_extension : Database.extension;
+    database_extension : Database.difference;
     symbol_projections : Symbol_projection.t Variable.Map.t
   }
 

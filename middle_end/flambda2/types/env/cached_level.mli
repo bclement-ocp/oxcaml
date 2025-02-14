@@ -35,11 +35,11 @@ val add_or_replace_binding :
 
 val replace_variable_binding : t -> Variable.t -> Type_grammar.t -> t
 
-val database : t -> Database.t
+val database : t -> Database.snapshot
 
 val with_aliases : t -> aliases:Aliases.t -> t
 
-val with_database : t -> database:Database.t -> t
+val with_database : t -> database:Database.snapshot -> t
 
 val add_symbol_projection : t -> Variable.t -> Symbol_projection.t -> t
 

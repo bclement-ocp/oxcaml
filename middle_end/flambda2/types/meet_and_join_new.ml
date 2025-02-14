@@ -1216,9 +1216,14 @@ and meet_row_like :
        that variables defined in the central env are defined in all the joined
        envs. *)
     let result_env =
-      Join_env.cut_and_n_way_join ~n_way_join_type:n_way_join
-        ~meet_type:(TE.New meet_type) ~cut_after:common_scope initial_env
-        scoped_envs
+      try
+        Join_env.cut_and_n_way_join ~n_way_join_type:n_way_join
+          ~meet_type:(TE.New meet_type) ~cut_after:common_scope initial_env
+          scoped_envs
+      with Assert_failure _ as e ->
+        Format.eprintf "@[<v 2>Initial env:@ %a@]@ @[<v 2>Base env:@ %a@]@."
+          TE.print initial_env TE.print base_env;
+        raise e
     in
     Variable.Map.fold
       (fun var kind env ->

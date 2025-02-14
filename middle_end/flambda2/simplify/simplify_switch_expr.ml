@@ -586,8 +586,8 @@ let simplify_switch0 dacc switch ~down_to_up =
     | Unknown ->
       if Flambda_features.debug_flambda2 ()
       then
-        Format.eprintf "@[<v>When switchong on %a, no uses:@ %a@]@."
-          Simple.print scrutinee TE.print typing_env_at_use
+        Format.eprintf "@[<v>When switching on %a:@ %a@]@." Simple.print
+          scrutinee TE.print typing_env_at_use
     | Known switch ->
       if Flambda_features.debug_flambda2 ()
       then

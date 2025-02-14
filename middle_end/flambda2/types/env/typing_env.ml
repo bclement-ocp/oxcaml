@@ -117,6 +117,8 @@ type t =
     min_binding_time : Binding_time.t;
         (* Earlier variables have mode In_types *)
     new_types : TG.t Name.Map.t;
+    database_before_last_reduction : Database.snapshot;
+    changes_since_last_reduction : Database.difference;
     (* continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t
 
        These are the continuation uses that have been refined since the last
@@ -145,7 +147,8 @@ let aliases t =
   Cached_level.aliases (One_level.just_after_level t.current_level)
 
 let database t =
-  Cached_level.database (One_level.just_after_level t.current_level)
+  Database.from_snapshot
+    (Cached_level.database (One_level.just_after_level t.current_level))
 
 (* CR-someday mshinwell: Should print name occurrence kinds *)
 let [@ocamlformat "disable"] print ppf
@@ -153,6 +156,8 @@ let [@ocamlformat "disable"] print ppf
          prev_levels; current_level; next_binding_time = _;
          defined_symbols; code_age_relation; min_binding_time;
          new_types = _ ; is_bottom;
+         database_before_last_reduction = _;
+         changes_since_last_reduction = _;
        } as t) =
   if is_empty t then
     Format.pp_print_string ppf "Empty"
@@ -407,6 +412,8 @@ let create ~resolver ~get_imported_names =
     code_age_relation = Code_age_relation.empty;
     min_binding_time = Binding_time.earliest_var;
     new_types = Name.Map.empty;
+    database_before_last_reduction = Database.empty_snapshot;
+    changes_since_last_reduction = Database.empty_extension;
     is_bottom = false
   }
 
@@ -659,7 +666,14 @@ let with_database t ~database =
   let current_level =
     One_level.create (current_scope t) level ~just_after_level
   in
-  with_current_level t ~current_level, database_extension
+  let t =
+    { t with
+      changes_since_last_reduction =
+        Database.concat_extension ~earlier:t.changes_since_last_reduction
+          ~later:database_extension
+    }
+  in
+  with_current_level t ~current_level
 
 let add_variable_definition t var kind name_mode =
   (* We can add equations in our own compilation unit on variables and symbols
@@ -845,9 +859,9 @@ let rec replace_equation (t : t) name ty =
   in
   with_current_level t ~current_level
 
-(* reduce: first rebuild the database so that everything is canonical
-
-   then perform inter-reductions *)
+and replace_equation_by_alias t name ty =
+  let new_types = Name.Map.add name ty t.new_types in
+  replace_equation { t with new_types } name ty
 
 and replace_equation_or_add_alias_to_const t name ty =
   match TG.recover_const_alias ty with
@@ -865,7 +879,7 @@ and replace_equation_or_add_alias_to_const t name ty =
       let t = with_aliases t ~aliases in
       let kind = MTC.kind_for_const const in
       let ty = TG.alias_type_of kind canonical_element in
-      replace_equation t name ty
+      replace_equation_by_alias t name ty
     | Bottom ->
       Misc.fatal_error "Unexpected bottom while adding alias to constant.")
 
@@ -1021,7 +1035,7 @@ and orient_and_add_equation ~raise_on_bottom t name ty ~meet_type =
           let ty = TG.alias_type_of kind canonical_element in
           let t =
             pattern_match_equation alias_of_demoted_element ty
-              ~name:(fun name ty -> replace_equation t name ty)
+              ~name:(fun name ty -> replace_equation_by_alias t name ty)
               ~const:(fun _ _ ->
                 Misc.fatal_error "Unexpected demotion of constant.")
           in
@@ -1060,7 +1074,7 @@ and add_env_extension_with_extra_variables t
       with Bottom_equation -> make_bottom t)
     env_extension t
 
-let process_demotions ~raise_on_bottom ~meet_type t
+let record_demotions_in_types ~raise_on_bottom ~meet_type t
     { Database.Aliases0.aliases; demotions } =
   Profile.record_call ~accumulate:true "process_demotions" @@ fun () ->
   let t = with_aliases t ~aliases in
@@ -1068,17 +1082,11 @@ let process_demotions ~raise_on_bottom ~meet_type t
   let t, extra_types =
     Name.Map.fold
       (fun demoted canonical (t, extra_types) ->
-        let canonical =
-          Simple.pattern_match canonical
-            ~const:(fun _ -> canonical)
-            ~name:(fun name ~coercion ->
-              Simple.apply_coercion_exn
-                (Aliases.get_canonical_ignoring_name_mode aliases name)
-                coercion)
-        in
         let existing_ty = find t demoted None in
         let kind = TG.kind existing_ty in
-        let t = replace_equation t demoted (TG.alias_type_of kind canonical) in
+        let t =
+          replace_equation_by_alias t demoted (TG.alias_type_of kind canonical)
+        in
         let extra_types = (demoted, canonical, existing_ty) :: extra_types in
         t, extra_types)
       demotions (t, [])
@@ -1090,53 +1098,62 @@ let process_demotions ~raise_on_bottom ~meet_type t
         ty ~meet_type)
     t extra_types
 
-let _rebuild ~raise_on_bottom ~meet_type
-    ?(database_extension = Database.empty_extension) t =
-  let db0 = database t in
-  let rec rebuild0 new_types database_extension t =
+let _rebuild ~raise_on_bottom ~meet_type t =
+  let rec rebuild0 t =
     if Name.Map.is_empty t.new_types
-    then (
-      let database = database t in
-      match
-        Database.interreduce ~previous:db0 ~current:database
-          ~difference:database_extension
-      with
-      | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
-      | Ok database ->
-        let t, database_extension = with_database t ~database in
-        ignore database_extension;
-        t)
+    then t
     else
       let database = database t in
       let demotions = Database.make_demotions database t.new_types in
-      let new_types =
-        Name.Map.union (fun _ _ty1 ty2 -> Some ty2) new_types t.new_types
-      in
       let t = { t with new_types = Name.Map.empty } in
-      let aliases0 = Database.Aliases0.{ aliases = aliases t; demotions } in
-      let database0 = database in
+      let aliases0 =
+        Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+      in
+      let original_database = database in
       match
-        Database.rebuild ~binding_time_resolver:t.binding_time_resolver
+        Database.rebuild ~demotions
+          ~binding_time_resolver:t.binding_time_resolver
           ~binding_times_and_modes:(names_to_types t) aliases0 database
       with
       | Bottom ->
         if raise_on_bottom then raise Bottom_equation else make_bottom t
       | Ok (database, aliases0) ->
-        if database == database0
+        if database == original_database
         then t
         else
-          let t, extra_database_extension = with_database t ~database in
-          let t = process_demotions ~raise_on_bottom ~meet_type t aliases0 in
-          rebuild0 new_types
-            (Database.concat_extension ~earlier:database_extension
-               ~later:extra_database_extension)
-            t
+          let t = with_database t ~database in
+          let t =
+            record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
+          in
+          rebuild0 t
   in
-  Profile.record_call ~accumulate:true "rebuild" (fun () ->
-      rebuild0 Name.Map.empty database_extension t)
+  Profile.record ~accumulate:true "rebuild" rebuild0 t
+
+let reduce ~raise_on_bottom ~meet_type t =
+  let rec reduce0 t =
+    let t = _rebuild ~raise_on_bottom ~meet_type t in
+    let difference = t.changes_since_last_reduction in
+    if Database.is_empty_extension difference
+    then t
+    else
+      let database = database t in
+      let previous = t.database_before_last_reduction in
+      let t =
+        { t with
+          database_before_last_reduction = fst (Database.tick database);
+          changes_since_last_reduction = Database.empty_extension
+        }
+      in
+      match Database.interreduce ~previous ~current:database ~difference with
+      | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
+      | Ok database ->
+        let t = with_database t ~database in
+        reduce0 t
+  in
+  Profile.record ~accumulate:true "reduce" reduce0 t
 
 let add_equation ~raise_on_bottom t name ty ~meet_type =
-  (* _rebuild ~raise_on_bottom ~meet_type *)
+  (* reduce ~raise_on_bottom ~meet_type *)
   add_equation ~raise_on_bottom t name ty ~meet_type
 
 let add_relation ~raise_on_bottom t relation name simple ~meet_type =
@@ -1160,15 +1177,13 @@ let add_relation ~raise_on_bottom t relation name simple ~meet_type =
   | Or_bottom.Bottom ->
     if raise_on_bottom then raise Bottom_equation else make_bottom t
   | Or_bottom.Ok (database, aliases0) ->
-    let t, database_extension = with_database t ~database in
-    let t = process_demotions ~raise_on_bottom ~meet_type t aliases0 in
-    _rebuild ~raise_on_bottom ~meet_type ~database_extension t
+    let t = record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0 in
+    let t = with_database t ~database in
+    reduce ~raise_on_bottom ~meet_type t
 
 let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
   let database = Database.add_continuation_use cont id (database t) in
-  let t, database_extension = with_database t ~database in
-  ignore database_extension;
-  t
+  with_database t ~database
 
 let add_continuation_use ~meet_type t cont id =
   try add_continuation_use ~raise_on_bottom:true ~meet_type t cont id
@@ -1177,16 +1192,43 @@ let add_continuation_use ~meet_type t cont id =
 let continuation_uses t = Database.continuation_uses (database t)
 
 let add_switch_on_relation ~meet_type relation name ?default ~arms t =
-  match
-    Database.add_switch_on_relation relation name ?default ~arms (database t)
-  with
-  | Bottom -> Misc.fatal_error "Unexpected bottom"
-  | Ok database -> (
-    let t, database_extension = with_database t ~database in
-    try _rebuild ~raise_on_bottom:true ~meet_type ~database_extension t
-    with Bottom_equation -> make_bottom t)
+  if true
+  then t
+  else
+    match
+      Database.add_switch_on_relation relation name ?default ~arms (database t)
+    with
+    | Bottom -> Misc.fatal_error "Unexpected bottom"
+    | Ok database -> (
+      let t = with_database t ~database in
+      try reduce ~raise_on_bottom:true ~meet_type t
+      with Bottom_equation -> make_bottom t)
+
+let add_switch_on_name ~meet_type name ?default ~arms t =
+  if true
+  then t
+  else
+    let canon = Aliases.get_canonical_ignoring_name_mode (aliases t) name in
+    Simple.pattern_match canon
+      ~const:(fun _ -> t)
+      ~name:(fun name ~coercion ->
+        assert (Coercion.is_id coercion);
+        match Database.add_switch_on_name name ?default ~arms (database t) with
+        | Bottom -> Misc.fatal_error "Unexpected bottom"
+        | Ok database -> (
+          let t = with_database t ~database in
+          try reduce ~raise_on_bottom:true ~meet_type t
+          with Bottom_equation -> make_bottom t))
 
 let switch_on_scrutinee t ~scrutinee =
+  let scrutinee =
+    Simple.pattern_match scrutinee
+      ~const:(fun _ -> scrutinee)
+      ~name:(fun name ~coercion ->
+        Simple.apply_coercion_exn
+          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+          coercion)
+  in
   Database.switch_on_scrutinee (database t) ~scrutinee
 
 let add_env_extension_from_level t level ~meet_type : t =
@@ -1211,8 +1253,7 @@ let add_env_extension_from_level t level ~meet_type : t =
   (* Do not use [add_database_extension]. *)
   let database_extension = TEL.database_extension level in
   let database = Database.add_extension (database t) database_extension in
-  let t, _ = with_database t ~database in
-  t
+  with_database t ~database
 
 let add_equation_strict t name ty ~meet_type : _ Or_bottom.t =
   if t.is_bottom
@@ -1311,7 +1352,7 @@ let cut t ~cut_after =
     loop (One_level.level t.current_level) t.prev_levels
 
 let rebuild ~meet_type t =
-  try _rebuild ~raise_on_bottom:true ~meet_type t
+  try reduce ~raise_on_bottom:true ~meet_type t
   with Bottom_equation -> make_bottom t
 
 let cut_as_extension t ~cut_after =

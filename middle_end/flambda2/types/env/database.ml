@@ -359,39 +359,27 @@ module Aliases0 = struct
 
   exception Bottom_equation
 
-  let rebuild ~binding_time_resolver ~binding_times_and_modes f t acc =
+  let rebuild ~demotions ~binding_time_resolver ~binding_times_and_modes f t acc
+      =
     let meet = meet ~binding_time_resolver ~binding_times_and_modes in
-    let rec rebuild all_demotions t acc =
-      if Name.Map.is_empty t.demotions
-      then Or_bottom.Ok (acc, { t with demotions = all_demotions })
-      else
-        match
-          Name.Map.fold
-            (fun to_be_demoted canonical_at_demotion (acc, t) ->
-              let canonical_element =
-                Simple.pattern_match canonical_at_demotion
-                  ~const:(fun _ -> canonical_at_demotion)
-                  ~name:(fun name ~coercion ->
-                    Simple.apply_coercion_exn
-                      (Aliases.get_canonical_ignoring_name_mode t.aliases name)
-                      coercion)
-              in
-              match f ~to_be_demoted ~canonical_element ~meet t acc with
-              | Or_bottom.Bottom -> raise Bottom_equation
-              | Or_bottom.Ok (acc, t) -> acc, t)
-            t.demotions
-            (acc, { t with demotions = Name.Map.empty })
-        with
-        | acc, t ->
-          let all_demotions =
-            Name.Map.union
-              (fun _ _simple1 simple2 -> Some simple2)
-              all_demotions t.demotions
+    match
+      Name.Map.fold
+        (fun to_be_demoted canonical_at_demotion (acc, t) ->
+          let canonical_element =
+            Simple.pattern_match canonical_at_demotion
+              ~const:(fun _ -> canonical_at_demotion)
+              ~name:(fun name ~coercion ->
+                Simple.apply_coercion_exn
+                  (Aliases.get_canonical_ignoring_name_mode t.aliases name)
+                  coercion)
           in
-          rebuild all_demotions t acc
-        | exception Bottom_equation -> Or_bottom.Bottom
-    in
-    rebuild Name.Map.empty t acc
+          match f ~to_be_demoted ~canonical_element ~meet t acc with
+          | Or_bottom.Bottom -> raise Bottom_equation
+          | Or_bottom.Ok (acc, t) -> acc, t)
+        demotions (acc, t)
+    with
+    | acc, t -> Or_bottom.Ok (acc, t)
+    | exception Bottom_equation -> Or_bottom.Bottom
 end
 
 module Z_lattice (Key : Container_types.S) = struct
@@ -738,6 +726,12 @@ module Final = struct
     add_switch_on_relation ~meet:meet_continuation_uses relation name ?default
       ~arms t
 
+  let add_switch_on_name name ?default ~arms t =
+    let t = map_incremental (add_free_name name) t in
+    add_switch_on_name ~meet:meet_continuation_uses name
+      (create_switch ~default ~arms)
+      t
+
   let concat ~earlier ~later =
     let relations =
       TG.Relation.Map.union
@@ -753,25 +747,14 @@ module Final = struct
       match earlier, later with
       | There _, Gone -> Some later
       | There _, There _ -> Some later
-      | Gone, _ -> Misc.fatal_error "Already gone! What?"
+      | Gone, _ ->
+        let _ = assert false in
+        Misc.fatal_error "Already gone! What?"
     in
     let switches_on_names =
       Name.Map.union
         (fun _ earlier later -> concat_or_gone ~earlier ~later)
         earlier.switches_on_names later.switches_on_names
-    in
-    (* Switches on relations are moved to switches on expressions.
-
-       Note that we do not need to remove the [demoted_names] because those are
-       included in the [relations] already. *)
-    let earlier_switches_on_relations =
-      TG.Relation.Map.merge
-        (fun _ earlier_switches later ->
-          match earlier_switches, later with
-          | None, _ | _, None -> earlier_switches
-          | Some earlier_switches, Some later ->
-            Some (Name.Map.diff_domains earlier_switches later))
-        earlier.switches_on_relations later.relations
     in
     let switches_on_relations =
       TG.Relation.Map.union
@@ -780,7 +763,7 @@ module Final = struct
             (Name.Map.union
                (fun _ earlier later -> concat_or_gone ~earlier ~later)
                earlier later))
-        earlier_switches_on_relations later.switches_on_relations
+        earlier.switches_on_relations later.switches_on_relations
     in
     { relations;
       inverse_relations;
@@ -897,214 +880,208 @@ module Final = struct
   let continuation_uses t = t.current.continuation_uses
 end
 
-module Old_api = struct
-  type t = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t incremental
+type t = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t incremental
 
-  let print ppf t =
-    Final.print
-      (Continuation.Map.print Apply_cont_rewrite_id.Set.print)
-      ppf t.current
+let print ppf t =
+  Final.print
+    (Continuation.Map.print Apply_cont_rewrite_id.Set.print)
+    ppf t.current
 
-  let empty = { current = Final.empty; difference = Final.empty }
+let empty = { current = Final.empty; difference = Final.empty }
 
-  let apply_renaming t renaming =
-    Final.map_incremental (fun t -> Final.apply_renaming t renaming) t
+let apply_renaming t renaming =
+  Final.map_incremental (fun t -> Final.apply_renaming t renaming) t
 
-  type extension = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t
+let empty_snapshot = Final.empty
 
-  let print_extension ppf t =
-    Final.print (Continuation.Map.print Apply_cont_rewrite_id.Set.print) ppf t
+let apply_renaming_snapshot = Final.apply_renaming
 
-  type relation_extension = Function.t
+type difference = Apply_cont_rewrite_id.Set.t Continuation.Map.t Final.t
 
-  let fold_relations f t acc =
-    TG.Relation.Map.fold
-      (fun relation table acc -> f relation table acc)
-      t.Final.relations acc
+let print_extension ppf t =
+  Final.print (Continuation.Map.print Apply_cont_rewrite_id.Set.print) ppf t
 
-  let fold_relation_extension f (t : relation_extension) acc =
-    Name.Map.fold
-      (fun key values acc ->
-        Simple.Map.fold
-          (fun value count acc -> if count > 0 then f key value acc else acc)
-          values acc)
-      t acc
+type relation_extension = Function.t
 
-  let empty_extension = Final.empty
+let fold_relations f t acc =
+  TG.Relation.Map.fold
+    (fun relation table acc -> f relation table acc)
+    t.Final.relations acc
 
-  let is_empty_extension = Final.is_empty
+let fold_relation_extension f (t : relation_extension) acc =
+  Name.Map.fold
+    (fun key values acc ->
+      Simple.Map.fold
+        (fun value count acc -> if count > 0 then f key value acc else acc)
+        values acc)
+    t acc
 
-  let tick { current; difference } =
-    { current; difference = Final.empty }, difference
+let empty_extension = Final.empty
 
-  let concat_extension = Final.concat
+let is_empty_extension = Final.is_empty
 
-  let demote_in_function ~to_be_demoted ~canonical_element ~meet aliases (t : t)
-      =
-    let open Or_bottom.Let_syntax in
-    Simple.pattern_match canonical_element
-      ~const:(fun const ->
-        TG.Relation.Map.fold
-          (fun relation fn result ->
-            let<* t, aliases = result in
-            match Function.find_opt to_be_demoted fn with
-            | None -> Ok (t, aliases)
-            | Some existing_value ->
-              let t =
-                Final.remove_relation relation to_be_demoted existing_value t
-              in
-              let<* const_value = relation_for_const relation const in
-              let<+ _, aliases =
-                meet aliases (Simple.const const_value) existing_value
-              in
-              t, aliases)
-          t.current.relations
-          (Or_bottom.Ok (t, aliases)))
-      ~name:(fun canonical_name ~coercion ->
-        assert (Coercion.is_id coercion);
-        TG.Relation.Map.fold
-          (fun relation fn result ->
-            let<* t, aliases = result in
-            match Function.find_opt to_be_demoted fn with
-            | None -> Ok (t, aliases)
-            | Some existing_value ->
-              let t =
-                Final.remove_relation relation to_be_demoted existing_value t
-              in
-              Final.add_relation ~meet relation canonical_name existing_value
-                aliases t)
-          t.current.relations
-          (Or_bottom.Ok (t, aliases)))
+let tick { current; difference } = current, difference
 
-  let demote_switch ~apply_coercion ~to_be_demoted ~canonical_element aliases
-      switches : _ Or_bottom.t =
-    match find_z_lattice_on_names to_be_demoted switches with
-    | None -> Ok (switches, aliases)
-    | Some value ->
-      let switches = remove_z_lattice_on_names to_be_demoted value switches in
-      Simple.pattern_match canonical_element
-        ~const:(fun _const -> Or_bottom.Ok (switches, aliases))
-        ~name:(fun canonical_name ~coercion ->
-          let value = apply_coercion value (Coercion.inverse coercion) in
-          add_z_lattice_on_names
-            ~meet:(Final.meet_row_like ~meet:Final.meet_continuation_uses)
-            canonical_name value aliases switches)
+let from_snapshot current = { current; difference = Final.empty }
 
-  let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases (t : t)
-      =
-    let open Or_bottom.Let_syntax in
-    TG.Relation.Map.fold
-      (fun relation inverse result ->
-        match Name.Map.find_opt to_be_demoted inverse with
-        | None -> result
-        | Some keys ->
-          Name.Map.fold
-            (fun key count result ->
-              if count <= 0
-              then result
-              else
-                let<* t, aliases = result in
-                let t =
-                  Final.remove_relation relation key
-                    (Simple.name to_be_demoted)
-                    t
-                in
-                Final.add_relation ~meet relation key canonical_element aliases
-                  t)
-            keys result)
-      t.current.inverse_relations
-      (Or_bottom.Ok (t, aliases))
+let concat_extension = Final.concat
 
-  let demote ~to_be_demoted ~canonical_element ~meet aliases t =
-    let open Or_bottom.Let_syntax in
-    let<* switches_on_names, () =
-      demote_switch
-        ~apply_coercion:(fun switch coercion ->
-          assert (Coercion.is_id coercion);
-          switch)
-        ~to_be_demoted ~canonical_element ()
-        (Final.get_incremental Final.get_switches_on_names t)
-    in
-    let t =
-      Final.set_incremental Final.set_switches_on_names switches_on_names t
-    in
-    let<* switches_on_relations =
+let demote_in_function ~to_be_demoted ~canonical_element ~meet aliases (t : t) =
+  let open Or_bottom.Let_syntax in
+  Simple.pattern_match canonical_element
+    ~const:(fun const ->
       TG.Relation.Map.fold
-        (fun relation switches switches_on_relations ->
-          let<* switches_on_relations = switches_on_relations in
-          let switches_diff =
-            try TG.Relation.Map.find relation switches_on_relations.difference
-            with Not_found -> Name.Map.empty
-          in
-          let<+ switches, () =
-            demote_switch
-              ~apply_coercion:(fun row_like coercion ->
-                assert (Coercion.is_id coercion);
-                row_like)
-              ~to_be_demoted ~canonical_element ()
-              { current = switches; difference = switches_diff }
-          in
-          Final.set_incremental
-            (TG.Relation.Map.add relation)
-            switches switches_on_relations)
-        t.current.switches_on_relations
-        (Or_bottom.Ok (Final.get_incremental Final.get_switches_on_relations t))
-    in
-    let t =
-      Final.set_incremental Final.set_switches_on_relations
-        switches_on_relations t
-    in
-    let<* t, aliases =
-      demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
-    in
-    let<+ t, aliases =
-      demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases t
-    in
-    let t =
-      match Name.Map.find_opt to_be_demoted t.current.Final.free_names with
-      | None -> t
-      | Some () ->
-        let t =
-          Final.map_incremental (Final.remove_free_name to_be_demoted) t
+        (fun relation fn result ->
+          let<* t, aliases = result in
+          match Function.find_opt to_be_demoted fn with
+          | None -> Ok (t, aliases)
+          | Some existing_value ->
+            let t =
+              Final.remove_relation relation to_be_demoted existing_value t
+            in
+            let<* const_value = relation_for_const relation const in
+            let<+ _, aliases =
+              meet aliases (Simple.const const_value) existing_value
+            in
+            t, aliases)
+        t.current.relations
+        (Or_bottom.Ok (t, aliases)))
+    ~name:(fun canonical_name ~coercion ->
+      assert (Coercion.is_id coercion);
+      TG.Relation.Map.fold
+        (fun relation fn result ->
+          let<* t, aliases = result in
+          match Function.find_opt to_be_demoted fn with
+          | None -> Ok (t, aliases)
+          | Some existing_value ->
+            let t =
+              Final.remove_relation relation to_be_demoted existing_value t
+            in
+            Final.add_relation ~meet relation canonical_name existing_value
+              aliases t)
+        t.current.relations
+        (Or_bottom.Ok (t, aliases)))
+
+let demote_switch ~apply_coercion ~to_be_demoted ~canonical_element aliases
+    switches : _ Or_bottom.t =
+  match find_z_lattice_on_names to_be_demoted switches with
+  | None -> Ok (switches, aliases)
+  | Some value ->
+    let switches = remove_z_lattice_on_names to_be_demoted value switches in
+    Simple.pattern_match canonical_element
+      ~const:(fun _const -> Or_bottom.Ok (switches, aliases))
+      ~name:(fun canonical_name ~coercion ->
+        let value = apply_coercion value (Coercion.inverse coercion) in
+        add_z_lattice_on_names
+          ~meet:(Final.meet_row_like ~meet:Final.meet_continuation_uses)
+          canonical_name value aliases switches)
+
+let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases (t : t) =
+  let open Or_bottom.Let_syntax in
+  TG.Relation.Map.fold
+    (fun relation inverse result ->
+      match Name.Map.find_opt to_be_demoted inverse with
+      | None -> result
+      | Some keys ->
+        Name.Map.fold
+          (fun key count result ->
+            if count <= 0
+            then result
+            else
+              let<* t, aliases = result in
+              let t =
+                Final.remove_relation relation key (Simple.name to_be_demoted) t
+              in
+              Final.add_relation ~meet relation key canonical_element aliases t)
+          keys result)
+    t.current.inverse_relations
+    (Or_bottom.Ok (t, aliases))
+
+let demote ~to_be_demoted ~canonical_element ~meet aliases t =
+  let open Or_bottom.Let_syntax in
+  let<* switches_on_names, () =
+    demote_switch
+      ~apply_coercion:(fun switch coercion ->
+        assert (Coercion.is_id coercion);
+        switch)
+      ~to_be_demoted ~canonical_element ()
+      (Final.get_incremental Final.get_switches_on_names t)
+  in
+  let t =
+    Final.set_incremental Final.set_switches_on_names switches_on_names t
+  in
+  let<* switches_on_relations =
+    TG.Relation.Map.fold
+      (fun relation switches switches_on_relations ->
+        let<* switches_on_relations = switches_on_relations in
+        let switches_diff =
+          try TG.Relation.Map.find relation switches_on_relations.difference
+          with Not_found -> Name.Map.empty
         in
-        Final.map_incremental
-          (Final.add_free_names_of_simple canonical_element)
-          t
-    in
-    t, aliases
+        let<+ switches, () =
+          demote_switch
+            ~apply_coercion:(fun row_like coercion ->
+              assert (Coercion.is_id coercion);
+              row_like)
+            ~to_be_demoted ~canonical_element ()
+            { current = switches; difference = switches_diff }
+        in
+        Final.set_incremental
+          (TG.Relation.Map.add relation)
+          switches switches_on_relations)
+      t.current.switches_on_relations
+      (Or_bottom.Ok (Final.get_incremental Final.get_switches_on_relations t))
+  in
+  let t =
+    Final.set_incremental Final.set_switches_on_relations switches_on_relations
+      t
+  in
+  let<* t, aliases =
+    demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
+  in
+  let<+ t, aliases =
+    demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases t
+  in
+  let t =
+    match Name.Map.find_opt to_be_demoted t.current.Final.free_names with
+    | None -> t
+    | Some () ->
+      let t = Final.map_incremental (Final.remove_free_name to_be_demoted) t in
+      Final.map_incremental (Final.add_free_names_of_simple canonical_element) t
+  in
+  t, aliases
 
-  let rebuild ~binding_time_resolver ~binding_times_and_modes aliases0 database
-      =
-    Aliases0.rebuild ~binding_time_resolver ~binding_times_and_modes demote
-      aliases0 database
+let rebuild ~demotions ~binding_time_resolver ~binding_times_and_modes aliases0
+    database =
+  Aliases0.rebuild ~demotions ~binding_time_resolver ~binding_times_and_modes
+    demote aliases0 database
 
-  let add_relation ~binding_time_resolver ~binding_times_and_modes aliases0
-      database relation name value =
-    Final.add_relation
-      ~meet:(Aliases0.meet ~binding_time_resolver ~binding_times_and_modes)
-      relation name value aliases0 database
+let add_relation ~binding_time_resolver ~binding_times_and_modes aliases0
+    database relation name value =
+  Final.add_relation
+    ~meet:(Aliases0.meet ~binding_time_resolver ~binding_times_and_modes)
+    relation name value aliases0 database
 
-  let add_continuation_use cont use t = Final.add_continuation_use cont use t
+let add_continuation_use cont use t = Final.add_continuation_use cont use t
 
-  let continuation_uses = Final.continuation_uses
+let continuation_uses = Final.continuation_uses
 
-  let add_switch_on_relation = Final.add_switch_on_relation
+let add_switch_on_name = Final.add_switch_on_name
 
-  let switch_on_scrutinee t ~scrutinee =
-    Simple.pattern_match scrutinee
-      ~const:(fun _ -> Or_unknown.Unknown)
-      ~name:(fun name ~coercion:_ ->
-        match Name.Map.find_opt name t.current.Final.switches_on_names with
-        | None | Some Gone -> Or_unknown.Unknown
-        | Some (There continuations) -> Or_unknown.Known continuations.known)
+let add_switch_on_relation = Final.add_switch_on_relation
 
-  let add_extension t extension =
-    let current = concat_extension ~earlier:t.current ~later:extension in
-    let difference = concat_extension ~earlier:t.difference ~later:extension in
-    { current; difference }
-end
+let switch_on_scrutinee t ~scrutinee =
+  Simple.pattern_match scrutinee
+    ~const:(fun _ -> Or_unknown.Unknown)
+    ~name:(fun name ~coercion:_ ->
+      match Name.Map.find_opt name t.current.Final.switches_on_names with
+      | None | Some Gone -> Or_unknown.Unknown
+      | Some (There continuations) -> Or_unknown.Known continuations.known)
 
-include Old_api
+let add_extension t extension =
+  let current = concat_extension ~earlier:t.current ~later:extension in
+  let difference = concat_extension ~earlier:t.difference ~later:extension in
+  { current; difference }
 
 let make_demotions t types =
   let types =
@@ -1113,5 +1090,6 @@ let make_demotions t types =
   Name.Map.filter_map (fun _ ty -> Type_grammar.get_alias_opt ty) types
 
 let interreduce ~previous ~current ~difference =
-  Final.interredox ~previous:previous.current ~current:current.current
-    ~difference current
+  Final.interredox ~previous ~current:current.current ~difference current
+
+type snapshot = difference

@@ -160,6 +160,14 @@ val add_switch_on_relation :
   t ->
   t
 
+val add_switch_on_name :
+  meet_type:meet_type ->
+  Name.t ->
+  ?default:Apply_cont_rewrite_id.Set.t Continuation.Map.t ->
+  arms:Apply_cont_rewrite_id.Set.t Continuation.Map.t Reg_width_const.Map.t ->
+  t ->
+  t
+
 val switch_on_scrutinee :
   t ->
   scrutinee:Simple.t ->

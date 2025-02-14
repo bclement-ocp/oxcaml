@@ -87,6 +87,11 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
       DE.add_equation_on_variable denv tag.param
         (T.get_tag_for_block ~block:(Simple.var param_var))
     in
+    let denv =
+      DE.map_typing_env denv ~f:(fun typing_env ->
+          TE.add_get_tag_for_block typing_env ~block:(Name.var param_var)
+            (Simple.var tag.param))
+    in
     let get_tag_prim =
       P.Eligible_for_cse.create_get_tag ~block:(Name.var param_var)
     in
