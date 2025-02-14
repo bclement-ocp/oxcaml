@@ -1171,35 +1171,29 @@ let add_equation ~raise_on_bottom t name ty ~meet_type =
   add_equation ~raise_on_bottom t name ty ~meet_type
 
 let add_relation ~raise_on_bottom t relation name simple ~meet_type =
-  if true
-  then t
-  else
-    let simple =
-      Simple.pattern_match simple
-        ~const:(fun _ -> simple)
-        ~name:(fun name ~coercion ->
-          Simple.apply_coercion_exn
-            (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
-            coercion)
-    in
-    let aliases0 =
-      Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
-    in
-    let original_database = database t in
-    match
-      Database.add_relation
-        ~binding_time_resolver:(get_binding_time_resolver t)
-        ~binding_times_and_modes:(names_to_types t) aliases0 original_database
-        relation name simple
-    with
-    | Or_bottom.Bottom ->
-      if raise_on_bottom then raise Bottom_equation else make_bottom t
-    | Or_bottom.Ok (database, aliases0) ->
-      let t =
-        record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
-      in
-      let t = with_database t ~database in
-      reduce ~raise_on_bottom ~meet_type t
+  let simple =
+    Simple.pattern_match simple
+      ~const:(fun _ -> simple)
+      ~name:(fun name ~coercion ->
+        Simple.apply_coercion_exn
+          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+          coercion)
+  in
+  let aliases0 =
+    Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+  in
+  let original_database = database t in
+  match
+    Database.add_relation ~binding_time_resolver:t.binding_time_resolver
+      ~binding_times_and_modes:(names_to_types t) aliases0 original_database
+      relation name simple
+  with
+  | Or_bottom.Bottom ->
+    if raise_on_bottom then raise Bottom_equation else make_bottom t
+  | Or_bottom.Ok (database, aliases0) ->
+    let t = record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0 in
+    let t = with_database t ~database in
+    reduce ~raise_on_bottom ~meet_type t
 
 let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
   let database = Database.add_continuation_use cont id (database t) in
@@ -1372,11 +1366,8 @@ let cut t ~cut_after =
     loop (One_level.level t.current_level) t.prev_levels
 
 let rebuild ~meet_type t =
-  if true
-  then t
-  else
-    try reduce ~raise_on_bottom:true ~meet_type t
-    with Bottom_equation -> make_bottom t
+  try reduce ~raise_on_bottom:true ~meet_type t
+  with Bottom_equation -> make_bottom t
 
 let cut_as_extension t ~cut_after =
   Typing_env_level.as_extension_without_bindings (cut t ~cut_after)
