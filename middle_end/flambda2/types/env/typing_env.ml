@@ -109,12 +109,6 @@ type shared_data =
     get_imported_names : unit -> Name.Set.t
   }
 
-and db_data =
-  { new_types : TG.t Name.Map.t;
-    database_before_last_reduction : Database.snapshot;
-    changes_since_last_reduction : Database.difference
-  }
-
 and t =
   { shared_data : shared_data;
     defined_symbols : Symbol.Set.t;
@@ -125,8 +119,10 @@ and t =
     current_level : One_level.t;
     next_binding_time : Binding_time.t;
     min_binding_time : Binding_time.t;
-    (* Earlier variables have mode In_types *)
-    db_data : db_data;
+        (* Earlier variables have mode In_types *)
+    new_types : TG.t Name.Map.t;
+    database_before_last_reduction : Database.snapshot;
+    changes_since_last_reduction : Database.difference;
     (* continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t
 
        These are the continuation uses that have been refined since the last
@@ -163,7 +159,9 @@ let [@ocamlformat "disable"] print ppf
       ({ shared_data = _;
          prev_levels; current_level; next_binding_time = _;
          defined_symbols; code_age_relation; min_binding_time;
-         db_data = _ ; is_bottom;
+         new_types = _ ; is_bottom;
+         database_before_last_reduction = _;
+         changes_since_last_reduction = _;
        } as t) =
   if is_empty t then
     Format.pp_print_string ppf "Empty"
@@ -415,12 +413,6 @@ let create ~resolver ~get_imported_names =
       get_imported_names
     }
   in
-  let db_data =
-    { new_types = Name.Map.empty;
-      database_before_last_reduction = Database.empty_snapshot;
-      changes_since_last_reduction = Database.empty_extension
-    }
-  in
   { shared_data;
     prev_levels = [];
     (* Since [Scope.prev] may be used in the simplifier on this scope, in order
@@ -431,7 +423,9 @@ let create ~resolver ~get_imported_names =
     defined_symbols = Symbol.Set.empty;
     code_age_relation = Code_age_relation.empty;
     min_binding_time = Binding_time.earliest_var;
-    db_data;
+    new_types = Name.Map.empty;
+    database_before_last_reduction = Database.empty_snapshot;
+    changes_since_last_reduction = Database.empty_extension;
     is_bottom = false
   }
 
@@ -684,15 +678,14 @@ let with_database t ~database =
   let current_level =
     One_level.create (current_scope t) level ~just_after_level
   in
-  let db_data =
-    { t.db_data with
+  let t =
+    { t with
       changes_since_last_reduction =
-        Database.concat_extension
-          ~earlier:t.db_data.changes_since_last_reduction
+        Database.concat_extension ~earlier:t.changes_since_last_reduction
           ~later:database_extension
     }
   in
-  { t with db_data; current_level }
+  with_current_level t ~current_level
 
 let add_variable_definition t var kind name_mode =
   (* We can add equations in our own compilation unit on variables and symbols
@@ -844,6 +837,7 @@ let rec replace_equation (t : t) name ty =
            canonical (its canonical is %a): %a"
           Name.print name Simple.print canonical TG.print ty);
   invariant_for_new_equation t name ty;
+  let t = { t with new_types = Name.Map.add name ty t.new_types } in
   let level =
     TEL.add_or_replace_equation (One_level.level t.current_level) name ty
   in
@@ -878,9 +872,8 @@ let rec replace_equation (t : t) name ty =
   with_current_level t ~current_level
 
 and replace_equation_by_alias t name ty =
-  let new_types = Name.Map.add name ty t.db_data.new_types in
-  let db_data = { t.db_data with new_types } in
-  replace_equation { t with db_data } name ty
+  let new_types = Name.Map.add name ty t.new_types in
+  replace_equation { t with new_types } name ty
 
 and replace_equation_or_add_alias_to_const t name ty =
   match TG.recover_const_alias ty with
@@ -1099,6 +1092,7 @@ let record_demotions_in_types ~raise_on_bottom ~meet_type t
     { Database.Aliases0.aliases; demotions } =
   Profile.record_call ~accumulate:true "process_demotions" @@ fun () ->
   let t = with_aliases t ~aliases in
+  let new_types = t.new_types in
   let t, extra_types =
     Name.Map.fold
       (fun demoted canonical (t, extra_types) ->
@@ -1111,6 +1105,7 @@ let record_demotions_in_types ~raise_on_bottom ~meet_type t
         t, extra_types)
       demotions (t, [])
   in
+  let t = { t with new_types } in
   List.fold_left
     (fun t (demoted, canonical, ty) ->
       add_non_alias_equation ~original_name:demoted ~raise_on_bottom t canonical
@@ -1119,13 +1114,12 @@ let record_demotions_in_types ~raise_on_bottom ~meet_type t
 
 let _rebuild ~raise_on_bottom ~meet_type t =
   let rec rebuild0 t =
-    if Name.Map.is_empty t.db_data.new_types
+    if Name.Map.is_empty t.new_types
     then t
     else
       let database = database t in
-      let demotions = Database.make_demotions database t.db_data.new_types in
-      let db_data = { t.db_data with new_types = Name.Map.empty } in
-      let t = { t with db_data } in
+      let demotions = Database.make_demotions database t.new_types in
+      let t = { t with new_types = Name.Map.empty } in
       let aliases0 =
         Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
       in
@@ -1152,19 +1146,18 @@ let _rebuild ~raise_on_bottom ~meet_type t =
 let reduce ~raise_on_bottom ~meet_type t =
   let rec reduce0 t =
     let t = _rebuild ~raise_on_bottom ~meet_type t in
-    let difference = t.db_data.changes_since_last_reduction in
+    let difference = t.changes_since_last_reduction in
     if Database.is_empty_extension difference
     then t
     else
       let database = database t in
-      let previous = t.db_data.database_before_last_reduction in
-      let db_data =
-        { t.db_data with
+      let previous = t.database_before_last_reduction in
+      let t =
+        { t with
           database_before_last_reduction = fst (Database.tick database);
           changes_since_last_reduction = Database.empty_extension
         }
       in
-      let t = { t with db_data } in
       match Database.interreduce ~previous ~current:database ~difference with
       | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
       | Ok database ->
