@@ -580,11 +580,6 @@ module Final = struct
   let map_incremental f t =
     { current = f t.current; difference = f t.difference }
 
-  let get_switches_on_relations t = t.switches_on_relations
-
-  let set_switches_on_relations switches_on_relations t =
-    { t with switches_on_relations }
-
   let get_switches_on_names t = t.switches_on_names
 
   let set_switches_on_names switches_on_names t = { t with switches_on_names }
