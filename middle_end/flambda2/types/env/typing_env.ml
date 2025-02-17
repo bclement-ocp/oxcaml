@@ -1143,30 +1143,23 @@ let _rebuild ~raise_on_bottom ~meet_type t =
   rebuild0 t
 
 let reduce ~raise_on_bottom ~meet_type t =
-  let rec reduce0 t =
-    let t = _rebuild ~raise_on_bottom ~meet_type t in
-    let difference = t.changes_since_last_reduction in
-    if Database.is_empty_extension difference
-    then t
-    else
-      let database = database t in
-      let previous = t.database_before_last_reduction in
-      let t =
-        { t with
-          database_before_last_reduction = fst (Database.tick database);
-          changes_since_last_reduction = Database.empty_extension
-        }
-      in
-      match Database.interreduce ~previous ~current:database ~difference with
-      | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
-      | Ok database' ->
-        if database == database'
-        then t
-        else
-          let t = with_database t ~database:database' in
-          reduce0 t
-  in
-  reduce0 t
+  let t = _rebuild ~raise_on_bottom ~meet_type t in
+  let difference = t.changes_since_last_reduction in
+  if Database.is_empty_extension difference
+  then t
+  else
+    let database = database t in
+    let previous = t.database_before_last_reduction in
+    let t =
+      { t with
+        database_before_last_reduction = fst (Database.tick database);
+        changes_since_last_reduction = Database.empty_extension
+      }
+    in
+    match Database.interreduce ~previous ~current:database ~difference with
+    | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
+    | Ok database' ->
+      if database == database' then t else with_database t ~database:database'
 
 let add_equation ~raise_on_bottom t name ty ~meet_type =
   (* reduce ~raise_on_bottom ~meet_type *)
