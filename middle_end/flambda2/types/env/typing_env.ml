@@ -1166,13 +1166,24 @@ let add_equation ~raise_on_bottom t name ty ~meet_type =
   add_equation ~raise_on_bottom t name ty ~meet_type
 
 let add_relation ~raise_on_bottom t relation name simple ~meet_type =
-  let simple =
+  let ty =
+    match (relation : TG.relation) with
+    | Is_int -> TG.is_int_for_scrutinee ~scrutinee:simple
+    | Get_tag -> TG.get_tag_for_block ~block:simple
+    | Is_null -> TG.is_null ~scrutinee:simple
+  in
+  let simple, t =
     Simple.pattern_match simple
-      ~const:(fun _ -> simple)
+      ~const:(fun _ -> simple, t)
       ~name:(fun name ~coercion ->
-        Simple.apply_coercion_exn
-          (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
-          coercion)
+        let canonical =
+          Simple.apply_coercion_exn
+            (Aliases.get_canonical_ignoring_name_mode (aliases t) name)
+            coercion
+        in
+        ( canonical,
+          add_non_alias_equation ~original_name:name ~raise_on_bottom t
+            canonical ty ~meet_type ))
   in
   let aliases0 =
     Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }

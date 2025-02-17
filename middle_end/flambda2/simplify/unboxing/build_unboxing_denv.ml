@@ -84,10 +84,6 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
     let tag_v = VB.create tag.param Name_mode.normal in
     let denv = DE.define_variable denv tag_v K.naked_immediate in
     let denv =
-      DE.add_equation_on_variable denv tag.param
-        (T.get_tag_for_block ~block:(Simple.var param_var))
-    in
-    let denv =
       DE.map_typing_env denv ~f:(fun typing_env ->
           TE.add_get_tag_for_block typing_env ~block:(Name.var param_var)
             (Simple.var tag.param))
@@ -103,10 +99,6 @@ let rec denv_of_decision denv ~param_var (decision : U.decision) : DE.t =
       | At_least_one { is_int; _ } ->
         let is_int_v = VB.create is_int.param Name_mode.normal in
         let denv = DE.define_variable denv is_int_v K.naked_immediate in
-        let denv =
-          DE.add_equation_on_variable denv is_int.param
-            (T.is_int_for_scrutinee ~scrutinee:(Simple.var param_var))
-        in
         let denv =
           DE.map_typing_env denv ~f:(fun typing_env ->
               TE.add_is_int_for_scrutinee typing_env

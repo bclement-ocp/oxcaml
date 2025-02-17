@@ -25,6 +25,11 @@ module Typing_env = struct
       ~meet_type:(Meet_and_join.meet_type ())
       t Is_int scrutinee simple
 
+  let add_is_null_for_scrutinee t simple ~scrutinee =
+    add_relation
+      ~meet_type:(Meet_and_join.meet_type ())
+      t Is_null scrutinee simple
+
   let add_continuation_use t cont id =
     add_continuation_use ~meet_type:(Meet_and_join.meet_type ()) t cont id
 

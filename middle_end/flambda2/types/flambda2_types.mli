@@ -176,6 +176,8 @@ module Typing_env : sig
 
   val add_is_int_for_scrutinee : t -> Simple.t -> scrutinee:Name.t -> t
 
+  val add_is_null_for_scrutinee : t -> Simple.t -> scrutinee:Name.t -> t
+
   val add_get_tag_for_block : t -> Simple.t -> block:Name.t -> t
 
   val add_continuation_use : t -> Continuation.t -> Apply_cont_rewrite_id.t -> t

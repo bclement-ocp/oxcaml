@@ -190,7 +190,7 @@ let simplify_tag_immediate dacc ~original_term ~arg:_ ~arg_ty:naked_number_ty
   SPR.create original_term ~try_reify:true dacc
 
 let simplify_relational_primitive dacc ~original_term ~scrutinee ~scrutinee_ty:_
-    ~result_var ~make_shape ~add_relation =
+    ~result_var ~add_relation =
   (* CR vlaviron: We could use prover functions to simplify but it's probably
      not going to help that much.
 
@@ -200,12 +200,11 @@ let simplify_relational_primitive dacc ~original_term ~scrutinee ~scrutinee_ty:_
      ([Is_int x] instead of a constant). However, in practice the information
      can be recovered both when switching on the value (through regular meet) or
      when trying to lift a block containing the value (through reify). *)
-  let dacc = DA.add_variable dacc result_var (make_shape scrutinee) in
   let dacc =
-    DA.map_denv dacc
-      ~f:
-        (DE.map_typing_env ~f:(fun env ->
-             add_relation env (Simple.var (Bound_var.var result_var))))
+    DA.map_denv dacc ~f:(fun denv ->
+        let denv = DE.define_variable denv result_var K.naked_immediate in
+        DE.map_typing_env denv ~f:(fun env ->
+            add_relation env (Simple.var (Bound_var.var result_var)) scrutinee))
   in
   SPR.create original_term ~try_reify:true dacc
 
@@ -214,9 +213,7 @@ let simplify_is_int ~variant_only dacc ~original_term ~arg:scrutinee
   if variant_only
   then
     simplify_relational_primitive dacc ~original_term ~scrutinee ~scrutinee_ty
-      ~result_var
-      ~make_shape:(fun scrutinee -> T.is_int_for_scrutinee ~scrutinee)
-      ~add_relation:(fun typing_env simple ->
+      ~result_var ~add_relation:(fun typing_env simple scrutinee ->
         match Simple.must_be_name scrutinee with
         | None -> typing_env
         | Some (name, coercion) ->
@@ -234,9 +231,7 @@ let simplify_is_int ~variant_only dacc ~original_term ~arg:scrutinee
 let simplify_get_tag dacc ~original_term ~arg:scrutinee ~arg_ty:scrutinee_ty
     ~result_var =
   simplify_relational_primitive dacc ~original_term ~scrutinee ~scrutinee_ty
-    ~result_var
-    ~make_shape:(fun block -> T.get_tag_for_block ~block)
-    ~add_relation:(fun typing_env simple ->
+    ~result_var ~add_relation:(fun typing_env simple scrutinee ->
       match Simple.must_be_name scrutinee with
       | None -> typing_env
       | Some (name, coercion) ->
@@ -911,9 +906,12 @@ let simplify_mutable_block_load _access_kind ~field:_ ~original_prim dacc
 let simplify_is_null dacc ~original_term ~arg:scrutinee ~arg_ty:scrutinee_ty
     ~result_var =
   simplify_relational_primitive dacc ~original_term ~scrutinee ~scrutinee_ty
-    ~result_var
-    ~make_shape:(fun scrutinee -> T.is_null ~scrutinee)
-    ~add_relation:(fun env _ -> env)
+    ~result_var ~add_relation:(fun typing_env simple scrutinee ->
+      match Simple.must_be_name scrutinee with
+      | None -> typing_env
+      | Some (name, coercion) ->
+        TE.add_is_null_for_scrutinee typing_env ~scrutinee:name
+          (Simple.apply_coercion_exn simple (Coercion.inverse coercion)))
 
 let simplify_peek ~original_prim dacc ~original_term ~arg:_ ~arg_ty:_
     ~result_var =
