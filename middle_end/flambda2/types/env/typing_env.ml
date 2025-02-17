@@ -1159,9 +1159,12 @@ let reduce ~raise_on_bottom ~meet_type t =
       in
       match Database.interreduce ~previous ~current:database ~difference with
       | Bottom -> Misc.fatal_error "did not expect the spanish bottom"
-      | Ok database ->
-        let t = with_database t ~database in
-        reduce0 t
+      | Ok database' ->
+        if database == database'
+        then t
+        else
+          let t = with_database t ~database:database' in
+          reduce0 t
   in
   reduce0 t
 
