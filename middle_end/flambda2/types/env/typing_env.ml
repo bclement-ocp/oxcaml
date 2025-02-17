@@ -1116,26 +1116,29 @@ let _rebuild ~raise_on_bottom ~meet_type t =
       let database = database t in
       let demotions = Database.make_demotions database t.new_types in
       let t = { t with new_types = Name.Map.empty } in
-      let aliases0 =
-        Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
-      in
-      let original_database = database in
-      match
-        Database.rebuild ~demotions
-          ~binding_time_resolver:(get_binding_time_resolver t)
-          ~binding_times_and_modes:(names_to_types t) aliases0 database
-      with
-      | Bottom ->
-        if raise_on_bottom then raise Bottom_equation else make_bottom t
-      | Ok (database, aliases0) ->
-        if database == original_database
-        then t
-        else
-          let t = with_database t ~database in
-          let t =
-            record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
-          in
-          rebuild0 t
+      if Name.Map.is_empty demotions
+      then t
+      else
+        let aliases0 =
+          Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
+        in
+        let original_database = database in
+        match
+          Database.rebuild ~demotions
+            ~binding_time_resolver:(get_binding_time_resolver t)
+            ~binding_times_and_modes:(names_to_types t) aliases0 database
+        with
+        | Bottom ->
+          if raise_on_bottom then raise Bottom_equation else make_bottom t
+        | Ok (database, aliases0) ->
+          if database == original_database
+          then t
+          else
+            let t = with_database t ~database in
+            let t =
+              record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
+            in
+            rebuild0 t
   in
   rebuild0 t
 

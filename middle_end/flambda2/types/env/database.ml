@@ -415,6 +415,56 @@ let add_z_lattice_on_names ~meet name value env t =
     ~meet name value env t
 
 module Final = struct
+  module Location = struct
+    module T0 = struct
+      type t =
+        | Relation_arg of TG.Relation.t
+        | Relation_val of TG.Relation.t
+        | Switch
+        | Relation_switch of TG.Relation.t
+
+      let print ppf = function
+        | Relation_arg r -> Format.fprintf ppf "_ = %a(·)" TG.Relation.print r
+        | Relation_val r -> Format.fprintf ppf "· = %a(_)" TG.Relation.print r
+        | Switch -> Format.fprintf ppf "switch (·) { _ }"
+        | Relation_switch r ->
+          Format.fprintf ppf "switch (%a(·)) { _ }" TG.Relation.print r
+
+      let equal l1 l2 =
+        match l1, l2 with
+        | Relation_arg r1, Relation_arg r2
+        | Relation_val r1, Relation_val r2
+        | Relation_switch r1, Relation_switch r2 ->
+          TG.Relation.equal r1 r2
+        | Switch, Switch -> true
+        | (Relation_arg _ | Relation_val _ | Relation_switch _ | Switch), _ ->
+          false
+
+      let hash = function
+        | Switch -> Hashtbl.hash 0
+        | Relation_arg r -> Hashtbl.hash (0, TG.Relation.hash r)
+        | Relation_val r -> Hashtbl.hash (1, TG.Relation.hash r)
+        | Relation_switch r -> Hashtbl.hash (2, TG.Relation.hash r)
+
+      let compare l1 l2 =
+        match l1, l2 with
+        | Relation_arg r1, Relation_arg r2
+        | Relation_val r1, Relation_val r2
+        | Relation_switch r1, Relation_switch r2 ->
+          TG.Relation.compare r1 r2
+        | Switch, Switch -> 0
+        | Relation_arg _, _ -> -1
+        | _, Relation_arg _ -> 1
+        | Relation_val _, _ -> -1
+        | _, Relation_val _ -> 1
+        | Switch, _ -> -1
+        | _, Switch -> 1
+    end
+
+    include T0
+    include Container_types.Make (T0)
+  end
+
   type 'a t =
     { relations : Function.t TG.Relation.Map.t;
       inverse_relations : Inverse.t TG.Relation.Map.t;
@@ -422,7 +472,7 @@ module Final = struct
       switches_on_relations :
         'a Row_like.t Z_lattice_on_names.t TG.Relation.Map.t;
       continuation_uses : Apply_cont_rewrite_id.Set.t Continuation.Map.t;
-      free_names : unit Name.Map.t
+      free_names : Location.Set.t Name.Map.t
     }
 
   let print _pp ppf
@@ -710,24 +760,37 @@ module Final = struct
     let add_arm _ t = Or_bottom.Ok t in
     interredox ~add_arm ~meet ~previous ~current ~difference t
 
-  let add_free_name name t =
-    { t with free_names = Name.Map.add name () t.free_names }
+  let add_free_name name loc t =
+    let free_names =
+      Name.Map.update name
+        (function
+          | None -> Some (Location.Set.singleton loc)
+          | Some locs -> Some (Location.Set.add loc locs))
+        t.free_names
+    in
+    { t with free_names }
 
   let remove_free_name name t =
     { t with free_names = Name.Map.remove name t.free_names }
 
-  let add_free_names_of_simple simple t =
+  let add_free_names_of_simple simple loc t =
     Simple.pattern_match simple
       ~const:(fun _ -> t)
-      ~name:(fun name ~coercion:_ -> add_free_name name t)
+      ~name:(fun name ~coercion:_ -> add_free_name name loc t)
+
+  let add_many_free_names_of_simple simple locs t =
+    Simple.pattern_match simple
+      ~const:(fun _ -> t)
+      ~name:(fun name ~coercion:_ ->
+        Location.Set.fold (fun loc t -> add_free_name name loc t) locs t)
 
   let add_switch_on_relation relation name ?default ~arms t =
-    let t = map_incremental (add_free_name name) t in
+    let t = map_incremental (add_free_name name (Relation_switch relation)) t in
     add_switch_on_relation ~meet:meet_continuation_uses relation name ?default
       ~arms t
 
   let add_switch_on_name name ?default ~arms t =
-    let t = map_incremental (add_free_name name) t in
+    let t = map_incremental (add_free_name name Switch) t in
     add_switch_on_name ~meet:meet_continuation_uses name
       (create_switch ~default ~arms)
       t
@@ -772,7 +835,7 @@ module Final = struct
       continuation_uses = later.continuation_uses;
       free_names =
         Name.Map.union
-          (fun _ () () -> Some ())
+          (fun _ _locs1 locs2 -> Some locs2)
           earlier.free_names later.free_names
     }
 
@@ -834,8 +897,10 @@ module Final = struct
     { current; difference }
 
   let add_relation ~meet relation key value aliases t : _ Or_bottom.t =
-    let t = map_incremental (add_free_name key) t in
-    let t = map_incremental (add_free_names_of_simple value) t in
+    let t = map_incremental (add_free_name key (Relation_arg relation)) t in
+    let t =
+      map_incremental (add_free_names_of_simple value (Relation_val relation)) t
+    in
     let open Or_bottom.Let_syntax in
     let table = get_relation relation t.current in
     let<+ { current = table; difference = table_difference }, aliases =
@@ -1045,9 +1110,11 @@ let demote ~to_be_demoted ~canonical_element ~meet aliases t =
   let t =
     match Name.Map.find_opt to_be_demoted t.current.Final.free_names with
     | None -> t
-    | Some () ->
+    | Some locs ->
       let t = Final.map_incremental (Final.remove_free_name to_be_demoted) t in
-      Final.map_incremental (Final.add_free_names_of_simple canonical_element) t
+      Final.map_incremental
+        (Final.add_many_free_names_of_simple canonical_element locs)
+        t
   in
   t, aliases
 
@@ -1085,7 +1152,7 @@ let add_extension t extension =
 
 let make_demotions t types =
   let types =
-    Name.Map.inter (fun _ () ty -> ty) t.current.Final.free_names types
+    Name.Map.inter (fun _ _locs ty -> ty) t.current.Final.free_names types
   in
   Name.Map.filter_map (fun _ ty -> Type_grammar.get_alias_opt ty) types
 
