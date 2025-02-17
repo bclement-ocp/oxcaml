@@ -698,8 +698,22 @@ let add_symbol_projection t var proj =
   in
   with_current_level t ~current_level
 
+exception Found of Symbol_projection.t
+
 let find_symbol_projection t var =
-  Cached_level.find_symbol_projection (cached t) var
+  let aset = Aliases.get_aliases (aliases t) (Simple.var var) in
+  let cached = cached t in
+  try
+    ignore
+      (Aliases.Alias_set.filter aset ~f:(fun alias ->
+           match Simple.must_be_var alias with
+           | Some (var, coercion) when Coercion.is_id coercion -> (
+             match Cached_level.find_symbol_projection cached var with
+             | None -> false
+             | Some sp -> raise (Found sp))
+           | _ -> false));
+    None
+  with Found sp -> Some sp
 
 let add_definition t (name : Bound_name.t) kind =
   let name_mode = Bound_name.name_mode name in
