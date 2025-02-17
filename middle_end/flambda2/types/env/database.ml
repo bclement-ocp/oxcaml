@@ -892,10 +892,6 @@ module Final = struct
     { current; difference }
 
   let add_relation ~meet relation key value aliases t : _ Or_bottom.t =
-    let t = map_incremental (add_free_name key (Relation_arg relation)) t in
-    let t =
-      map_incremental (add_free_names_of_simple value (Relation_val relation)) t
-    in
     let open Or_bottom.Let_syntax in
     let table = get_relation relation t.current in
     let<+ { current = table; difference = table_difference }, aliases =
@@ -907,10 +903,21 @@ module Final = struct
         ~meet key value aliases
         { current = table; difference = Function.empty }
     in
-    let current = set_relation relation table t.current in
-    let difference = add_relation relation table_difference t.difference in
-    let t = update_inverse relation table_difference { current; difference } in
-    t, aliases
+    if Name.Map.is_empty table_difference
+    then t, aliases
+    else
+      let t = map_incremental (add_free_name key (Relation_arg relation)) t in
+      let t =
+        map_incremental
+          (add_free_names_of_simple value (Relation_val relation))
+          t
+      in
+      let current = set_relation relation table t.current in
+      let difference = add_relation relation table_difference t.difference in
+      let t =
+        update_inverse relation table_difference { current; difference }
+      in
+      t, aliases
 
   let remove_relation relation key value t =
     let fn = get_incremental (get_relation relation) t in
