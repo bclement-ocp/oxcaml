@@ -1064,48 +1064,42 @@ let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases (t : t) =
 
 let demote ~to_be_demoted ~canonical_element ~meet aliases t =
   let open Or_bottom.Let_syntax in
-  let<* switches_on_names, () =
-    demote_switch
-      ~apply_coercion:(fun switch coercion ->
-        assert (Coercion.is_id coercion);
-        switch)
-      ~to_be_demoted ~canonical_element ()
-      (Final.get_incremental Final.get_switches_on_names t)
-  in
-  let t =
-    Final.set_incremental Final.set_switches_on_names switches_on_names t
-  in
-  let<* switches_on_relations =
-    TG.Relation.Map.fold
-      (fun relation switches switches_on_relations ->
-        let<* switches_on_relations = switches_on_relations in
-        let switches_diff =
-          try TG.Relation.Map.find relation switches_on_relations.difference
-          with Not_found -> Name.Map.empty
-        in
-        let<+ switches, () =
-          demote_switch
-            ~apply_coercion:(fun row_like coercion ->
-              assert (Coercion.is_id coercion);
-              row_like)
-            ~to_be_demoted ~canonical_element ()
-            { current = switches; difference = switches_diff }
-        in
-        Final.set_incremental
-          (TG.Relation.Map.add relation)
-          switches switches_on_relations)
-      t.current.switches_on_relations
-      (Or_bottom.Ok (Final.get_incremental Final.get_switches_on_relations t))
-  in
-  let t =
-    Final.set_incremental Final.set_switches_on_relations switches_on_relations
-      t
-  in
-  let<* t, aliases =
-    demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
-  in
+  let locs = Name.Map.find to_be_demoted t.current.Final.free_names in
   let<+ t, aliases =
-    demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases t
+    Final.Location.Set.fold
+      (fun (loc : Final.Location.t) t ->
+        let<* t, aliases = t in
+        match loc with
+        | Switch ->
+          let<+ switches_on_names, () =
+            demote_switch
+              ~apply_coercion:(fun switch coercion ->
+                assert (Coercion.is_id coercion);
+                switch)
+              ~to_be_demoted ~canonical_element ()
+              (Final.get_incremental Final.get_switches_on_names t)
+          in
+          ( Final.set_incremental Final.set_switches_on_names switches_on_names t,
+            aliases )
+        | Relation_switch rel ->
+          let switches =
+            Final.get_incremental (Final.get_switches_on_relation rel) t
+          in
+          let<+ switches, () =
+            demote_switch
+              ~apply_coercion:(fun row_like coercion ->
+                assert (Coercion.is_id coercion);
+                row_like)
+              ~to_be_demoted ~canonical_element () switches
+          in
+          ( Final.set_incremental (Final.set_switches_on_relation rel) switches t,
+            aliases )
+        | Relation_arg _ ->
+          demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
+        | Relation_val _ ->
+          demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases t)
+      locs
+      (Or_bottom.Ok (t, aliases))
   in
   let t =
     match Name.Map.find_opt to_be_demoted t.current.Final.free_names with
