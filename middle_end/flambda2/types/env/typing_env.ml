@@ -1165,16 +1165,17 @@ let add_equation ~raise_on_bottom t name ty ~meet_type =
   (* reduce ~raise_on_bottom ~meet_type *)
   add_equation ~raise_on_bottom t name ty ~meet_type
 
-let add_relation ~raise_on_bottom t relation name simple ~meet_type =
+let add_relation ~raise_on_bottom t relation name value ~meet_type =
+  let scrutinee = Aliases.get_canonical_ignoring_name_mode (aliases t) name in
   let ty =
     match (relation : TG.relation) with
-    | Is_int -> TG.is_int_for_scrutinee ~scrutinee:simple
-    | Get_tag -> TG.get_tag_for_block ~block:simple
-    | Is_null -> TG.is_null ~scrutinee:simple
+    | Is_int -> TG.is_int_for_scrutinee ~scrutinee
+    | Get_tag -> TG.get_tag_for_block ~block:scrutinee
+    | Is_null -> TG.is_null ~scrutinee
   in
-  let simple, t =
-    Simple.pattern_match simple
-      ~const:(fun _ -> simple, t)
+  let value, t =
+    Simple.pattern_match value
+      ~const:(fun _ -> value, t)
       ~name:(fun name ~coercion ->
         let canonical =
           Simple.apply_coercion_exn
@@ -1189,11 +1190,18 @@ let add_relation ~raise_on_bottom t relation name simple ~meet_type =
     Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
   in
   let original_database = database t in
+  let scrutinee =
+    match Simple.must_be_name scrutinee with
+    | Some (name, coercion) ->
+      assert (Coercion.is_id coercion);
+      name
+    | None -> assert false
+  in
   match
     Database.add_relation
       ~binding_time_resolver:(get_binding_time_resolver t)
       ~binding_times_and_modes:(names_to_types t) aliases0 original_database
-      relation name simple
+      relation scrutinee value
   with
   | Or_bottom.Bottom ->
     if raise_on_bottom then raise Bottom_equation else make_bottom t
