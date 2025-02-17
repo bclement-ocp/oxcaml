@@ -837,7 +837,6 @@ let rec replace_equation (t : t) name ty =
            canonical (its canonical is %a): %a"
           Name.print name Simple.print canonical TG.print ty);
   invariant_for_new_equation t name ty;
-  let t = { t with new_types = Name.Map.add name ty t.new_types } in
   let level =
     TEL.add_or_replace_equation (One_level.level t.current_level) name ty
   in
@@ -1090,9 +1089,7 @@ and add_env_extension_with_extra_variables t
 
 let record_demotions_in_types ~raise_on_bottom ~meet_type t
     { Database.Aliases0.aliases; demotions } =
-  Profile.record_call ~accumulate:true "process_demotions" @@ fun () ->
   let t = with_aliases t ~aliases in
-  let new_types = t.new_types in
   let t, extra_types =
     Name.Map.fold
       (fun demoted canonical (t, extra_types) ->
@@ -1105,7 +1102,6 @@ let record_demotions_in_types ~raise_on_bottom ~meet_type t
         t, extra_types)
       demotions (t, [])
   in
-  let t = { t with new_types } in
   List.fold_left
     (fun t (demoted, canonical, ty) ->
       add_non_alias_equation ~original_name:demoted ~raise_on_bottom t canonical
@@ -1141,7 +1137,7 @@ let _rebuild ~raise_on_bottom ~meet_type t =
           in
           rebuild0 t
   in
-  Profile.record ~accumulate:true "rebuild" rebuild0 t
+  rebuild0 t
 
 let reduce ~raise_on_bottom ~meet_type t =
   let rec reduce0 t =
@@ -1164,7 +1160,7 @@ let reduce ~raise_on_bottom ~meet_type t =
         let t = with_database t ~database in
         reduce0 t
   in
-  Profile.record ~accumulate:true "reduce" reduce0 t
+  reduce0 t
 
 let add_equation ~raise_on_bottom t name ty ~meet_type =
   (* reduce ~raise_on_bottom ~meet_type *)
@@ -1184,7 +1180,8 @@ let add_relation ~raise_on_bottom t relation name simple ~meet_type =
   in
   let original_database = database t in
   match
-    Database.add_relation ~binding_time_resolver:t.binding_time_resolver
+    Database.add_relation
+      ~binding_time_resolver:(get_binding_time_resolver t)
       ~binding_times_and_modes:(names_to_types t) aliases0 original_database
       relation name simple
   with
@@ -1206,33 +1203,27 @@ let add_continuation_use ~meet_type t cont id =
 let continuation_uses t = Database.continuation_uses (database t)
 
 let add_switch_on_relation ~meet_type relation name ?default ~arms t =
-  if true
-  then t
-  else
-    match
-      Database.add_switch_on_relation relation name ?default ~arms (database t)
-    with
-    | Bottom -> Misc.fatal_error "Unexpected bottom"
-    | Ok database -> (
-      let t = with_database t ~database in
-      try reduce ~raise_on_bottom:true ~meet_type t
-      with Bottom_equation -> make_bottom t)
+  match
+    Database.add_switch_on_relation relation name ?default ~arms (database t)
+  with
+  | Bottom -> Misc.fatal_error "Unexpected bottom"
+  | Ok database -> (
+    let t = with_database t ~database in
+    try reduce ~raise_on_bottom:true ~meet_type t
+    with Bottom_equation -> make_bottom t)
 
 let add_switch_on_name ~meet_type name ?default ~arms t =
-  if true
-  then t
-  else
-    let canon = Aliases.get_canonical_ignoring_name_mode (aliases t) name in
-    Simple.pattern_match canon
-      ~const:(fun _ -> t)
-      ~name:(fun name ~coercion ->
-        assert (Coercion.is_id coercion);
-        match Database.add_switch_on_name name ?default ~arms (database t) with
-        | Bottom -> Misc.fatal_error "Unexpected bottom"
-        | Ok database -> (
-          let t = with_database t ~database in
-          try reduce ~raise_on_bottom:true ~meet_type t
-          with Bottom_equation -> make_bottom t))
+  let canon = Aliases.get_canonical_ignoring_name_mode (aliases t) name in
+  Simple.pattern_match canon
+    ~const:(fun _ -> t)
+    ~name:(fun name ~coercion ->
+      assert (Coercion.is_id coercion);
+      match Database.add_switch_on_name name ?default ~arms (database t) with
+      | Bottom -> Misc.fatal_error "Unexpected bottom"
+      | Ok database -> (
+        let t = with_database t ~database in
+        try reduce ~raise_on_bottom:true ~meet_type t
+        with Bottom_equation -> make_bottom t))
 
 let switch_on_scrutinee t ~scrutinee =
   let scrutinee =

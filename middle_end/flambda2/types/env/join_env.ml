@@ -1527,17 +1527,9 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
               | None -> false)
             all_joined
         in
-        let switches_on_names =
-          if true
-          then Name_in_target_env.Map.empty
-          else make_the_switch t.joined_envs touched_types
-        in
+        let switches_on_names = make_the_switch t.joined_envs touched_types in
         let switches_on_relations =
-          if true
-          then TG.Relation.Map.empty
-          else
-            do_it ~touched_vars t.joined_envs touched_types
-              TG.Relation.Map.empty
+          do_it ~touched_vars t.joined_envs touched_types TG.Relation.Map.empty
         in
         assert (
           Name_in_target_env.Set.is_empty
