@@ -580,11 +580,6 @@ module Final = struct
   let map_incremental f t =
     { current = f t.current; difference = f t.difference }
 
-  let get_switches_on_relations t = t.switches_on_relations
-
-  let set_switches_on_relations switches_on_relations t =
-    { t with switches_on_relations }
-
   let get_switches_on_names t = t.switches_on_names
 
   let set_switches_on_names switches_on_names t = { t with switches_on_names }
@@ -991,41 +986,28 @@ let from_snapshot current = { current; difference = Final.empty }
 
 let concat_extension = Final.concat
 
-let demote_in_function ~to_be_demoted ~canonical_element ~meet aliases (t : t) =
+let demote_in_function ~to_be_demoted ~canonical_element ~meet aliases rel
+    (t : t) =
   let open Or_bottom.Let_syntax in
+  let fn = Final.get_relation rel t.current in
   Simple.pattern_match canonical_element
     ~const:(fun const ->
-      TG.Relation.Map.fold
-        (fun relation fn result ->
-          let<* t, aliases = result in
-          match Function.find_opt to_be_demoted fn with
-          | None -> Ok (t, aliases)
-          | Some existing_value ->
-            let t =
-              Final.remove_relation relation to_be_demoted existing_value t
-            in
-            let<* const_value = relation_for_const relation const in
-            let<+ _, aliases =
-              meet aliases (Simple.const const_value) existing_value
-            in
-            t, aliases)
-        t.current.relations
-        (Or_bottom.Ok (t, aliases)))
+      match Function.find_opt to_be_demoted fn with
+      | None -> Or_bottom.Ok (t, aliases)
+      | Some existing_value ->
+        let t = Final.remove_relation rel to_be_demoted existing_value t in
+        let<* const_value = relation_for_const rel const in
+        let<+ _, aliases =
+          meet aliases (Simple.const const_value) existing_value
+        in
+        t, aliases)
     ~name:(fun canonical_name ~coercion ->
       assert (Coercion.is_id coercion);
-      TG.Relation.Map.fold
-        (fun relation fn result ->
-          let<* t, aliases = result in
-          match Function.find_opt to_be_demoted fn with
-          | None -> Ok (t, aliases)
-          | Some existing_value ->
-            let t =
-              Final.remove_relation relation to_be_demoted existing_value t
-            in
-            Final.add_relation ~meet relation canonical_name existing_value
-              aliases t)
-        t.current.relations
-        (Or_bottom.Ok (t, aliases)))
+      match Function.find_opt to_be_demoted fn with
+      | None -> Or_bottom.Ok (t, aliases)
+      | Some existing_value ->
+        let t = Final.remove_relation rel to_be_demoted existing_value t in
+        Final.add_relation ~meet rel canonical_name existing_value aliases t)
 
 let demote_switch ~apply_coercion ~to_be_demoted ~canonical_element aliases
     switches : _ Or_bottom.t =
@@ -1041,26 +1023,23 @@ let demote_switch ~apply_coercion ~to_be_demoted ~canonical_element aliases
           ~meet:(Final.meet_row_like ~meet:Final.meet_continuation_uses)
           canonical_name value aliases switches)
 
-let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases (t : t) =
+let demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases rel
+    (t : t) =
   let open Or_bottom.Let_syntax in
-  TG.Relation.Map.fold
-    (fun relation inverse result ->
-      match Name.Map.find_opt to_be_demoted inverse with
-      | None -> result
-      | Some keys ->
-        Name.Map.fold
-          (fun key count result ->
-            if count <= 0
-            then result
-            else
-              let<* t, aliases = result in
-              let t =
-                Final.remove_relation relation key (Simple.name to_be_demoted) t
-              in
-              Final.add_relation ~meet relation key canonical_element aliases t)
-          keys result)
-    t.current.inverse_relations
-    (Or_bottom.Ok (t, aliases))
+  let inverse = Final.get_inverse_relation rel t.current in
+  match Name.Map.find_opt to_be_demoted inverse with
+  | None -> Or_bottom.Ok (t, aliases)
+  | Some keys ->
+    Name.Map.fold
+      (fun key count result ->
+        if count <= 0
+        then result
+        else
+          let<* t, aliases = result in
+          let t = Final.remove_relation rel key (Simple.name to_be_demoted) t in
+          Final.add_relation ~meet rel key canonical_element aliases t)
+      keys
+      (Or_bottom.Ok (t, aliases))
 
 let demote ~to_be_demoted ~canonical_element ~meet aliases t =
   let open Or_bottom.Let_syntax in
@@ -1094,10 +1073,12 @@ let demote ~to_be_demoted ~canonical_element ~meet aliases t =
           in
           ( Final.set_incremental (Final.set_switches_on_relation rel) switches t,
             aliases )
-        | Relation_arg _ ->
-          demote_in_function ~to_be_demoted ~canonical_element ~meet aliases t
+        | Relation_arg rel ->
+          demote_in_function ~to_be_demoted ~canonical_element ~meet aliases rel
+            t
         | Relation_val _ ->
-          demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases t)
+          demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases rel
+            t)
       locs
       (Or_bottom.Ok (t, aliases))
   in
