@@ -1189,7 +1189,7 @@ let add_relation ~raise_on_bottom t relation name simple ~meet_type =
   | Or_bottom.Ok (database, aliases0) ->
     let t = record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0 in
     let t = with_database t ~database in
-    reduce ~raise_on_bottom ~meet_type t
+    _rebuild ~raise_on_bottom ~meet_type t
 
 let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
   let database = Database.add_continuation_use cont id (database t) in
@@ -1208,7 +1208,7 @@ let add_switch_on_relation ~meet_type relation name ?default ~arms t =
   | Bottom -> Misc.fatal_error "Unexpected bottom"
   | Ok database -> (
     let t = with_database t ~database in
-    try reduce ~raise_on_bottom:true ~meet_type t
+    try _rebuild ~raise_on_bottom:true ~meet_type t
     with Bottom_equation -> make_bottom t)
 
 let add_switch_on_name ~meet_type name ?default ~arms t =
@@ -1221,7 +1221,7 @@ let add_switch_on_name ~meet_type name ?default ~arms t =
       | Bottom -> Misc.fatal_error "Unexpected bottom"
       | Ok database -> (
         let t = with_database t ~database in
-        try reduce ~raise_on_bottom:true ~meet_type t
+        try _rebuild ~raise_on_bottom:true ~meet_type t
         with Bottom_equation -> make_bottom t))
 
 let switch_on_scrutinee t ~scrutinee =
