@@ -1076,7 +1076,7 @@ let demote ~to_be_demoted ~canonical_element ~meet aliases t =
         | Relation_arg rel ->
           demote_in_function ~to_be_demoted ~canonical_element ~meet aliases rel
             t
-        | Relation_val _ ->
+        | Relation_val rel ->
           demote_in_inverse ~to_be_demoted ~canonical_element ~meet aliases rel
             t)
       locs
