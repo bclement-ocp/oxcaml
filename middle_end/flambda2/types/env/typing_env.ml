@@ -1190,25 +1190,24 @@ let add_relation ~raise_on_bottom t relation name value ~meet_type =
     Database.Aliases0.{ aliases = aliases t; demotions = Name.Map.empty }
   in
   let original_database = database t in
-  let scrutinee =
-    match Simple.must_be_name scrutinee with
-    | Some (name, coercion) ->
-      assert (Coercion.is_id coercion);
-      name
-    | None -> assert false
-  in
-  match
-    Database.add_relation
-      ~binding_time_resolver:(get_binding_time_resolver t)
-      ~binding_times_and_modes:(names_to_types t) aliases0 original_database
-      relation scrutinee value
-  with
-  | Or_bottom.Bottom ->
-    if raise_on_bottom then raise Bottom_equation else make_bottom t
-  | Or_bottom.Ok (database, aliases0) ->
-    let t = record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0 in
-    let t = with_database t ~database in
-    reduce ~raise_on_bottom ~meet_type t
+  match Simple.must_be_name scrutinee with
+  | None -> t
+  | Some (scrutinee, coercion) -> (
+    assert (Coercion.is_id coercion);
+    match
+      Database.add_relation
+        ~binding_time_resolver:(get_binding_time_resolver t)
+        ~binding_times_and_modes:(names_to_types t) aliases0 original_database
+        relation scrutinee value
+    with
+    | Or_bottom.Bottom ->
+      if raise_on_bottom then raise Bottom_equation else make_bottom t
+    | Or_bottom.Ok (database, aliases0) ->
+      let t =
+        record_demotions_in_types ~raise_on_bottom ~meet_type t aliases0
+      in
+      let t = with_database t ~database in
+      reduce ~raise_on_bottom ~meet_type t)
 
 let add_continuation_use ~raise_on_bottom:_ ~meet_type:_ t cont id =
   let database = Database.add_continuation_use cont id (database t) in
