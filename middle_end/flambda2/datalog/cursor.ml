@@ -331,6 +331,21 @@ let[@inline] seminaive_run cursor ~previous ~diff ~current =
   in
   loop cursor.cursor_binders
 
+let[@inline] seminaive_iter cursor f ~previous ~diff ~current =
+  bind_table_list cursor.cursor_binders current;
+  bind_table_list cursor.cursor_naive_binders current;
+  cursor.callback := f;
+  let rec loop binders =
+    match binders with
+    | [] -> ()
+    | binder :: binders ->
+      if bind_table binder diff
+      then VM.run (VM.create ~evaluate cursor.instruction);
+      if bind_table binder previous then loop binders
+  in
+  loop cursor.cursor_binders;
+  cursor.callback := ignore
+
 module With_parameters = struct
   type nonrec ('p, 'v) t =
     { parameters : 'p Option_ref.hlist;

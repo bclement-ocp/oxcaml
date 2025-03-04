@@ -447,6 +447,14 @@ module Datalog : sig
       *)
     val fixpoint : t list -> t
 
+    (** [seq schedules] evaluates the schedules in [schedules] sequentially.
+
+        {b Warning}: You must ensure that the schedules provided to [seq] are in
+        topological order, i.e. if a schedule can write to a table [t] it must
+        be placed before any schedule that reads from table [t]. Failure to do
+        so is likely to produce incorrect result when [run]ning the schedule. *)
+    val seq : t list -> t
+
     type stats
 
     val create_stats : unit -> stats
@@ -504,6 +512,13 @@ module Datalog : sig
 
   (** [deduce rel args] adds the fact [rel args] to the database. *)
   val deduce : deduction -> (nil, rule) program
+
+  val materialize :
+    name:string ->
+    ('t, 'k, unit) Column.hlist ->
+    'x String.hlist ->
+    ('v Term.hlist -> (nil, 'k Cursor.t) program) ->
+    ('t, 'k, unit) table * Schedule.t
 
   module Schema : sig
     module type S = sig

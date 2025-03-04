@@ -267,6 +267,11 @@ module Datalog = struct
         let cursor = Cursor.With_parameters.without_parameters cursor in
         Schedule.build builder cursor)
 
+  let materialize ~name columns vars fn =
+    let is_trie = Column.is_trie columns in
+    let print_keys = Column.print_keys columns in
+    Schedule.materialize ~name ~is_trie ~print_keys (compile vars fn)
+
   type equality = Equality : 'k Term.t * 'k Term.t -> equality
 
   type hypothesis =

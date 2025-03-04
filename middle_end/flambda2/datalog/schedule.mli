@@ -40,3 +40,12 @@ val saturate : rule list -> t
 val fixpoint : t list -> t
 
 val run : ?stats:stats -> t -> Table.Map.t -> Table.Map.t
+
+val seq : t list -> t
+
+val materialize :
+  name:string ->
+  is_trie:('t, 'k, unit) Trie.is_trie ->
+  print_keys:(Format.formatter -> 'k Heterogenous_list.Constant.hlist -> unit) ->
+  'k Cursor.t ->
+  ('t, 'k, unit) Table.Id.t * t

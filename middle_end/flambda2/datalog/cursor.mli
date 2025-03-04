@@ -99,6 +99,14 @@ val seminaive_run :
   current:Table.Map.t ->
   unit
 
+val seminaive_iter :
+  'v t ->
+  ('v Constant.hlist -> unit) ->
+  previous:Table.Map.t ->
+  diff:Table.Map.t ->
+  current:Table.Map.t ->
+  unit
+
 module With_parameters : sig
   type ('p, 'v) t
 
