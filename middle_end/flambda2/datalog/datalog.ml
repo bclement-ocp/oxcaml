@@ -141,17 +141,16 @@ let rec find_last_binding0 : type a. order:_ -> _ -> a Term.hlist -> _ =
 let find_last_binding post_level args =
   find_last_binding0 ~order:Cursor.Order.parameters post_level args
 
+let compile_term : 'a Term.t -> 'a option Named_ref.t = function
+  | Constant cte -> { contents = Some cte; printed_name = "<constant>" }
+  | Parameter param -> param.cell
+  | Variable var -> Cursor.Level.use_output var
+
 let rec compile_terms : type a. a Term.hlist -> a Option_ref.hlist =
  fun vars ->
   match vars with
   | [] -> []
-  | term :: terms -> (
-    match term with
-    | Constant cte ->
-      { contents = Some cte; printed_name = "<constant>" }
-      :: compile_terms terms
-    | Parameter param -> param.cell :: compile_terms terms
-    | Variable var -> Cursor.Level.use_output var :: compile_terms terms)
+  | term :: terms -> compile_term term :: compile_terms terms
 
 let unless_atom id args k info =
   let refs = compile_terms args in
@@ -160,6 +159,13 @@ let unless_atom id args k info =
   in
   let r = Cursor.add_naive_binder info.context id in
   Cursor.add_action post_level (Cursor.unless id r refs);
+  k info
+
+let unless_eq arg1 arg2 k info =
+  let ref1 = compile_term arg1 in
+  let ref2 = compile_term arg2 in
+  let post_level = find_last_binding (Cursor.initial_actions info.context) [arg1; arg2] in
+  Cursor.add_action post_level (Cursor.unless_eq ref1 ref2);
   k info
 
 type callback =

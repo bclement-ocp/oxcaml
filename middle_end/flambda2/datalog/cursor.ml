@@ -19,6 +19,7 @@ type vm_action =
   | Unless :
       ('t, 'k, 'v) Trie.is_trie * 't Named_ref.t * 'k Option_ref.hlist
       -> vm_action
+  | Unless_eq : 'k option Named_ref.t * 'k option Named_ref.t -> vm_action
 
 type action =
   | Bind_iterator : 'a option Named_ref.t * 'a Trie.Iterator.t -> action
@@ -27,6 +28,8 @@ type action =
 let bind_iterator var iterator = Bind_iterator (var, iterator)
 
 let unless id cell args = VM_action (Unless (Table.Id.is_trie id, cell, args))
+
+let unless_eq cell1 cell2 = VM_action (Unless_eq (cell1, cell2))
 
 type binder = Bind_table : ('t, 'k, 'v) Table.Id.t * 't Named_ref.t -> binder
 
@@ -41,6 +44,7 @@ let pp_cursor_action ff = function
   | Unless (_, t, l) ->
     Format.fprintf ff "if %a(%a):@ continue" Named_ref.pp_name t
       Option_ref.pp_name_hlist l
+  | Unless_eq (x1, x2) -> Format.fprintf ff "if %a == %a:@ continue" Named_ref.pp_name x1 Named_ref.pp_name x2
 
 module Order : sig
   type t
@@ -293,6 +297,10 @@ let evaluate = function
          (Trie.find_opt is_trie (Option_ref.get args) cell.contents)
     then Virtual_machine.Skip
     else Virtual_machine.Accept
+  | Unless_eq (cell1, cell2) ->
+    if Option.get (Named_ref.(!) cell1) == Option.get (Named_ref.(!) cell2) then
+      Virtual_machine.Skip else Virtual_machine.Accept
+    (* CR ncourant: I don't like this **at all**, need something cleaner *)
 
 let naive_iter cursor db f =
   bind_table_list cursor.cursor_binders db;

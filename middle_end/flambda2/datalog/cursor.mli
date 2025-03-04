@@ -22,6 +22,9 @@ val bind_iterator : 'a option Named_ref.t -> 'a Trie.Iterator.t -> action
 val unless :
   ('t, 'k, 'v) Table.Id.t -> 't Named_ref.t -> 'k Option_ref.hlist -> action
 
+val unless_eq :
+  'k option Named_ref.t -> 'k option Named_ref.t -> action
+
 type actions
 
 val add_action : actions -> action -> unit
