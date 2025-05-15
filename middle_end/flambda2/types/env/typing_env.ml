@@ -828,8 +828,9 @@ let replace_equation (t : t) name ty =
 
 let aliases_add t ~canonical_element1 ~canonical_element2 =
   (* This may raise [Binding_time_resolver_failure]. *)
-  Aliases.add ~binding_time_resolver:t.binding_time_resolver (aliases t)
-    ~binding_times_and_modes:(names_to_types t) ~canonical_element1
+  Aliases.add
+    ~binding_time_resolver:(get_binding_time_resolver t)
+    (aliases t) ~binding_times_and_modes:(names_to_types t) ~canonical_element1
     ~canonical_element2
 
 let replace_concrete_equation t name ty =
@@ -1001,23 +1002,15 @@ let add_env_extension_with_extra_variables t
 let record_demotions_in_types ~raise_on_bottom ~meet_type t
     { Database.Aliases0.aliases; demotions } =
   let t = with_aliases t ~aliases in
-  let t, extra_types =
-    Name.Map.fold
-      (fun demoted canonical (t, extra_types) ->
-        let existing_ty = find t demoted None in
-        let kind = TG.kind existing_ty in
-        let t =
-          replace_equation_by_alias t demoted (TG.alias_type_of kind canonical)
-        in
-        let extra_types = (demoted, canonical, existing_ty) :: extra_types in
-        t, extra_types)
-      demotions (t, [])
-  in
-  List.fold_left
-    (fun t (demoted, canonical, ty) ->
-      add_non_alias_equation ~original_name:demoted ~raise_on_bottom t canonical
-        ty ~meet_type)
-    t extra_types
+  Name.Map.fold
+    (fun demoted canonical t ->
+      let existing_ty = find t demoted None in
+      let kind = TG.kind existing_ty in
+      let t =
+        record_demotion ~raise_on_bottom t kind demoted canonical ~meet_type
+      in
+      t)
+    demotions t
 
 let _rebuild ~raise_on_bottom ~meet_type t =
   let rec rebuild0 t =

@@ -1401,7 +1401,7 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
       TG.Relation.Map.merge
         (fun _relation_name relations_by_x
              (relations_by_y :
-               Simple_in_joined_envs.t Name_in_target_env.Map.t option) ->
+               Simples_in_joined_envs.t Name_in_target_env.Map.t option) ->
           match relations_by_x with
           | None -> relations_by_y
           | Some relations_by_x ->
@@ -1426,9 +1426,10 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
                   match
                     Name_in_target_env.Map.find var demoted_in_some_envs
                   with
-                  | exception Not_found -> Simple_in_joined_envs.create by_index
+                  | exception Not_found ->
+                    Simples_in_joined_envs.create by_index
                   | simples_in_demoted_envs ->
-                    Simple_in_joined_envs.create
+                    Simples_in_joined_envs.create
                     @@ Index.Map.merge
                          (fun _ arg_opt simple_opt ->
                            match simple_opt, arg_opt with
@@ -1519,7 +1520,7 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
               Name_in_target_env.Map.filter_map
                 (fun _ simple_by_index ->
                   if not
-                       (Simple_in_joined_envs.is_defined_in all_indices
+                       (Simples_in_joined_envs.is_defined_in all_indices
                           simple_by_index)
                   then None
                   else

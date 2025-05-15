@@ -1,15 +1,5 @@
 module TG = Type_grammar
 
-module type Abelian_group = sig
-  type t
-
-  val ( ~- ) : t -> t
-
-  val ( + ) : t -> t -> t
-
-  val ( - ) : t -> t -> t
-end
-
 type 'a meet_return_value =
   | Left_input
   | Right_input
@@ -29,117 +19,6 @@ let extract_value res left right =
   | Right_input -> right
   | Both_inputs -> left
   | New_result value -> value
-
-module Row_like0 = struct
-  type 'a case = 'a Or_bottom.t
-
-  let print_case pp = Or_bottom.print pp
-
-  let merge_case f (case1 : 'a case) (case2 : 'a case) : _ case =
-    match case1, case2 with
-    | Bottom, Bottom -> Bottom
-    | Bottom, Ok case | Ok case, Bottom -> Ok case
-    | Ok case1, Ok case2 -> f case1 case2
-
-  let meet_case ~meet (env : 'b) (case1 : 'a case) (case2 : 'a case) :
-      'a case meet_return_value * 'b =
-    match case1, case2 with
-    | Bottom, Bottom -> Both_inputs, env
-    | Bottom, Ok _ -> Left_input, env
-    | Ok _, Bottom -> Right_input, env
-    | Ok case1, Ok case2 -> (
-      match meet env case1 case2 with
-      | Or_bottom.Bottom -> New_result Or_bottom.Bottom, env
-      | Or_bottom.Ok (case, env) ->
-        let case = map_return_value (fun case -> Or_bottom.Ok case) case in
-        case, env)
-
-  module Make (Branch : Container_types.S) : S = struct
-    type key = Branch.t
-
-    type 'a t =
-      { known : 'a Branch.Map.t;
-        other : 'a case
-      }
-
-    let print_known pp ppf known = Branch.Map.print pp ppf known
-
-    let print pp ppf { known; other } =
-      Format.fprintf ppf
-        "@[<hov 1>(@[<hov 1>(known@ %a)@]@ @[<hov 1>(other@ %a)@]@]"
-        (print_known pp) known (print_case pp) other
-
-    let is_bottom { other; known } =
-      match other with Bottom -> Branch.Map.is_empty known | Ok _ -> false
-
-    let map f { known; other } =
-      let other = Or_bottom.map ~f other in
-      let known = Branch.Map.map f known in
-      { known; other }
-
-    let merge f { known = known1; other = other1 }
-        { known = known2; other = other2 } =
-      let known =
-        Branch.Map.merge
-          (fun _ case1 case2 ->
-            let case1 : _ Or_bottom.t =
-              match case1 with None -> other1 | Some case1 -> Ok case1
-            in
-            let case2 : _ Or_bottom.t =
-              match case2 with None -> other2 | Some case2 -> Ok case2
-            in
-            match (f case1 case2 : _ Or_bottom.t) with
-            | Bottom -> None
-            | Ok case -> Some case)
-          known1 known2
-      in
-      let other = f other1 other2 in
-      { known; other }
-
-    let find const { other; known } : _ Or_bottom.t =
-      match Branch.Map.find_opt const known with
-      | Some arm -> Ok arm
-      | None -> other
-
-    let meet ~meet env t1 t2 =
-      let result_is_left = ref true in
-      let result_is_right = ref true in
-      let update_refs = function
-        | Both_inputs -> ()
-        | Left_input -> result_is_right := false
-        | Right_input -> result_is_left := false
-        | New_result _ ->
-          result_is_left := false;
-          result_is_right := false
-      in
-      let env_ref = ref env in
-      let result =
-        merge
-          (fun case1 case2 ->
-            let case, env = meet_case ~meet !env_ref case1 case2 in
-            env_ref := env;
-            update_refs case;
-            extract_value case case1 case2)
-          t1 t2
-      in
-      let env = !env_ref in
-      match !result_is_left, !result_is_right with
-      | true, true -> Both_inputs, env
-      | true, false -> Left_input, env
-      | false, true -> Right_input, env
-      | false, false -> New_result result, env
-
-    module Abelian_group (G : Abelian_group) : Abelian_group = struct
-      type nonrec t = G.t t
-
-      let ( ~- ) = map G.( ~- )
-
-      let ( + ) = merge (merge_case (fun x y -> Ok (G.( + ) x y)))
-
-      let ( - ) = merge (merge_case (fun x y -> Ok (G.( - ) x y)))
-    end
-  end
-end
 
 type 'a or_gone =
   | There of 'a
@@ -373,16 +252,9 @@ module Aliases0 = struct
           Aliases.add ~binding_time_resolver ~binding_times_and_modes t.aliases
             ~canonical_element1 ~canonical_element2
         with
-        | Ok { canonical_element; alias_of_demoted_element; t = aliases } ->
+        | Ok { canonical_element; demoted_name; t = aliases } ->
           let demotions =
-            Simple.pattern_match alias_of_demoted_element
-              ~const:(fun _ ->
-                Misc.fatal_error "Unexpected demotion of constant")
-              ~name:(fun name ~coercion ->
-                Name.Map.add name
-                  (Simple.apply_coercion_exn canonical_element
-                     (Coercion.inverse coercion))
-                  t.demotions)
+            Name.Map.add demoted_name canonical_element t.demotions
           in
           return { aliases; demotions } canonical_element
         | Bottom -> Or_bottom.Bottom
@@ -512,13 +384,6 @@ module Row_like = struct
       Format.fprintf ppf
         "@[<hov 1>(@[<hov 1>(known@ %a)@]@ @[<hov 1>(other@ %a)@]@]"
         (print_known pp) known (print_case pp) other
-
-    let extract_value res left right =
-      match res with
-      | Left_input -> left
-      | Right_input -> right
-      | Both_inputs -> left
-      | New_result value -> value
 
     let find const { other; known } : _ Or_bottom.t =
       match Branch.Map.find_opt const known with
