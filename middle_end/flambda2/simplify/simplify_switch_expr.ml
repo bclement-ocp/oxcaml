@@ -667,8 +667,25 @@ let simplify_switch0 dacc switch ~down_to_up =
             specialization_budget > 0
             && specialization_cost <= specialization_budget
           in
-          if (not is_lifting_allowed_by_budget)
-             || not is_specialization_allowed_by_budget
+          let scrutinee_known_in_all_uses =
+            match DA.get_join_id_for_continuation dacc continuation with
+            | None ->
+              Format.eprintf "NO join_id@.";
+              false
+            | Some join_id ->
+              let tenv = DA.typing_env dacc in
+              TE.is_known_at_join tenv ~join_id scrutinee
+          in
+          if scrutinee_known_in_all_uses
+          then
+            Format.eprintf "SPECIALIZE %a BECAUSE %a IS KNOWN AT ALL USES@."
+              Continuation.print continuation Simple.print scrutinee;
+          let choose_to_specialize =
+            scrutinee_known_in_all_uses
+            || is_lifting_allowed_by_budget
+               && is_specialization_allowed_by_budget
+          in
+          if not choose_to_specialize
           then dacc
           else
             (* TODO/FIXME: implement an actual criterion for when to lift

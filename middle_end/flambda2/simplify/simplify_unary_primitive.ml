@@ -419,12 +419,14 @@ module Simplify_int_conv_naked_int64 = Make_simplify_int_conv (A.For_int64s)
 module Simplify_int_conv_naked_nativeint =
   Make_simplify_int_conv (A.For_nativeints)
 
-let simplify_boolean_not dacc ~original_term ~arg:_ ~arg_ty ~result_var =
+let simplify_boolean_not dacc ~original_term ~arg ~arg_ty ~result_var =
   let denv = DA.denv dacc in
   let typing_env = DE.typing_env denv in
   let proof = T.meet_equals_tagged_immediates typing_env arg_ty in
+  Format.eprintf "simplify boolean not: %a@." Simple.print arg;
   match proof with
   | Known_result imms ->
+    Format.eprintf "known@.";
     let imms =
       Targetint_31_63.Set.filter_map
         (fun imm ->
@@ -440,12 +442,25 @@ let simplify_boolean_not dacc ~original_term ~arg:_ ~arg_ty ~result_var =
     else
       let ty = T.these_tagged_immediates imms in
       let dacc = DA.add_variable dacc result_var ty in
+      let dacc =
+        DA.map_denv dacc ~f:(fun denv ->
+            DE.map_typing_env denv ~f:(fun tenv ->
+                Format.eprintf "%a@." TE.print tenv;
+                TE.add_boolean_not_relation tenv ~arg
+                  ~result:(Simple.var (Bound_var.var result_var))))
+      in
       SPR.create original_term ~try_reify:true dacc
   | Need_meet ->
     (* CR-someday mshinwell: This could say something like (in the type) "when
        the input is 0, the value is 1" and vice-versa. *)
     let ty = T.these_tagged_immediates Targetint_31_63.all_bools in
     let dacc = DA.add_variable dacc result_var ty in
+    let dacc =
+      DA.map_denv dacc ~f:(fun denv ->
+          DE.map_typing_env denv ~f:(fun tenv ->
+              TE.add_boolean_not_relation tenv ~arg
+                ~result:(Simple.var (Bound_var.var result_var))))
+    in
     SPR.create original_term ~try_reify:false dacc
   | Invalid -> SPR.create_invalid dacc
 

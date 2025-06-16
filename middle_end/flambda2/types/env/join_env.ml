@@ -92,7 +92,11 @@ let get_nth_joined_env index joined_envs =
    the target environment if they have been demoted. *)
 
 module Thing_in_env (Thing : Container_types.S_plus_iterator) () : sig
-  include Container_types.S_plus_iterator with type t = private Thing.t
+  include
+    Container_types.S_plus_iterator
+      with type t = private Thing.t
+       and type Set.t = private Thing.Set.t
+       and type +!'a Map.t = private 'a Thing.Map.t
 
   val create : Thing.t -> t
 end = struct
@@ -148,6 +152,8 @@ module Simples_in_joined_envs : sig
 
   val create : Simple_in_one_joined_env.t Index.Map.t -> t
 
+  val for_all : (Index.t -> Simple_in_one_joined_env.t -> bool) -> t -> bool
+
   val fold :
     (Index.t -> Simple_in_one_joined_env.t -> 'a -> 'a) -> t -> 'a -> 'a
 
@@ -190,6 +196,8 @@ end = struct
 
   include T0
   include Container_types.Make (T0)
+
+  let for_all = Index.Map.for_all
 
   let fold = Index.Map.fold
 
@@ -336,6 +344,7 @@ module Join_aliases : sig
 
               These are still present in [t], but they need to be considered for
               the join of types. *)
+      constant_in_all_envs : Name_in_target_env.Set.t;
       t : t
     }
 
@@ -897,6 +906,7 @@ end = struct
   type join_result =
     { demoted_in_target_env : Simple_in_target_env.t Name_in_target_env.Map.t;
       demoted_in_some_envs : Simples_in_joined_envs.t Name_in_target_env.Map.t;
+      constant_in_all_envs : Name_in_target_env.Set.t;
       t : t
     }
 
@@ -917,23 +927,39 @@ end = struct
     in
     let all_indices = Index.Map.keys all_demotions in
     Name_in_target_env.Set.fold
-      (fun demoted_var { demoted_in_target_env; demoted_in_some_envs; t } ->
+      (fun demoted_var
+           { demoted_in_target_env;
+             demoted_in_some_envs;
+             constant_in_all_envs;
+             t
+           } ->
         let canonicals = find_canonicals demoted_var t in
-        let[@local] is_demoted_in_some_envs t =
+        let[@local] is_demoted_in_some_envs constant_in_all_envs t =
           (* Note: we cannot add to the [joined_simples] because there could be
              multiple variables with the same set of demotions. *)
           let demoted_in_some_envs =
             Name_in_target_env.Map.add demoted_var canonicals
               demoted_in_some_envs
           in
-          { demoted_in_target_env; demoted_in_some_envs; t }
+          { demoted_in_target_env;
+            demoted_in_some_envs;
+            constant_in_all_envs;
+            t
+          }
         in
         let[@local] is_demoted_in_all_envs t =
+          let constant_in_all_envs =
+            if Simples_in_joined_envs.for_all
+                 (fun _ simple -> Simple.is_const (simple :> Simple.t))
+                 canonicals
+            then Name_in_target_env.Set.add demoted_var constant_in_all_envs
+            else constant_in_all_envs
+          in
           let joined_simples =
             Simples_in_joined_envs.Map.add canonicals demoted_var
               t.joined_simples
           in
-          is_demoted_in_some_envs { t with joined_simples }
+          is_demoted_in_some_envs constant_in_all_envs { t with joined_simples }
         in
         let[@local] is_demoted_in_target_env canonical t =
           let t = forget_demoted_var demoted_var t in
@@ -941,7 +967,11 @@ end = struct
             Name_in_target_env.Map.add demoted_var canonical
               demoted_in_target_env
           in
-          { demoted_in_target_env; demoted_in_some_envs; t }
+          { demoted_in_target_env;
+            demoted_in_some_envs;
+            constant_in_all_envs;
+            t
+          }
         in
         (* We keep stale entries in the [joined_simples] table here, which is OK
            because we never iterate on it and we never look them up anymore
@@ -950,7 +980,7 @@ end = struct
 
            This can only happen in the presence of env extensions. *)
         if not (Simples_in_joined_envs.is_defined_in all_indices canonicals)
-        then is_demoted_in_some_envs t
+        then is_demoted_in_some_envs constant_in_all_envs t
         else
           match
             find ~exists_in_target_env ~is_bound_strictly_earlier canonicals t
@@ -963,6 +993,7 @@ end = struct
       touched_vars
       { demoted_in_target_env = Name_in_target_env.Map.empty;
         demoted_in_some_envs = Name_in_target_env.Map.empty;
+        constant_in_all_envs = Name_in_target_env.Set.empty;
         t
       }
 
@@ -1175,7 +1206,9 @@ module Join_database = struct
         else if I.equal imm I.zero
         then bottom_property Database.Function.untag_imm name acc
         else acc
-      | (Is_null | Is_int), None | (Untag_imm | Tag_imm | Get_tag), _ -> acc)
+      | (Is_null | Is_int), None
+      | (Untag_imm | Tag_imm | Get_tag | Boolean_not), _ ->
+        acc)
 
   let infer_relations_from_database_and_types joined_envs all_levels
       all_expanded_equations =
@@ -1332,12 +1365,13 @@ module Join_database = struct
     let name_iterator = Join_name_iterators.create name_iterators in
     let function_iterator = Join_function_iterators.create function_iterators in
     Join_name_iterators.init name_iterator;
-    let rec function_loop acc =
+    let rec function_loop values_in_all_env known_at_join =
       match Join_function_iterators.current function_iterator with
-      | None -> acc
+      | None -> values_in_all_env, known_at_join
       | Some fn ->
         Join_function_iterators.accept function_iterator;
         let exists_in_all_envs = ref true in
+        let const_when_exists = ref true in
         let value =
           Index.Map.filter_map
             (fun _index (handler : _ Or_bottom.t Channel.receiver) ->
@@ -1345,30 +1379,58 @@ module Join_database = struct
               | Bottom ->
                 exists_in_all_envs := false;
                 None
-              | Ok value -> Some (Simple_in_one_joined_env.create value))
+              | Ok value ->
+                if not (Simple.is_const value) then const_when_exists := false;
+                Some (Simple_in_one_joined_env.create value))
             handlers
         in
         Join_function_iterators.advance function_iterator;
-        let acc =
+        let value_in_all_envs =
           if !exists_in_all_envs
           then
             let value = Simples_in_joined_envs.create value in
-            Database.Function.Map.add fn value acc
-          else acc
+            Database.Function.Map.add fn value values_in_all_env
+          else values_in_all_env
         in
-        function_loop acc
+        let known_at_join =
+          (* The [is_empty] check ensures that we skip cases that are always
+             [Bottom]. *)
+          (* CR bclement: we really only need to record this when a [Simple] for
+             the property is not known. This would require passing the
+             [join_aliases] to this function. *)
+          if !const_when_exists && not (Index.Map.is_empty value)
+          then Database.Function.Set.add fn known_at_join
+          else known_at_join
+        in
+        function_loop value_in_all_envs known_at_join
     in
-    let rec name_loop acc =
+    let rec name_loop in_all_envs known_at_join =
       match Join_name_iterators.current name_iterator with
-      | None -> acc
+      | None -> in_all_envs, known_at_join
       | Some name_in_target_env ->
         Join_name_iterators.accept name_iterator;
         Join_function_iterators.init function_iterator;
-        let properties = function_loop Database.Function.Map.empty in
+        let properties_in_all_envs, properties_known_at_join =
+          function_loop Database.Function.Map.empty Database.Function.Set.empty
+        in
         Join_name_iterators.advance name_iterator;
-        name_loop (Name_in_target_env.Map.add name_in_target_env properties acc)
+        let in_all_envs =
+          if Database.Function.Map.is_empty properties_in_all_envs
+          then in_all_envs
+          else
+            Name_in_target_env.Map.add name_in_target_env properties_in_all_envs
+              in_all_envs
+        in
+        let known_at_join =
+          if Database.Function.Set.is_empty properties_known_at_join
+          then known_at_join
+          else
+            Name_in_target_env.Map.add name_in_target_env
+              properties_known_at_join known_at_join
+        in
+        name_loop in_all_envs known_at_join
     in
-    name_loop Name_in_target_env.Map.empty
+    name_loop Name_in_target_env.Map.empty Name_in_target_env.Map.empty
 
   let find_values_in_target_env ~all_indices ~exists_in_target_env
       ~is_bound_strictly_earlier join_aliases join_database =
@@ -1378,7 +1440,7 @@ module Join_database = struct
           Database.Function.Map.filter_map
             (fun property simple_by_index ->
               match Database.Function.descr property with
-              | Untag_imm ->
+              | Untag_imm | Boolean_not ->
                 (* We can recover untag information from the types, so there is
                    no need to store them -- unless a [Tag_imm] relation is
                    present. *)
@@ -1419,11 +1481,12 @@ module Join_database = struct
       infer_relations_from_database_and_types joined_envs all_levels
         all_expanded_equations
     in
-    let join_database =
+    let join_database, known_at_join =
       n_way_join_relations ~exists_in_target_env join_aliases all_relations
     in
-    find_values_in_target_env ~all_indices ~exists_in_target_env
-      ~is_bound_strictly_earlier join_aliases join_database
+    ( find_values_in_target_env ~all_indices ~exists_in_target_env
+        ~is_bound_strictly_earlier join_aliases join_database,
+      known_at_join )
 end
 
 module Symbol_projection = struct
@@ -1495,7 +1558,9 @@ type join_result =
     equations : TG.t Name_in_target_env.Map.t;
     symbol_projections : Symbol_projection.t Variable.Map.t;
     relations :
-      Simple_in_target_env.t Database.Function.Map.t Name_in_target_env.Map.t
+      Simple_in_target_env.t Database.Function.Map.t Name_in_target_env.Map.t;
+    names_known_at_join : Name_in_target_env.Set.t;
+    properties_known_at_join : Database.Function.Set.t Name_in_target_env.Map.t
   }
 
 let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
@@ -1563,7 +1628,12 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
       t.join_aliases all_demotions
   with
   | Bottom -> Bottom
-  | Ok { demoted_in_target_env; demoted_in_some_envs; t = join_aliases } ->
+  | Ok
+      { demoted_in_target_env;
+        demoted_in_some_envs;
+        constant_in_all_envs;
+        t = join_aliases
+      } ->
     let join_types =
       Name_in_target_env.Map.fold
         (fun name_in_target_env canonicals join_types ->
@@ -1636,13 +1706,13 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
         (* CR bclement: The join of the database could lead to creating new
            existential variables for which we would then want to compute a type;
            and hence should ideally be incorporated in the loop above. *)
-        let relations =
+        let relations, known_properties =
           if Flambda_features.types_database ()
           then
             Join_database.n_way_join ~all_indices ~exists_in_target_env
               ~is_bound_strictly_earlier t.joined_envs t.join_aliases all_levels
               all_expanded_equations
-          else Name_in_target_env.Map.empty
+          else Name_in_target_env.Map.empty, Name_in_target_env.Map.empty
         in
         (* Must be true everywhere *)
         assert (
@@ -1697,6 +1767,7 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
                           | Unknown -> false)
                         | Untag_imm -> false
                         | Tag_imm -> false
+                        | Boolean_not -> true
                       in
                       if not
                            (TE.check_relation env fn
@@ -1723,7 +1794,9 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
             extra_variables = t.existential_vars;
             equations;
             symbol_projections;
-            relations
+            relations;
+            names_known_at_join = constant_in_all_envs;
+            properties_known_at_join = known_properties
           })
       else
         let join_types =
@@ -1746,8 +1819,8 @@ let n_way_join_levels ~n_way_join_type t all_levels : _ Or_bottom.t =
     in
     loop equations_to_join Name_in_target_env.Map.empty t
 
-let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
-    joined_envs =
+let cut_and_n_way_join ?join_id ~n_way_join_type ~meet_type ~cut_after
+    target_env joined_envs =
   let _, joined_envs, joined_levels =
     List.fold_left
       (fun (discriminant, joined_envs, joined_levels) typing_env ->
@@ -1780,7 +1853,9 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
         extra_variables;
         equations;
         symbol_projections;
-        relations
+        relations;
+        names_known_at_join;
+        properties_known_at_join
       } ->
     let target_env =
       TE.with_reduce ~meet_type
@@ -1827,6 +1902,14 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after target_env
                       (simple :> Simple.t))
                   relation target_env)
               relations target_env
+          in
+          let target_env =
+            match join_id with
+            | None -> target_env
+            | Some join_id ->
+              TE.add_known_at_join ~join_id target_env
+                (names_known_at_join :> Name.Set.t)
+                (properties_known_at_join :> Database.Function.Set.t Name.Map.t)
           in
           target_env)
         target_env
@@ -1889,7 +1972,9 @@ let n_way_join_env_extension ~n_way_join_type ~meet_type t envs_with_extensions
         extra_variables;
         equations;
         symbol_projections;
-        relations = _
+        relations = _;
+        names_known_at_join = _;
+        properties_known_at_join = _
       } ->
     (* CR bclement: Do not ignore relations in env extensions? *)
     if not (Variable.Map.is_empty symbol_projections)

@@ -102,15 +102,8 @@ module Row_like = struct
   module For_const = Make (RWC)
 end
 
-(** {2 Extensions}
-
-    Extensions are treated as inert by the database (i.e. we can't learn new
-    aliases or new properties recursively when meeting extensions), so we can
-    implement basic extension-related functions without dependencies on the
-    database. *)
-
-module Extension_id : sig
-  include Container_types.S
+module Make_id () : sig
+  include Container_types.S_plus_iterator
 
   val create : unit -> t
 end = struct
@@ -147,6 +140,19 @@ end = struct
   module Set = Tree.Set
   module Map = Tree.Map
 end
+
+module Join_id = Make_id ()
+
+module Join_set = Container_types.Shared_set (Join_id)
+
+(** {2 Extensions}
+
+    Extensions are treated as inert by the database (i.e. we can't learn new
+    aliases or new properties recursively when meeting extensions), so we can
+    implement basic extension-related functions without dependencies on the
+    database. *)
+
+module Extension_id = Make_id ()
 
 module Extension_set = Container_types.Shared_set (Extension_id)
 
@@ -186,6 +192,7 @@ module Function : sig
     | Get_tag
     | Untag_imm
     | Tag_imm
+    | Boolean_not
 
   val descr : t -> descr
 
@@ -198,6 +205,8 @@ module Function : sig
   val untag_imm : t
 
   val tag_imm : t
+
+  val boolean_not : t
 
   val inverse : t -> t option
 
@@ -216,6 +225,8 @@ end = struct
 
     let tag_imm = 4
 
+    let boolean_not = 5
+
     let equal = Int.equal
 
     let compare = Int.compare
@@ -228,9 +239,10 @@ end = struct
       | Get_tag
       | Untag_imm
       | Tag_imm
+      | Boolean_not
 
     let grand_table_of_functions =
-      [| Is_null; Is_int; Get_tag; Untag_imm; Tag_imm |]
+      [| Is_null; Is_int; Get_tag; Untag_imm; Tag_imm; Boolean_not |]
 
     let descr fn = grand_table_of_functions.(fn)
 
@@ -241,6 +253,7 @@ end = struct
       | Get_tag -> Format.fprintf ppf "get_tag"
       | Untag_imm -> Format.fprintf ppf "untag_int"
       | Tag_imm -> Format.fprintf ppf "tag_imm"
+      | Boolean_not -> Format.fprintf ppf "boolean_not"
   end
 
   include T0
@@ -263,6 +276,7 @@ end = struct
     | Is_null | Is_int | Get_tag -> None
     | Untag_imm -> Some tag_imm
     | Tag_imm -> Some untag_imm
+    | Boolean_not -> Some boolean_not
 
   let of_const fn const : _ Or_unknown_or_bottom.t =
     let[@inline] return b : _ Or_unknown_or_bottom.t =
@@ -284,6 +298,15 @@ end = struct
     (* tag_imm *)
     | Tag_imm, Naked_immediate imm -> Ok (RWC.tagged_immediate imm)
     | Tag_imm, (Tagged_immediate _ | Null) -> Bottom
+    (* boolean_not *)
+    | Boolean_not, Tagged_immediate imm ->
+      let module I = Targetint_31_63 in
+      if I.equal imm I.zero
+      then return true
+      else if I.equal imm I.one
+      then return false
+      else Bottom
+    | Boolean_not, (Naked_immediate _ | Null) -> Bottom
     (* others *)
     | ( _,
         ( Naked_float32 _ | Naked_float _ | Naked_int32 _ | Naked_int64 _
@@ -304,13 +327,69 @@ let canonicalise aliases simple =
         (Aliases.get_canonical_ignoring_name_mode aliases name)
         coercion)
 
+type properties_of_expr =
+  { switch : switch;
+    known_at_join : Join_set.t
+  }
+
+let print_properties_of_expr ppf { switch; known_at_join } =
+  let print_switch ppf switch =
+    Format.fprintf ppf "@[<hov 1>(switch@ %a)@]" print_switch switch
+  in
+  let print_known_at_join ppf known_at_join =
+    Format.fprintf ppf "@[<hov 1>(known_at_join@ %a)@]" Join_set.print
+      known_at_join
+  in
+  Format.fprintf ppf "@[<hov 1>(%a@ %a)@]" print_switch switch
+    print_known_at_join known_at_join
+
+let empty_properties_of_expr =
+  { switch = empty_switch; known_at_join = Join_set.empty }
+
+let is_empty_properties_of_expr { switch; known_at_join } =
+  is_empty_switch switch && Join_set.is_empty known_at_join
+
+let left_meet_properties_of_expr poe1 poe2 =
+  let open Or_bottom.Let_syntax in
+  let<+ switch =
+    left_meet_switch poe1.switch
+      (poe2.switch :> Extension_id.Set.t Row_like.For_const.t)
+  in
+  let known_at_join = Join_set.union poe1.known_at_join poe2.known_at_join in
+  match switch with
+  | Left_input ->
+    if known_at_join == poe1.known_at_join
+    then Left_input
+    else New_result { poe1 with known_at_join }
+  | New_result switch -> New_result { switch; known_at_join }
+
 type simple_or_switch =
   | Simple of Simple.t
-  | Switch of switch
+  | Switch of properties_of_expr
+
+module Value = struct
+  type t = simple_or_switch
+
+  let simple simple = Simple simple
+
+  let switch ?default arms =
+    let default = Option.map Extension_set.create default in
+    let arms = RWC.Map.map (Or_bottom.map ~f:Extension_set.create) arms in
+    Switch
+      { empty_properties_of_expr with
+        switch = Row_like.For_const.create ?default arms
+      }
+
+  let known_at_join join_id =
+    Switch
+      { empty_properties_of_expr with
+        known_at_join = Join_set.singleton join_id
+      }
+end
 
 let print_simple_or_switch ppf = function
   | Simple simple -> Simple.print ppf simple
-  | Switch switch -> print_switch ppf switch
+  | Switch properties -> print_properties_of_expr ppf properties
 
 type properties_of_name =
   { properties : simple_or_switch Function_map.t;
@@ -327,7 +406,7 @@ type properties_of_name =
         (** Inverse map from property values to their arguments.
 
             {b Note}: This map only contains {b non-inversible} properties. *)
-    switch : switch
+    switch : properties_of_expr
         (** Switches are the way we deal with disjunction in the database.
 
             A switch on a name contains a mapping from possible values for that
@@ -349,27 +428,27 @@ let print_properties_of_name ppf { properties; switch; _ } =
   in
   let print_switch ppf switch =
     print_sep ppf ();
-    Format.fprintf ppf "@[<hov 1>(switch@ %a)@]" print_switch switch
+    Format.fprintf ppf "@[<hov 1>(switch@ %a)@]" print_properties_of_expr switch
   in
   Format.fprintf ppf "@[<hov 1>(";
   if not (Function_map.is_empty properties) then print_properties ppf properties;
-  if not (is_empty_switch switch) then print_switch ppf switch;
+  if not (is_empty_properties_of_expr switch) then print_switch ppf switch;
   Format.fprintf ppf ")@]"
 
 let properties_of_name ?(properties = Function_map.empty)
-    ?(inverses = Function_map.empty) ?(switch = empty_switch) () =
+    ?(inverses = Function_map.empty) ?(switch = empty_properties_of_expr) () =
   { properties; inverses; switch }
 
 let empty_properties_of_name =
   { properties = Function_map.empty;
     inverses = Function_map.empty;
-    switch = empty_switch
+    switch = empty_properties_of_expr
   }
 
 let is_empty_properties_of_name { properties; inverses; switch } =
   Function_map.is_empty properties
   && Function_map.is_empty inverses
-  && is_empty_switch switch
+  && is_empty_properties_of_expr switch
 
 type t =
   { properties_of_names : properties_of_name Name_map.t;
@@ -408,7 +487,7 @@ let get name t =
 
 let get_property property properties =
   match Function_map.find_opt property properties with
-  | None -> Switch empty_switch
+  | None -> Switch empty_properties_of_expr
   | Some simple_or_switch -> simple_or_switch
 
 let set name properties t =
@@ -447,7 +526,7 @@ module Meet_env = struct
         -> add_alias
 
   type equation =
-    | Add_switch_on_name of Name.t * switch
+    | Add_properties_of_expr_on_name of Name.t * properties_of_expr
     | Activate_extensions of Extension_set.t
 
   type t =
@@ -485,17 +564,18 @@ module Meet_env = struct
   let activate_extensions env extensions =
     add_equation env (Activate_extensions extensions)
 
-  let add_switch env simple switch =
+  let add_properties_of_expr env simple poe =
     Simple.pattern_match simple
       ~const:(fun const : _ Or_bottom.t ->
+        let { switch; known_at_join = _ } = poe in
         match Row_like.For_const.find const switch with
         | Ok extensions -> Ok (activate_extensions env extensions)
         | Bottom -> Bottom)
       ~name:(fun name ~coercion : _ Or_bottom.t ->
         assert (Coercion.is_id coercion);
-        Ok (add_equation env (Add_switch_on_name (name, switch))))
+        Ok (add_equation env (Add_properties_of_expr_on_name (name, poe))))
 
-  let rebuild ~add_switch ~activate_extensions
+  let rebuild ~add_properties_of_expr ~activate_extensions
       { aliases; equations; add_alias = _ } db : _ Or_bottom.t =
     let exception Is_bottom in
     let early_exit (db_ob : _ Or_bottom.t) =
@@ -505,11 +585,9 @@ module Meet_env = struct
       List.fold_left
         (fun db eqn ->
           match eqn with
-          | Add_switch_on_name (name, switch) ->
+          | Add_properties_of_expr_on_name (name, poe) ->
             let canonical = canonicalise aliases (Simple.name name) in
-            early_exit
-              (add_switch db canonical
-                 (switch :> Extension_id.Set.t Row_like.For_const.t))
+            early_exit (add_properties_of_expr db canonical poe)
           | Activate_extensions extension_ids ->
             activate_extensions db (extension_ids :> Extension_id.Set.t))
         db equations
@@ -525,16 +603,13 @@ let left_meet_simple_or_switch env sos1 sos2 : _ Or_bottom.t =
     let<+ env = Meet_env.add_alias env simple1 simple2 in
     Left_input, env
   | Simple simple, Switch switch ->
-    let<+ env = Meet_env.add_switch env simple switch in
+    let<+ env = Meet_env.add_properties_of_expr env simple switch in
     Left_input, env
   | Switch switch, Simple simple ->
-    let<+ env = Meet_env.add_switch env simple switch in
+    let<+ env = Meet_env.add_properties_of_expr env simple switch in
     New_result (Simple simple), env
   | Switch switch1, Switch switch2 -> (
-    match
-      left_meet_switch switch1
-        (switch2 :> Extension_id.Set.t Row_like.For_const.t)
-    with
+    match left_meet_properties_of_expr switch1 switch2 with
     | Ok Left_input -> Ok (Left_input, env)
     | Ok (New_result switch) -> Ok (New_result (Switch switch), env)
     | Bottom -> Bottom)
@@ -597,10 +672,7 @@ let left_meet_properties_of_name env pn1 pn2 : _ Or_bottom.t =
     left_meet_properties env pn1.properties pn2.properties
   in
   let<* inverses, env = left_meet_inverses env pn1.inverses pn2.inverses in
-  let<* switch =
-    left_meet_switch pn1.switch
-      (pn2.switch :> Extension_id.Set.t Row_like.For_const.t)
-  in
+  let<* switch = left_meet_properties_of_expr pn1.switch pn2.switch in
   let meet_pn =
     match properties, inverses, switch with
     | Left_input, Left_input, Left_input -> Left_input
@@ -626,16 +698,24 @@ let add_switch_on_const t const switch : _ Or_bottom.t =
   | Ok extensions -> Ok (activate_extensions t extensions)
   | Bottom -> Bottom
 
-let add_switch t simple switch =
+let add_properties_of_expr_on_const t const { switch; known_at_join = _ } :
+    _ Or_bottom.t =
+  add_switch_on_const t const
+    (switch :> Extension_id.Set.t Row_like.For_const.t)
+
+let add_properties_of_expr t simple poe =
   Simple.pattern_match simple
-    ~const:(fun const -> add_switch_on_const t const switch)
+    ~const:(fun const -> add_properties_of_expr_on_const t const poe)
     ~name:(fun name ~coercion : _ Or_bottom.t ->
       assert (Coercion.is_id coercion);
       let pn = get name t in
-      match left_meet_switch pn.switch switch with
+      match left_meet_properties_of_expr pn.switch poe with
       | Ok Left_input -> Ok t
       | Ok (New_result switch) -> Ok (set name { pn with switch } t)
       | Bottom -> Bottom)
+
+let add_switch t simple switch =
+  add_properties_of_expr t simple { empty_properties_of_expr with switch }
 
 let add_properties_on_const env const properties_on_const t : _ Or_bottom.t =
   let open Or_bottom.Let_syntax in
@@ -653,8 +733,7 @@ let add_properties_on_const env const properties_on_const t : _ Or_bottom.t =
               match value with
               | Switch switch ->
                 let<+ t =
-                  add_switch_on_const t property_of_const
-                    (switch :> Extension_id.Set.t Row_like.For_const.t)
+                  add_properties_of_expr_on_const t property_of_const switch
                 in
                 t, env
               | Simple value ->
@@ -666,10 +745,7 @@ let add_properties_on_const env const properties_on_const t : _ Or_bottom.t =
         properties (t, env)
     in
     let t =
-      match
-        add_switch_on_const t const
-          (switch :> Extension_id.Set.t Row_like.For_const.t)
-      with
+      match add_properties_of_expr_on_const t const switch with
       | Ok t -> t
       | Bottom -> raise Is_bottom
     in
@@ -686,7 +762,10 @@ let add_properties_on_const env const properties_on_const t : _ Or_bottom.t =
 let add_properties_on_name env name properties_on_name t : _ Or_bottom.t =
   match left_meet_properties_of_name env (get name t) properties_on_name with
   | Bottom -> Bottom
-  | Ok (Left_input, env) -> Ok (t, env)
+  | Ok (Left_input, env) ->
+    Format.eprintf "left_input: %a@." print_properties_of_name (get name t);
+    Format.eprintf "ignoring: %a@." print_properties_of_name properties_on_name;
+    Ok (t, env)
   | Ok (New_result properties_of_name, env) ->
     Ok (set name properties_of_name t, env)
 
@@ -701,12 +780,19 @@ let add_properties env simple properties_on_simple t =
 let add_inverse env property name value t : _ Or_bottom.t =
   match Function.inverse property with
   | Some inverse_property ->
-    add_properties env value
-      (properties_of_name
-         ~properties:
-           (Function_map.singleton inverse_property (Simple (Simple.name name)))
-         ())
-      t
+    Format.eprintf "add inverse: %a(%a) = %a@." Function.print property
+      Name.print name Simple.print value;
+    let t =
+      add_properties env value
+        (properties_of_name
+           ~properties:
+             (Function_map.singleton inverse_property
+                (Simple (Simple.name name)))
+           ())
+        t
+    in
+    (match t with Ok (t, _) -> Format.eprintf "%a@." print t | Bottom -> ());
+    t
   | None ->
     Simple.pattern_match value
       ~const:(fun const ->
@@ -763,18 +849,16 @@ let add_property ~binding_time_resolver ~binding_times_and_modes aliases t
         in
         let t = set name { pn with properties } t in
         let<* t =
-          if is_empty_switch switch
+          if is_empty_properties_of_expr switch
           then Ok t
-          else
-            add_switch t result
-              (switch :> Extension_id.Set.t Row_like.For_const.t)
+          else add_properties_of_expr t result switch
         in
         let env =
           Meet_env.create ~binding_time_resolver ~binding_times_and_modes
             aliases
         in
         let<* t, env = add_inverse env property name result t in
-        Meet_env.rebuild ~add_switch ~activate_extensions env t)
+        Meet_env.rebuild ~add_properties_of_expr ~activate_extensions env t)
 
 let find_property t simple property =
   Simple.pattern_match simple
@@ -822,7 +906,8 @@ let rebuild ~binding_time_resolver ~binding_times_and_modes aliases t demotions
         | Bottom -> raise Is_bottom)
       (t, env) !to_rebuild
   with
-  | t, env -> Meet_env.rebuild ~add_switch ~activate_extensions env t
+  | t, env ->
+    Meet_env.rebuild ~add_properties_of_expr ~activate_extensions env t
   | exception Is_bottom -> Bottom
 
 let shortcut_aliases ~canonicalise
@@ -878,16 +963,16 @@ let shortcut_aliases ~canonicalise
 
 (** {2 Switches} *)
 
-let add_switch_on_canonical simple ?default ~arms t =
+let _add_switch_on_canonical simple ?default ~arms t =
   add_switch t simple (Row_like.For_const.create ?default arms)
 
-let add_switch_on_property_of_name ~aliases t property name switch :
+let add_properties_of_expr_on_property_of_name ~aliases t property name switch :
     _ Or_bottom.t =
   let pn = get name t in
   match get_property property pn.properties with
-  | Simple value -> add_switch t (canonicalise aliases value) switch
+  | Simple value -> add_properties_of_expr t (canonicalise aliases value) switch
   | Switch existing_switch -> (
-    match left_meet_switch existing_switch switch with
+    match left_meet_properties_of_expr existing_switch switch with
     | Ok Left_input -> Ok t
     | Ok (New_result switch) ->
       let properties =
@@ -896,17 +981,47 @@ let add_switch_on_property_of_name ~aliases t property name switch :
       Ok (set name { pn with properties } t)
     | Bottom -> Bottom)
 
-let add_switch_on_property property arg ?default ~arms t ~aliases =
-  let switch = Row_like.For_const.create ?default arms in
+let add_properties_of_expr_on_property property arg poe t ~aliases =
   Simple.pattern_match arg
     ~const:(fun const : _ Or_bottom.t ->
       match Function.of_const property const with
-      | Bottom -> Bottom
-      | Unknown -> Ok t
-      | Ok property_of_const -> add_switch_on_const t property_of_const switch)
+      (* When adding information to a property, this information is conditional
+         on the property actually existing. If it does not exist, we have
+         nothing to do. *)
+      | Bottom | Unknown -> Ok t
+      | Ok property_of_const ->
+        add_properties_of_expr_on_const t property_of_const poe)
     ~name:(fun name ~coercion : _ Or_bottom.t ->
       assert (Coercion.is_id coercion);
-      add_switch_on_property_of_name ~aliases t property name switch)
+      add_properties_of_expr_on_property_of_name ~aliases t property name poe)
+
+let add_value_on_canonical ~binding_time_resolver ~binding_times_and_modes arg
+    (value : Value.t) t ~aliases =
+  let open Or_bottom.Let_syntax in
+  match value with
+  | Simple value ->
+    let value = canonicalise aliases value in
+    let<+ aliases =
+      add_alias ~binding_time_resolver ~binding_times_and_modes aliases arg
+        value
+    in
+    t, aliases
+  | Switch properties_of_expr ->
+    let<+ t = add_properties_of_expr t arg properties_of_expr in
+    t, aliases
+
+let add_value_on_property ~binding_time_resolver ~binding_times_and_modes fn arg
+    (value : Value.t) t ~aliases =
+  let open Or_bottom.Let_syntax in
+  match value with
+  | Simple value ->
+    add_property ~binding_time_resolver ~binding_times_and_modes aliases t fn
+      ~arg ~result:value
+  | Switch properties_of_expr ->
+    let<+ t =
+      add_properties_of_expr_on_property fn arg properties_of_expr t ~aliases
+    in
+    t, aliases
 
 let switch_on_scrutinee t ~scrutinee =
   Simple.pattern_match scrutinee
@@ -916,10 +1031,18 @@ let switch_on_scrutinee t ~scrutinee =
     ~name:(fun name ~coercion ->
       assert (Coercion.is_id coercion);
       let properties_of_name = get name t in
-      match properties_of_name.switch with
+      match properties_of_name.switch.switch with
       | { other; known } ->
         ( (known :> Extension_id.Set.t Or_bottom.t RWC.Map.t),
           (other :> Extension_id.Set.t Or_bottom.t) ))
+
+let is_known_at_join t scrutinee join_id =
+  Simple.pattern_match scrutinee
+    ~const:(fun _ -> true)
+    ~name:(fun name ~coercion ->
+      assert (Coercion.is_id coercion);
+      let properties_of_name = get name t in
+      Join_set.mem join_id properties_of_name.switch.known_at_join)
 
 (** {2 Differential interface} *)
 

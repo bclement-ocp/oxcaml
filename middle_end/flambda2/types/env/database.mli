@@ -53,6 +53,7 @@ module Function : sig
     | Get_tag
     | Untag_imm
     | Tag_imm
+    | Boolean_not
 
   val descr : t -> descr
 
@@ -65,6 +66,8 @@ module Function : sig
   val untag_imm : t
 
   val tag_imm : t
+
+  val boolean_not : t
 
   include Container_types.S_plus_iterator with type t := t
 
@@ -177,21 +180,61 @@ end
 
 val active_extensions : t -> Extension_id.Set.t
 
-val add_switch_on_canonical :
-  Simple.t ->
-  ?default:Extension_id.Set.t ->
-  arms:Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t ->
-  t ->
-  t Or_bottom.t
+module Join_id : sig
+  include Container_types.S
 
-val add_switch_on_property :
-  Function.t ->
+  val create : unit -> t
+end
+
+module Value : sig
+  type t
+
+  val simple : Simple.t -> t
+
+  val switch :
+    ?default:Extension_id.Set.t ->
+    Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t ->
+    t
+
+  val known_at_join : Join_id.t -> t
+end
+
+val add_value_on_canonical :
+  binding_time_resolver:(Name.t -> Binding_time.With_name_mode.t) ->
+  binding_times_and_modes:('b * Binding_time.With_name_mode.t) Name.Map.t ->
   Simple.t ->
-  ?default:Extension_id.Set.t ->
-  arms:Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t ->
+  Value.t ->
   t ->
   aliases:Aliases.t ->
-  t Or_bottom.t
+  (t * Aliases.t) Or_bottom.t
+
+val add_value_on_property :
+  binding_time_resolver:(Name.t -> Binding_time.With_name_mode.t) ->
+  binding_times_and_modes:('b * Binding_time.With_name_mode.t) Name.Map.t ->
+  Function.t ->
+  Simple.t ->
+  Value.t ->
+  t ->
+  aliases:Aliases.t ->
+  (t * Aliases.t) Or_bottom.t
+
+(*
+ * val add_switch_on_canonical :
+ *   Simple.t ->
+ *   ?default:Extension_id.Set.t ->
+ *   arms:Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t ->
+ *   t ->
+ *   t Or_bottom.t
+ *
+ * val add_switch_on_property :
+ *   Function.t ->
+ *   Simple.t ->
+ *   ?default:Extension_id.Set.t ->
+ *   arms:Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t ->
+ *   t ->
+ *   aliases:Aliases.t ->
+ *   t Or_bottom.t
+ *)
 
 (** [switch_on_scrutinee db ~scrutinee] returns a pair [(known, other)] of
     extensions associated with the switch.
@@ -208,6 +251,8 @@ val switch_on_scrutinee :
   scrutinee:Simple.t ->
   Extension_id.Set.t Or_bottom.t Reg_width_const.Map.t
   * Extension_id.Set.t Or_bottom.t
+
+val is_known_at_join : t -> Simple.t -> Join_id.t -> bool
 
 (** {2 Extensions} *)
 

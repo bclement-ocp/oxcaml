@@ -39,6 +39,12 @@ type typing_env
 
 type typing_env_extension
 
+module Join_id : sig
+  include Container_types.S
+
+  val create : unit -> t
+end
+
 module Code_age_relation : sig
   type t
 
@@ -193,6 +199,8 @@ module Typing_env : sig
 
   val add_get_tag_relation : t -> Name.t -> scrutinee:Simple.t -> t
 
+  val add_boolean_not_relation : t -> arg:Simple.t -> result:Simple.t -> t
+
   val add_conditional_get_tag_relation : t -> Name.t -> scrutinee:Name.t -> t
 
   val mem : ?min_name_mode:Name_mode.t -> t -> Name.t -> bool
@@ -261,6 +269,8 @@ module Typing_env : sig
 
   val aliases_of_simple :
     t -> min_name_mode:Name_mode.t -> Simple.t -> Alias_set.t
+
+  val is_known_at_join : t -> join_id:Join_id.t -> Simple.t -> bool
 end
 
 val meet : Typing_env.t -> t -> t -> (t * Typing_env.t) Or_bottom.t
@@ -268,6 +278,7 @@ val meet : Typing_env.t -> t -> t -> (t * Typing_env.t) Or_bottom.t
 val meet_shape : Typing_env.t -> t -> shape:t -> Typing_env.t Or_bottom.t
 
 val cut_and_n_way_join :
+  ?join_id:Join_id.t ->
   Typing_env.t ->
   (Typing_env.t * Apply_cont_rewrite_id.t * Continuation_use_kind.t) list ->
   params:Bound_parameters.t ->

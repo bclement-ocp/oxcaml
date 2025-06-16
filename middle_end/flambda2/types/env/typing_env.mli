@@ -119,6 +119,15 @@ val add_relation :
 val add_conditional_get_tag_relation :
   t -> arg:Name.t -> result:Name.t -> meet_type:meet_type -> t
 
+val add_known_at_join :
+  join_id:Database.Join_id.t ->
+  t ->
+  Name.Set.t ->
+  Database.Function.Set.t Name.Map.t ->
+  t
+
+val is_known_at_join : t -> join_id:Database.Join_id.t -> Simple.t -> bool
+
 val check_relation :
   t -> Database.Function.t -> scrutinee:Simple.t -> Simple.t -> bool
 

@@ -42,6 +42,11 @@ module Typing_env = struct
     then add_relation t Database.Function.get_tag ~scrutinee (Simple.name name)
     else add_equation t name (Type_grammar.get_tag_for_block ~block:scrutinee)
 
+  let add_boolean_not_relation t ~arg ~result =
+    if Flambda_features.types_database ()
+    then add_relation t Database.Function.boolean_not ~scrutinee:arg result
+    else t
+
   let add_conditional_get_tag_relation t name ~scrutinee =
     add_conditional_get_tag_relation t ~arg:scrutinee ~result:name
       ~meet_type:(Meet.meet_type ())
@@ -92,7 +97,7 @@ module Typing_env_extension = struct
     if Flambda_features.types_database ()
     then
       Simple.pattern_match scrutinee
-        ~const:(fun _ -> t)
+        ~const:(fun _ -> (* CR bclement: should be bottom *) t)
         ~name:(fun arg ~coercion:_ ->
           add_or_replace_relation t Database.Function.get_tag ~arg
             ~result:(Simple.name name))
@@ -112,6 +117,7 @@ include Meet
 include Provers
 include Reify
 include Join_levels
+module Join_id = Database.Join_id
 module Code_age_relation = Code_age_relation
 
 let remove_outermost_alias env ty =

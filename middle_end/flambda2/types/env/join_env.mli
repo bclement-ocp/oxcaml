@@ -37,6 +37,7 @@ val n_way_join_env_extension :
   (Typing_env_extension.t * t) Or_bottom.t
 
 val cut_and_n_way_join :
+  ?join_id:Database.Join_id.t ->
   n_way_join_type:n_way_join_type ->
   meet_type:Typing_env.meet_type ->
   cut_after:Scope.t ->

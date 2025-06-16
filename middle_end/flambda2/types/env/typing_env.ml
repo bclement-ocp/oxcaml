@@ -1095,7 +1095,7 @@ let reduce_once ~raise_on_bottom ~meet_type database_level t =
         then add_equation ~raise_on_bottom ~meet_type t name TG.null
         else make_bottom t
       | (Is_int | Get_tag | Is_null), None -> assert false
-      | (Untag_imm | Tag_imm), _ -> t)
+      | (Untag_imm | Tag_imm | Boolean_not), _ -> t)
     database_level t
 
 let rec reduce ~raise_on_bottom t ~cut_after_aliases ~cut_after_database
@@ -1205,16 +1205,71 @@ let add_variant_extension t arg ~when_block ~when_immediate ~meet_type:_ =
       Database.Extension_id.Set.singleton when_block_id, t
   in
   let database = database t and aliases = aliases t in
+  let switch =
+    Database.Value.switch
+      (Reg_width_const.Map.of_list
+         [ Reg_width_const.untagged_const_false, Or_bottom.Ok when_block;
+           Reg_width_const.untagged_const_true, Or_bottom.Ok when_immediate ])
+  in
   match
-    Database.add_switch_on_property Database.Function.is_int arg
-      ~arms:
-        (Reg_width_const.Map.of_list
-           [ Reg_width_const.untagged_const_false, Or_bottom.Ok when_block;
-             Reg_width_const.untagged_const_true, Or_bottom.Ok when_immediate ])
-      database ~aliases
+    Database.add_value_on_property
+      ~binding_time_resolver:t.binding_time_resolver
+      ~binding_times_and_modes:(names_to_types t) Database.Function.is_int arg
+      switch database ~aliases
   with
   | Bottom -> make_bottom t
-  | Ok database -> with_database_and_aliases t ~database ~aliases
+  | Ok (database, aliases) -> with_database_and_aliases t ~database ~aliases
+
+let add_known_at_join_exn ~join_id t names properties =
+  let database = database t and aliases = aliases t in
+  let binding_time_resolver = t.binding_time_resolver in
+  let binding_times_and_modes = names_to_types t in
+  let database, aliases =
+    Name.Set.fold
+      (fun name (database, aliases) ->
+        let canonical = Aliases.get_canonical_ignoring_name_mode aliases name in
+        match
+          Database.add_value_on_canonical ~binding_time_resolver
+            ~binding_times_and_modes canonical
+            (Database.Value.known_at_join join_id)
+            database ~aliases
+        with
+        | Bottom ->
+          Format.eprintf "bottom adding value on %a???@." Simple.print canonical;
+          raise Bottom_equation
+        | Ok (database, aliases) -> database, aliases)
+      names (database, aliases)
+  in
+  let database, aliases =
+    Name.Map.fold
+      (fun name properties (database, aliases) ->
+        let canonical = Aliases.get_canonical_ignoring_name_mode aliases name in
+        Database.Function.Set.fold
+          (fun fn (database, aliases) ->
+            match
+              Database.add_value_on_property ~binding_time_resolver
+                ~binding_times_and_modes fn canonical
+                (Database.Value.known_at_join join_id)
+                database ~aliases
+            with
+            | Bottom ->
+              Format.eprintf "bottom adding property: %a(%a) ???@."
+                Database.Function.print fn Simple.print canonical;
+              raise Bottom_equation
+            | Ok (database, aliases) -> database, aliases)
+          properties (database, aliases))
+      properties (database, aliases)
+  in
+  with_database_and_aliases t ~database ~aliases
+
+let add_known_at_join ~join_id t names properties =
+  try add_known_at_join_exn ~join_id t names properties
+  with Bottom_equation ->
+    Misc.fatal_error "Unexpected bottom while adding known at join@."
+
+let is_known_at_join t ~join_id simple =
+  let simple = get_canonical_simple_ignoring_name_mode t simple in
+  Database.is_known_at_join (database t) simple join_id
 
 let add_conditional_get_tag_relation t ~arg ~result ~meet_type =
   (* It is semantically unsound to add a [Get_tag] relation when we do not know
