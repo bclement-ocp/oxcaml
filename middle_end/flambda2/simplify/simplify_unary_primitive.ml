@@ -423,10 +423,8 @@ let simplify_boolean_not dacc ~original_term ~arg ~arg_ty ~result_var =
   let denv = DA.denv dacc in
   let typing_env = DE.typing_env denv in
   let proof = T.meet_equals_tagged_immediates typing_env arg_ty in
-  Format.eprintf "simplify boolean not: %a@." Simple.print arg;
   match proof with
   | Known_result imms ->
-    Format.eprintf "known@.";
     let imms =
       Targetint_31_63.Set.filter_map
         (fun imm ->
@@ -445,7 +443,6 @@ let simplify_boolean_not dacc ~original_term ~arg ~arg_ty ~result_var =
       let dacc =
         DA.map_denv dacc ~f:(fun denv ->
             DE.map_typing_env denv ~f:(fun tenv ->
-                Format.eprintf "%a@." TE.print tenv;
                 TE.add_boolean_not_relation tenv ~arg
                   ~result:(Simple.var (Bound_var.var result_var))))
       in

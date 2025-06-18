@@ -669,14 +669,12 @@ let simplify_switch0 dacc switch ~down_to_up =
           in
           let scrutinee_known_in_all_uses =
             match DA.get_join_id_for_continuation dacc continuation with
-            | None ->
-              Format.eprintf "NO join_id@.";
-              false
+            | None -> false
             | Some join_id ->
               let tenv = DA.typing_env dacc in
               TE.is_known_at_join tenv ~join_id scrutinee
           in
-          if scrutinee_known_in_all_uses
+          if scrutinee_known_in_all_uses && Flambda_features.debug_flambda2 ()
           then
             Format.eprintf "SPECIALIZE %a BECAUSE %a IS KNOWN AT ALL USES@."
               Continuation.print continuation Simple.print scrutinee;
