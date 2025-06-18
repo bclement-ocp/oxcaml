@@ -302,9 +302,9 @@ end = struct
     | Boolean_not, Tagged_immediate imm ->
       let module I = Targetint_31_63 in
       if I.equal imm I.zero
-      then return true
+      then Ok RWC.const_true
       else if I.equal imm I.one
-      then return false
+      then Ok RWC.const_false
       else Bottom
     | Boolean_not, (Naked_immediate _ | Null) -> Bottom
     (* others *)
