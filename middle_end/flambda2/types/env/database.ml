@@ -727,8 +727,10 @@ let add_properties_on_const env const properties_on_const t : _ Or_bottom.t =
         (fun property value (t, env) ->
           let env_ob : _ Or_bottom.t =
             match Function.of_const property const with
-            | Bottom -> Bottom
-            | Unknown -> Ok (t, env)
+            (* XXX: When adding information to a property, this information is
+               conditional, on the property actually existing. If it does not
+               exist, we have nothing to do. Or something related. *)
+            | Bottom | Unknown -> Ok (t, env)
             | Ok property_of_const -> (
               match value with
               | Switch switch ->
