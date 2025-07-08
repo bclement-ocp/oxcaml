@@ -57,6 +57,7 @@ and head_of_kind_value_non_null = private
       { immediates : t Or_unknown.t;
         blocks : row_like_for_blocks Or_unknown.t;
         extensions : variant_extensions;
+        relations : Name.t Database.Function.Map.t;
         is_unique : bool
       }
   (* CR mshinwell: It would be better to track per-field mutability. *)
@@ -519,6 +520,8 @@ module Row_like_for_blocks : sig
 
   val all_tags_and_sizes :
     t -> (Targetint_31_63.t * Flambda_kind.Block_shape.t) Tag.Map.t Or_unknown.t
+
+  val these_tags : t -> Tag.Set.t -> t
 
   (** If the type corresponds to a single block of known size (as created by
       [create_exactly_multiple]) then return it. *)

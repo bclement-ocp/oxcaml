@@ -25,6 +25,7 @@ module Int64 = Numeric_types.Int64
 module K = Flambda_kind
 module TE = Typing_env
 module TG = Type_grammar
+module Function = Database.Function
 
 let is_bottom = Expand_head.is_bottom
 
@@ -121,13 +122,99 @@ let prove_equals_to_simple_of_kind env t kind : Simple.t proof_of_property =
       | exception Not_found -> Unknown
       | simple -> Proved simple)
 
+let prove_canonical_relation env relations fn : _ proof_of_property =
+  match Function.Map.find_opt fn relations with
+  | Some name ->
+    let simple = Simple.name name in
+    Proved (TE.get_canonical_simple_ignoring_name_mode env simple)
+  | None -> Unknown
+
+let prove_is_int_relation env relations : _ proof_of_property =
+  match prove_canonical_relation env relations Function.is_int with
+  | Proved simple when Simple.equal simple Simple.untagged_const_true ->
+    Proved true
+  | Proved simple when Simple.equal simple Simple.untagged_const_false ->
+    Proved false
+  | Proved _ | Unknown -> Unknown
+
+let prove_get_tag_relation_generic env relations : Tag.Set.t generic_proof =
+  match prove_canonical_relation env relations Function.get_tag with
+  | Unknown -> Unknown
+  | Proved simple -> (
+    let t = TG.alias_type_of K.naked_immediate simple in
+    match expand_head env t with
+    | Naked_immediate (Ok (Naked_immediates imms)) ->
+      let tags =
+        Targetint_31_63.Set.fold
+          (fun imm tags ->
+            match Tag.create_from_targetint imm with
+            | None -> tags
+            | Some tag -> Tag.Set.add tag tags)
+          imms Tag.Set.empty
+      in
+      if Tag.Set.is_empty tags then Invalid else Proved tags
+    | Naked_immediate (Unknown | Ok (Is_int _ | Is_null _ | Get_tag _)) ->
+      Unknown
+    | Naked_immediate Bottom -> Invalid
+    | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
+    | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
+    | Rec_info _ | Region _ ->
+      wrong_kind "Naked_immediate" t (Invalid : _ generic_proof))
+
+let prove_get_tag_relation env relations =
+  as_property (prove_get_tag_relation_generic env relations)
+
+let resolve_is_int_relation env relations (immediates, blocks) :
+    _ Or_unknown.t * _ Or_unknown.t =
+  match prove_is_int_relation env relations with
+  | Proved true -> immediates, Known TG.Row_like_for_blocks.bottom
+  | Proved false -> Known TG.bottom_naked_immediate, blocks
+  | Unknown -> immediates, blocks
+
+let resolve_get_tag_relation env relations (blocks : _ Or_unknown.t) :
+    _ Or_unknown.t =
+  match blocks with
+  | Known blocks when TG.Row_like_for_blocks.is_bottom blocks -> Known blocks
+  | Known _ | Unknown -> (
+    match prove_get_tag_relation_generic env relations with
+    | Proved tags -> (
+      match blocks with
+      | Unknown ->
+        Known
+          (TG.Row_like_for_blocks.create_blocks_with_these_tags
+             (Tag.Map.of_set (fun _ -> Or_unknown.Unknown) tags)
+             (Alloc_mode.For_types.unknown ()))
+      | Known blocks -> Known (TG.Row_like_for_blocks.these_tags blocks tags))
+    | Unknown -> blocks
+    | Invalid -> Known TG.Row_like_for_blocks.bottom)
+
+let resolve_blocks env relations blocks =
+  let _, blocks = resolve_is_int_relation env relations (Unknown, blocks) in
+  resolve_get_tag_relation env relations blocks
+
+let is_bottom_blocks (blocks : TG.row_like_for_blocks Or_unknown.t) =
+  match blocks with
+  | Known blocks -> TG.Row_like_for_blocks.is_bottom blocks
+  | Unknown -> false
+
+let resolve_immediates_and_blocks env relations (immediates, blocks) =
+  let immediates, blocks =
+    resolve_is_int_relation env relations (immediates, blocks)
+  in
+  let blocks = resolve_get_tag_relation env relations blocks in
+  immediates, blocks
+
 (* Note: this function is used for simplifying Obj.is_int, so should not assume
    that the argument represents a variant, unless [variant_only] is [true] *)
 let prove_is_int_generic_value ~variant_only env
     (value_head : TG.head_of_kind_value_non_null) : bool generic_proof =
   match value_head with
-  | Variant blocks_imms -> (
-    match blocks_imms.blocks, blocks_imms.immediates with
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let immediates, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
+    match blocks, immediates with
     | Unknown, Unknown -> Unknown
     | Unknown, Known imms ->
       if is_bottom env imms then Proved false else Unknown
@@ -181,14 +268,18 @@ let prove_is_not_a_pointer env t =
 let prove_get_tag_generic_value env
     (value_head : TG.head_of_kind_value_non_null) : Tag.Set.t generic_proof =
   match value_head with
-  | Variant blocks_imms -> (
-    match blocks_imms.immediates with
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let immediates, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
+    match immediates with
     | Unknown -> Unknown
     | Known imms -> (
       if not (is_bottom env imms)
       then Unknown
       else
-        match blocks_imms.blocks with
+        match blocks with
         | Unknown -> Unknown
         | Known blocks -> (
           (* CR mshinwell: maybe [all_tags] should return the [Invalid] case
@@ -273,7 +364,11 @@ let meet_naked_immediates env t =
 let prove_equals_tagged_immediates_value env
     (value_head : TG.head_of_kind_value_non_null) : _ generic_proof =
   match value_head with
-  | Variant { immediates; blocks; extensions = _; is_unique = _ } -> (
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let immediates, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
     match blocks with
     | Unknown -> Unknown
     | Known blocks ->
@@ -298,7 +393,9 @@ let prove_equals_tagged_immediates env t =
 let meet_equals_tagged_immediates_value env
     (value_head : TG.head_of_kind_value_non_null) : _ generic_proof =
   match value_head with
-  | Variant { immediates; blocks = _; extensions = _; is_unique = _ } -> (
+  | Variant
+      { immediates; blocks = _; extensions = _; relations = _; is_unique = _ }
+    -> (
     match immediates with
     | Unknown -> Unknown
     | Known imms -> prove_naked_immediates_generic env imms)
@@ -446,8 +543,12 @@ let prove_variant_like_generic_value env
     (value_head : TG.head_of_kind_value_non_null) :
     variant_like_proof generic_proof =
   match value_head with
-  | Variant blocks_imms -> (
-    match blocks_imms.blocks with
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let imms, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
+    match blocks with
     | Unknown -> Unknown
     | Known blocks -> (
       match TG.Row_like_for_blocks.all_tags_and_sizes blocks with
@@ -471,7 +572,7 @@ let prove_variant_like_generic_value env
         | Unknown -> Unknown
         | Known non_const_ctors_with_sizes ->
           let const_ctors : _ Or_unknown.t =
-            match blocks_imms.immediates with
+            match imms with
             | Unknown -> Unknown
             | Known imms -> (
               match prove_naked_immediates_generic env imms with
@@ -498,14 +599,20 @@ type boxed_or_tagged_number =
       Alloc_mode.For_types.t * Flambda_kind.Boxable_number.t * Type_grammar.t
   | Tagged_immediate
 
-let prove_is_a_boxed_or_tagged_number_value _env
+let prove_is_a_boxed_or_tagged_number_value env
     (value_head : TG.head_of_kind_value_non_null) :
     boxed_or_tagged_number generic_proof =
   match value_head with
-  | Variant { blocks; immediates = _; extensions = _; is_unique = _ } -> (
-    match blocks with
-    | Unknown -> Unknown
-    | Known blocks ->
+  | Variant { blocks; immediates = _; extensions = _; relations; is_unique = _ }
+    -> (
+    let is_int_proof : _ proof_of_property =
+      prove_canonical_relation env relations Function.is_int
+    in
+    match is_int_proof, blocks with
+    | Proved simple, _ when Simple.equal simple Simple.untagged_const_true ->
+      Proved Tagged_immediate
+    | (Proved _ | Unknown), Unknown -> Unknown
+    | (Proved _ | Unknown), Known blocks ->
       if TG.Row_like_for_blocks.is_bottom blocks
       then Proved Tagged_immediate
       else Unknown)
@@ -600,13 +707,17 @@ let prove_unique_tag_and_size_value env
     * Alloc_mode.For_types.t)
     generic_proof =
   match value_head with
-  | Variant blocks_imms -> (
-    match blocks_imms.immediates with
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let immediates, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
+    match immediates with
     | Unknown -> Unknown
     | Known immediates ->
       if is_bottom env immediates
       then
-        match blocks_imms.blocks with
+        match blocks with
         | Unknown -> Unknown
         | Known blocks -> (
           match TG.Row_like_for_blocks.get_singleton blocks with
@@ -798,7 +909,8 @@ type tagging_proof_kind =
 let[@inline always] inspect_tagging_of_simple_value proof_kind ~min_name_mode
     env (value_head : TG.head_of_kind_value_non_null) : Simple.t generic_proof =
   match value_head with
-  | Variant { immediates; blocks; extensions = _; is_unique = _ } -> (
+  | Variant { immediates; blocks; extensions = _; relations = _; is_unique = _ }
+    -> (
     let inspect_immediates () =
       match immediates with
       | Unknown -> Unknown
@@ -952,7 +1064,11 @@ let meet_boxed_vec512_containing_simple =
 let meet_block_field_simple_value ~min_name_mode ~field_kind field_index env
     (value_head : TG.head_of_kind_value_non_null) : Simple.t generic_proof =
   match value_head with
-  | Variant { immediates = _; blocks; extensions = _; is_unique = _ } -> (
+  | Variant { immediates; blocks; relations; extensions = _; is_unique = _ }
+    -> (
+    let _, blocks =
+      resolve_immediates_and_blocks env relations (immediates, blocks)
+    in
     match blocks with
     | Unknown -> Unknown
     | Known blocks -> (
@@ -1196,8 +1312,9 @@ let prove_physical_equality env t1 t2 =
         (* Immediates and allocated values -> Proved false *)
         | ( Variant
               { immediates = _;
-                blocks = Known blocks;
+                blocks;
                 extensions = _;
+                relations;
                 is_unique = _
               },
             ( Mutable_block _ | Boxed_float _ | Boxed_float32 _ | Boxed_int32 _
@@ -1208,11 +1325,12 @@ let prove_physical_equality env t1 t2 =
             | Boxed_nativeint _ | Closures _ | String _ | Array _ ),
             Variant
               { immediates = _;
-                blocks = Known blocks;
+                blocks;
                 extensions = _;
+                relations;
                 is_unique = _
               } )
-          when TG.Row_like_for_blocks.is_bottom blocks ->
+          when is_bottom_blocks (resolve_blocks env relations blocks) ->
           Proved false
         (* Variants:
          * incompatible immediates and incompatible block tags -> Proved false
@@ -1221,15 +1339,23 @@ let prove_physical_equality env t1 t2 =
         | ( Variant
               { immediates = immediates1;
                 blocks = blocks1;
+                relations = relations1;
                 extensions = _;
                 is_unique = _
               },
             Variant
               { immediates = immediates2;
                 blocks = blocks2;
+                relations = relations2;
                 extensions = _;
                 is_unique = _
               } ) -> (
+          let immediates1, blocks1 =
+            resolve_immediates_and_blocks env relations1 (immediates1, blocks1)
+          in
+          let immediates2, blocks2 =
+            resolve_immediates_and_blocks env relations2 (immediates2, blocks2)
+          in
           match immediates1, immediates2, blocks1, blocks2 with
           | Known imms, _, _, Known blocks
             when TG.is_obviously_bottom imms

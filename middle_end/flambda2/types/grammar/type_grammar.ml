@@ -22,6 +22,7 @@ module Vec256 = Vector_types.Vec256.Bit_pattern
 module Vec512 = Vector_types.Vec512.Bit_pattern
 module Int32 = Numeric_types.Int32
 module Int64 = Numeric_types.Int64
+module I = Targetint_31_63
 module RWC = Reg_width_const
 module TD = Type_descr
 open Or_bottom.Let_syntax
@@ -39,6 +40,8 @@ module Block_size = struct
 
   let inter t1 t2 = Targetint_31_63.min t1 t2
 end
+
+module Function = Database.Function
 
 type is_null =
   | Not_null
@@ -73,6 +76,7 @@ and head_of_kind_value_non_null =
       { immediates : t Or_unknown.t;
         blocks : row_like_for_blocks Or_unknown.t;
         extensions : variant_extensions;
+        relations : Name.t Function.Map.t;
         is_unique : bool
       }
   | Mutable_block of { alloc_mode : Alloc_mode.For_types.t }
@@ -230,6 +234,54 @@ and variant_extensions =
 
 type flambda_type = t
 
+let bottom_value = Value TD.bottom
+
+let bottom_naked_immediate = Naked_immediate TD.bottom
+
+let bottom_naked_float32 = Naked_float32 TD.bottom
+
+let bottom_naked_float = Naked_float TD.bottom
+
+let bottom_naked_int32 = Naked_int32 TD.bottom
+
+let bottom_naked_int64 = Naked_int64 TD.bottom
+
+let bottom_naked_nativeint = Naked_nativeint TD.bottom
+
+let bottom_naked_vec128 = Naked_vec128 TD.bottom
+
+let bottom_naked_vec256 = Naked_vec256 TD.bottom
+
+let bottom_naked_vec512 = Naked_vec512 TD.bottom
+
+let bottom_rec_info = Rec_info TD.bottom
+
+let bottom_region = Region TD.bottom
+
+let any_value = Value TD.unknown
+
+let any_naked_immediate = Naked_immediate TD.unknown
+
+let any_naked_float32 = Naked_float32 TD.unknown
+
+let any_naked_float = Naked_float TD.unknown
+
+let any_naked_int32 = Naked_int32 TD.unknown
+
+let any_naked_int64 = Naked_int64 TD.unknown
+
+let any_naked_nativeint = Naked_nativeint TD.unknown
+
+let any_naked_vec128 = Naked_vec128 TD.unknown
+
+let any_naked_vec256 = Naked_vec256 TD.unknown
+
+let any_naked_vec512 = Naked_vec512 TD.unknown
+
+let any_region = Region TD.unknown
+
+let any_rec_info = Rec_info TD.unknown
+
 let get_alias_exn t =
   match t with
   | Value ty -> TD.get_alias_exn ty
@@ -303,15 +355,22 @@ and free_names_head_of_kind_value0 ~follow_value_slots { non_null; is_null = _ }
   | Ok non_null ->
     free_names_head_of_kind_value_non_null ~follow_value_slots non_null
 
+and free_names_relations relations =
+  Function.Map.fold
+    (fun _ name free_names ->
+      Name_occurrences.add_name free_names name Name_mode.in_types)
+    relations Name_occurrences.empty
+
 and free_names_head_of_kind_value_non_null ~follow_value_slots head =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique = _ } ->
+  | Variant { blocks; immediates; extensions; relations; is_unique = _ } ->
     Name_occurrences.union_list
       [ Or_unknown.free_names
           (free_names_row_like_for_blocks ~follow_value_slots)
           blocks;
         Or_unknown.free_names (free_names0 ~follow_value_slots) immediates;
-        free_names_variant_extensions ~follow_value_slots extensions ]
+        free_names_variant_extensions ~follow_value_slots extensions;
+        free_names_relations relations ]
   | Mutable_block { alloc_mode = _ } -> Name_occurrences.empty
   | Boxed_float32 (ty, _alloc_mode) -> free_names0 ~follow_value_slots ty
   | Boxed_float (ty, _alloc_mode) -> free_names0 ~follow_value_slots ty
@@ -622,7 +681,7 @@ and apply_renaming_head_of_kind_value head renaming =
 
 and apply_renaming_head_of_kind_value_non_null head renaming =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique } ->
+  | Variant { blocks; immediates; extensions; relations; is_unique } ->
     let immediates' =
       let>+$ immediates = immediates in
       apply_renaming immediates renaming
@@ -632,15 +691,19 @@ and apply_renaming_head_of_kind_value_non_null head renaming =
       apply_renaming_row_like_for_blocks blocks renaming
     in
     let extensions' = apply_renaming_variant_extensions extensions renaming in
+    let relations' =
+      Function.Map.map_sharing (Renaming.apply_name renaming) relations
+    in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions'
+       && extensions == extensions' && relations == relations'
     then head
     else
       Variant
         { is_unique;
           blocks = blocks';
           immediates = immediates';
-          extensions = extensions'
+          extensions = extensions';
+          relations = relations'
         }
   | Mutable_block { alloc_mode = _ } -> head
   | Boxed_float32 (ty, alloc_mode) ->
@@ -949,7 +1012,8 @@ and print_head_of_kind_value ppf { non_null; is_null } =
 
 and print_head_of_kind_value_non_null ppf head =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique } ->
+  | Variant { blocks; immediates; extensions; relations = _; is_unique } ->
+    (* CR bclement: print relations *)
     (* CR-someday mshinwell: Improve so that we elide blocks and/or immediates
        when they're empty. *)
     Format.fprintf ppf
@@ -1230,13 +1294,19 @@ and ids_for_export_head_of_kind_value { non_null; is_null = _ } =
   | Unknown | Bottom -> Ids_for_export.empty
   | Ok non_null -> ids_for_export_head_of_kind_value_non_null non_null
 
+and ids_for_export_relations relations =
+  Function.Map.fold
+    (fun _ name ids_for_export -> Ids_for_export.add_name ids_for_export name)
+    relations Ids_for_export.empty
+
 and ids_for_export_head_of_kind_value_non_null head =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique = _ } ->
+  | Variant { blocks; immediates; extensions; relations; is_unique = _ } ->
     Ids_for_export.union_list
       [ Or_unknown.ids_for_export ids_for_export_row_like_for_blocks blocks;
         Or_unknown.ids_for_export ids_for_export immediates;
-        ids_for_export_variant_extensions extensions ]
+        ids_for_export_variant_extensions extensions;
+        ids_for_export_relations relations ]
   | Mutable_block { alloc_mode = _ } -> Ids_for_export.empty
   | Boxed_float (t, _alloc_mode) -> ids_for_export t
   | Boxed_float32 (t, _alloc_mode) -> ids_for_export t
@@ -1772,6 +1842,1230 @@ let apply_coercion t coercion =
     Misc.fatal_errorf "Cannot apply coercion %a@ to type %a" Coercion.print
       coercion print t
 
+let kind t =
+  match t with
+  | Value _ -> K.value
+  | Naked_immediate _ -> K.naked_immediate
+  | Naked_float32 _ -> K.naked_float32
+  | Naked_float _ -> K.naked_float
+  | Naked_int32 _ -> K.naked_int32
+  | Naked_int64 _ -> K.naked_int64
+  | Naked_nativeint _ -> K.naked_nativeint
+  | Naked_vec128 _ -> K.naked_vec128
+  | Naked_vec256 _ -> K.naked_vec256
+  | Naked_vec512 _ -> K.naked_vec512
+  | Rec_info _ -> K.rec_info
+  | Region _ -> K.region
+
+let non_null_value non_null =
+  Value (TD.create { non_null = Ok non_null; is_null = Not_null })
+
+let create_variant ~is_unique ~(immediates : _ Or_unknown.t) ~blocks ~extensions
+    =
+  (match immediates with
+  | Unknown -> ()
+  | Known immediates ->
+    if not (K.equal (kind immediates) K.naked_immediate)
+    then
+      Misc.fatal_errorf
+        "Cannot create [immediates] with type that is not of kind \
+         [Naked_immediate]:@ %a"
+        print immediates);
+  non_null_value
+    (Variant
+       { immediates;
+         blocks;
+         extensions;
+         relations = Function.Map.empty;
+         is_unique
+       })
+
+let mutable_block alloc_mode = non_null_value (Mutable_block { alloc_mode })
+
+let create_closures alloc_mode by_function_slot =
+  non_null_value (Closures { by_function_slot; alloc_mode })
+
+module Function_type = struct
+  type t = function_type
+
+  let create code_id ~rec_info = { code_id; rec_info }
+
+  let code_id t = t.code_id
+
+  let rec_info t = t.rec_info
+end
+
+module Closures_entry = struct
+  type t = closures_entry
+
+  let create ~function_types ~closure_types ~value_slot_types =
+    { function_types; closure_types; value_slot_types }
+
+  let find_function_type t ~exact function_slot : _ Or_unknown_or_bottom.t =
+    match Function_slot.Map.find function_slot t.function_types with
+    | exception Not_found -> if exact then Bottom else Unknown
+    | func_decl -> func_decl
+
+  let value_slot_types { value_slot_types; _ } =
+    value_slot_types.value_slot_components_by_index
+end
+
+module Product = struct
+  module Function_slot_indexed = struct
+    type t = function_slot_indexed_product
+
+    let create function_slot_components_by_index =
+      let function_slot_components_by_index =
+        Function_slot.Map.map
+          (fun ty ->
+            if not (K.equal (kind ty) K.value)
+            then
+              Misc.fatal_errorf
+                "Function-slot-indexed products can only hold types of kind \
+                 [Value]:@ %a"
+                (Function_slot.Map.print print)
+                function_slot_components_by_index
+            else ty)
+          function_slot_components_by_index
+      in
+      { function_slot_components_by_index }
+
+    let top = { function_slot_components_by_index = Function_slot.Map.empty }
+
+    let width t =
+      Targetint_31_63.of_int
+        (Function_slot.Map.cardinal t.function_slot_components_by_index)
+  end
+
+  module Value_slot_indexed = struct
+    type t = value_slot_indexed_product
+
+    let create value_slot_components_by_index =
+      { value_slot_components_by_index }
+
+    let top = { value_slot_components_by_index = Value_slot.Map.empty }
+
+    let width t =
+      Targetint_31_63.of_int
+        (Value_slot.Map.cardinal t.value_slot_components_by_index)
+  end
+
+  module Int_indexed = struct
+    type t = flambda_type array
+
+    let create_from_list tys = Array.of_list tys
+
+    let create_from_array fields = fields
+
+    let create_top () = [||]
+
+    let width t = Targetint_31_63.of_int (Array.length t)
+
+    let components t = Array.to_list t
+  end
+end
+
+module Row_like_index = struct
+  type ('lattice, 'shape) t = ('lattice, 'shape) row_like_index
+
+  let create ~domain ~shape = { domain; shape }
+end
+
+module Row_like_index_domain = struct
+  type 'lattice t = 'lattice row_like_index_domain
+
+  let known index = Known index
+
+  let at_least index = At_least index
+end
+
+module Row_like_case = struct
+  type ('lattice, 'shape, 'maps_to) t =
+    ('lattice, 'shape, 'maps_to) row_like_case
+
+  let create ~maps_to ~index ~env_extension = { maps_to; index; env_extension }
+end
+
+module Row_like_for_blocks = struct
+  type t = row_like_for_blocks
+
+  type open_or_closed =
+    | Open of Tag.t Or_unknown.t
+    | Closed of Tag.t
+
+  let bottom =
+    { known_tags = Tag.Map.empty;
+      other_tags = Bottom;
+      alloc_mode = Alloc_mode.For_types.unknown ()
+    }
+
+  let is_bottom { known_tags; other_tags; alloc_mode = _ } =
+    Tag.Map.is_empty known_tags
+    && match other_tags with Bottom -> true | Ok _ -> false
+
+  let all_tags { known_tags; other_tags; alloc_mode = _ } :
+      Tag.Set.t Or_unknown.t =
+    match other_tags with
+    | Ok _ -> Unknown
+    | Bottom -> Known (Tag.Map.keys known_tags)
+
+  let create_exactly tag index shape maps_to alloc_mode =
+    { known_tags =
+        Tag.Map.singleton tag
+          (Or_unknown.Known
+             { maps_to;
+               index = { domain = Known index; shape };
+               env_extension = { equations = Name.Map.empty }
+             });
+      other_tags = Bottom;
+      alloc_mode
+    }
+
+  let create_at_least tag index shape maps_to alloc_mode =
+    { known_tags =
+        Tag.Map.singleton tag
+          (Or_unknown.Known
+             { maps_to;
+               index = { domain = At_least index; shape };
+               env_extension = { equations = Name.Map.empty }
+             });
+      other_tags = Bottom;
+      alloc_mode
+    }
+
+  let create_at_least_unknown_tag index shape maps_to alloc_mode =
+    { known_tags = Tag.Map.empty;
+      other_tags =
+        Ok
+          { maps_to;
+            index = { domain = At_least index; shape };
+            env_extension = { equations = Name.Map.empty }
+          };
+      alloc_mode
+    }
+
+  let check_field_tys ~shape ~field_tys =
+    if Flambda_features.check_invariants ()
+    then
+      List.iteri
+        (fun i ty ->
+          let field_kind = kind ty in
+          let shape_kind =
+            match (shape : K.Block_shape.t) with
+            | Scannable Value_only -> K.value
+            | Scannable (Mixed_record kinds) ->
+              (K.Mixed_block_shape.field_kinds kinds).(i)
+            | Float_record -> K.naked_float
+          in
+          if not (Flambda_kind.equal field_kind shape_kind)
+          then
+            Misc.fatal_errorf
+              "Kind mismatch for field %d: %a doesn't match its shape (%a)" i
+              Flambda_kind.print field_kind Flambda_kind.print shape_kind)
+        field_tys
+
+  let create ~(shape : K.Block_shape.t) ~field_tys
+      (open_or_closed : open_or_closed) alloc_mode =
+    check_field_tys ~shape ~field_tys;
+    let tag : _ Or_unknown.t =
+      let tag : _ Or_unknown.t =
+        match open_or_closed with
+        | Open (Known tag) -> Known tag
+        | Open Unknown -> Unknown
+        | Closed tag -> Known tag
+      in
+      match tag with
+      | Unknown -> (
+        match shape with
+        | Scannable (Value_only | Mixed_record _) -> Unknown
+        | Float_record -> Known Tag.double_array_tag)
+      | Known tag -> (
+        match shape with
+        | Scannable (Value_only | Mixed_record _) -> (
+          match Tag.Scannable.of_tag tag with
+          | Some _ -> Known tag
+          | None ->
+            Misc.fatal_error
+              "Blocks must have a tag less than [No_scan_tag] (except for \
+               float records)")
+        | Float_record ->
+          if not (Tag.equal tag Tag.double_array_tag)
+          then
+            Misc.fatal_error
+              "Blocks full of naked floats must have tag [Tag.double_array_tag]";
+          Known tag)
+    in
+    let product = Array.of_list field_tys in
+    let size = Targetint_31_63.of_int (List.length field_tys) in
+    match open_or_closed with
+    | Open _ -> (
+      match tag with
+      | Known tag -> create_at_least tag size shape product alloc_mode
+      | Unknown -> create_at_least_unknown_tag size shape product alloc_mode)
+    | Closed _ -> (
+      match tag with
+      | Known tag -> create_exactly tag size shape product alloc_mode
+      | Unknown -> assert false)
+  (* see above *)
+
+  let create_blocks_with_these_tags tags alloc_mode =
+    let maps_to = Product.Int_indexed.create_top () in
+    let case shape =
+      Or_unknown.map
+        ~f:(fun shape ->
+          { maps_to;
+            index = { domain = At_least Targetint_31_63.zero; shape };
+            env_extension = { equations = Name.Map.empty }
+          })
+        shape
+    in
+    { known_tags = Tag.Map.map case tags; other_tags = Bottom; alloc_mode }
+
+  let create_exactly_multiple ~shape_and_field_tys_by_tag alloc_mode =
+    let known_tags =
+      Tag.Map.map
+        (fun (shape, field_tys) ->
+          check_field_tys ~shape ~field_tys;
+          let maps_to = Array.of_list field_tys in
+          let size = Targetint_31_63.of_int (List.length field_tys) in
+          Or_unknown.Known
+            { maps_to;
+              index = { domain = Known size; shape };
+              env_extension = { equations = Name.Map.empty }
+            })
+        shape_and_field_tys_by_tag
+    in
+    { known_tags; other_tags = Bottom; alloc_mode }
+
+  let create_raw ~known_tags ~other_tags ~alloc_mode =
+    (* CR-someday mshinwell: add invariant check? *)
+    { known_tags; other_tags; alloc_mode }
+
+  let these_tags { known_tags; other_tags; alloc_mode } tags =
+    let known_tags =
+      Tag.Map.filter (fun tag _ -> Tag.Set.mem tag tags) known_tags
+    in
+    let known_tags =
+      match other_tags with
+      | Bottom -> known_tags
+      | Ok row ->
+        let row_or_unknown : _ Or_unknown.t = Known row in
+        Tag.Set.fold
+          (fun tag known_tags ->
+            Tag.Map.update tag
+              (function
+                | None -> Some row_or_unknown | Some known_tag -> Some known_tag)
+              known_tags)
+          tags known_tags
+    in
+    create_raw ~known_tags ~other_tags:Bottom ~alloc_mode
+
+  let this_tag { known_tags; other_tags; alloc_mode } tag =
+    let create_row_like_block_case row =
+      create_raw
+        ~known_tags:(Tag.Map.singleton tag (Or_unknown.Known row))
+        ~other_tags:Bottom ~alloc_mode
+    in
+    match Tag.Map.find_opt tag known_tags with
+    | Some Unknown ->
+      create_blocks_with_these_tags
+        (Tag.Map.singleton tag Or_unknown.Unknown)
+        alloc_mode
+    | Some (Known row) -> create_row_like_block_case row
+    | None -> (
+      match other_tags with
+      | Ok row -> create_row_like_block_case row
+      | Bottom -> bottom)
+
+  let all_tags_and_sizes t :
+      (Targetint_31_63.t * K.Block_shape.t) Tag.Map.t Or_unknown.t =
+    match t.other_tags with
+    | Ok _ -> Unknown
+    | Bottom ->
+      let any_unknown = ref false in
+      let by_tag =
+        Tag.Map.map
+          (fun case ->
+            match (case : _ Or_unknown.t) with
+            | Unknown ->
+              any_unknown := true;
+              (* result doesn't matter as it is unused *)
+              Targetint_31_63.zero, K.Block_shape.Scannable Value_only
+            | Known { index = { domain; shape }; _ } -> (
+              match domain with
+              | Known size -> size, shape
+              | At_least size ->
+                any_unknown := true;
+                size, shape))
+          t.known_tags
+      in
+      if !any_unknown then Unknown else Known by_tag
+
+  let get_singleton { known_tags; other_tags; alloc_mode } =
+    match other_tags with
+    | Ok _ -> None
+    | Bottom -> (
+      match Tag.Map.get_singleton known_tags with
+      | None -> None
+      | Some (_tag, Unknown) -> None
+      (* CR pchambart: We lose the tag information when we don't know the shape.
+         Example where this could matter: in Provers.prove_physical_equality
+         this could miss some physical inequality *)
+      | Some (tag, Known { maps_to; index; env_extension = _ }) -> (
+        (* If this is a singleton all the information from the env_extension is
+           already part of the environment *)
+        match index.domain with
+        | At_least _ -> None
+        | Known size -> Some (tag, index.shape, size, maps_to, alloc_mode)))
+
+  let project_int_indexed_product fields index : _ Or_unknown.t =
+    if Array.length fields <= index then Unknown else Known fields.(index)
+
+  let get_field t index : _ Or_unknown_or_bottom.t =
+    match get_singleton t with
+    (* CR pchambart vlaviron: This is missing the 'Other' case. It would be easy
+       to be efficient to get the the field when there is only the 'Other' case.
+       Also we could be slightly better when there are multiple tags with
+       exactly the same type: we could do a trivial join *)
+    | None -> Unknown
+    | Some (_tag, _shape, size, maps_to, _alloc_mode) -> (
+      if Targetint_31_63.( <= ) size index
+      then Bottom
+      else
+        match
+          project_int_indexed_product maps_to (Targetint_31_63.to_int index)
+        with
+        | Unknown -> Unknown
+        | Known res -> Ok res)
+end
+
+module Row_like_for_closures = struct
+  type t = row_like_for_closures
+
+  let create_exactly (function_slot : Function_slot.t)
+      (contents : Set_of_closures_contents.t) (closures_entry : closures_entry)
+      =
+    let known_closures =
+      Function_slot.Map.singleton function_slot
+        { index = { domain = Known contents; shape = () };
+          maps_to = closures_entry;
+          env_extension = { equations = Name.Map.empty }
+        }
+    in
+    { known_closures; other_closures = Bottom }
+
+  let create_at_least (function_slot : Function_slot.t)
+      (contents : Set_of_closures_contents.t) (closures_entry : closures_entry)
+      =
+    let known_closures =
+      Function_slot.Map.singleton function_slot
+        { index = { domain = At_least contents; shape = () };
+          maps_to = closures_entry;
+          env_extension = { equations = Name.Map.empty }
+        }
+    in
+    { known_closures; other_closures = Bottom }
+
+  let create_raw ~known_closures ~other_closures =
+    (* CR-someday mshinwell: add invariant check? *)
+    { known_closures; other_closures }
+
+  type get_single_tag_result =
+    | No_singleton
+    | Exact_closure of Function_slot.t * closures_entry
+    | Incomplete_closure of Function_slot.t * closures_entry
+
+  let get_single_tag { known_closures; other_closures } : get_single_tag_result
+      =
+    match other_closures with
+    | Ok _ -> No_singleton
+    | Bottom -> (
+      match Function_slot.Map.get_singleton known_closures with
+      | None -> No_singleton
+      | Some (tag, { maps_to; index; env_extension = _ }) -> (
+        (* If this is a singleton all the information from the env_extension is
+           already part of the environment *)
+        match index.domain with
+        | At_least index ->
+          if Function_slot.Set.mem tag (Set_of_closures_contents.closures index)
+          then Incomplete_closure (tag, maps_to)
+          else No_singleton
+        | Known index ->
+          if Function_slot.Set.mem tag (Set_of_closures_contents.closures index)
+          then Exact_closure (tag, maps_to)
+          else
+            Misc.fatal_errorf
+              "Function slot %a not bound in Known closure type with contents \
+               %a"
+              Function_slot.print tag Set_of_closures_contents.print index))
+
+  let get_closure t function_slot : _ Or_unknown.t =
+    match get_single_tag t with
+    | No_singleton -> Unknown
+    | Exact_closure (_tag, maps_to) | Incomplete_closure (_tag, maps_to) -> (
+      match
+        Function_slot.Map.find_opt function_slot
+          maps_to.closure_types.function_slot_components_by_index
+      with
+      | None -> Unknown
+      | Some closure_ty -> Known closure_ty)
+
+  let get_env_var t env_var : _ Or_unknown.t =
+    match get_single_tag t with
+    | No_singleton -> Unknown
+    | Exact_closure (_tag, maps_to) | Incomplete_closure (_tag, maps_to) -> (
+      match
+        Value_slot.Map.find_opt env_var
+          maps_to.value_slot_types.value_slot_components_by_index
+      with
+      | None -> Unknown
+      | Some env_var_ty -> Known env_var_ty)
+end
+
+module Env_extension = struct
+  type t = env_extension
+
+  let empty = { equations = Name.Map.empty }
+
+  let create ~equations = { equations }
+
+  let ids_for_export = ids_for_export_env_extension
+
+  let apply_renaming = apply_renaming_env_extension
+
+  let free_names = free_names_env_extension ~follow_value_slots:true
+
+  let print = print_env_extension
+
+  let to_map t = t.equations
+end
+
+let is_obviously_bottom t =
+  match t with
+  | Value ty -> TD.is_obviously_bottom ty
+  | Naked_immediate ty -> TD.is_obviously_bottom ty
+  | Naked_float32 ty -> TD.is_obviously_bottom ty
+  | Naked_float ty -> TD.is_obviously_bottom ty
+  | Naked_int32 ty -> TD.is_obviously_bottom ty
+  | Naked_int64 ty -> TD.is_obviously_bottom ty
+  | Naked_nativeint ty -> TD.is_obviously_bottom ty
+  | Naked_vec128 ty -> TD.is_obviously_bottom ty
+  | Naked_vec256 ty -> TD.is_obviously_bottom ty
+  | Naked_vec512 ty -> TD.is_obviously_bottom ty
+  | Rec_info ty -> TD.is_obviously_bottom ty
+  | Region ty -> TD.is_obviously_bottom ty
+
+let is_obviously_unknown t =
+  match t with
+  | Value ty -> TD.is_obviously_unknown ty
+  | Naked_immediate ty -> TD.is_obviously_unknown ty
+  | Naked_float32 ty -> TD.is_obviously_unknown ty
+  | Naked_float ty -> TD.is_obviously_unknown ty
+  | Naked_int32 ty -> TD.is_obviously_unknown ty
+  | Naked_int64 ty -> TD.is_obviously_unknown ty
+  | Naked_nativeint ty -> TD.is_obviously_unknown ty
+  | Naked_vec128 ty -> TD.is_obviously_unknown ty
+  | Naked_vec256 ty -> TD.is_obviously_unknown ty
+  | Naked_vec512 ty -> TD.is_obviously_unknown ty
+  | Rec_info ty -> TD.is_obviously_unknown ty
+  | Region ty -> TD.is_obviously_unknown ty
+
+let alias_type_of (kind : K.t) name : t =
+  match kind with
+  | Value -> Value (TD.create_equals name)
+  | Naked_number Naked_immediate -> Naked_immediate (TD.create_equals name)
+  | Naked_number Naked_float32 -> Naked_float32 (TD.create_equals name)
+  | Naked_number Naked_float -> Naked_float (TD.create_equals name)
+  | Naked_number Naked_int32 -> Naked_int32 (TD.create_equals name)
+  | Naked_number Naked_int64 -> Naked_int64 (TD.create_equals name)
+  | Naked_number Naked_nativeint -> Naked_nativeint (TD.create_equals name)
+  | Naked_number Naked_vec128 -> Naked_vec128 (TD.create_equals name)
+  | Naked_number Naked_vec256 -> Naked_vec256 (TD.create_equals name)
+  | Naked_number Naked_vec512 -> Naked_vec512 (TD.create_equals name)
+  | Rec_info -> Rec_info (TD.create_equals name)
+  | Region -> Region (TD.create_equals name)
+
+let this_naked_immediate i : t =
+  Naked_immediate (TD.create_equals (Simple.const (RWC.naked_immediate i)))
+
+let this_naked_float32 f : t =
+  Naked_float32 (TD.create_equals (Simple.const (RWC.naked_float32 f)))
+
+let this_naked_float f : t =
+  Naked_float (TD.create_equals (Simple.const (RWC.naked_float f)))
+
+let this_naked_int32 i : t =
+  Naked_int32 (TD.create_equals (Simple.const (RWC.naked_int32 i)))
+
+let this_naked_int64 i : t =
+  Naked_int64 (TD.create_equals (Simple.const (RWC.naked_int64 i)))
+
+let this_naked_nativeint i : t =
+  Naked_nativeint (TD.create_equals (Simple.const (RWC.naked_nativeint i)))
+
+let this_naked_vec128 i : t =
+  Naked_vec128 (TD.create_equals (Simple.const (RWC.naked_vec128 i)))
+
+let this_naked_vec256 i : t =
+  Naked_vec256 (TD.create_equals (Simple.const (RWC.naked_vec256 i)))
+
+let this_naked_vec512 i : t =
+  Naked_vec512 (TD.create_equals (Simple.const (RWC.naked_vec512 i)))
+
+let these_naked_immediates is =
+  match Targetint_31_63.Set.get_singleton is with
+  | Some i -> this_naked_immediate i
+  | _ ->
+    if Targetint_31_63.Set.is_empty is
+    then bottom_naked_immediate
+    else Naked_immediate (TD.create (Naked_immediates is))
+
+let these_naked_float32s fs =
+  match Float32.Set.get_singleton fs with
+  | Some f -> this_naked_float32 f
+  | _ ->
+    if Float32.Set.is_empty fs
+    then bottom_naked_float32
+    else Naked_float32 (TD.create fs)
+
+let these_naked_floats fs =
+  match Float.Set.get_singleton fs with
+  | Some f -> this_naked_float f
+  | _ ->
+    if Float.Set.is_empty fs
+    then bottom_naked_float
+    else Naked_float (TD.create fs)
+
+let these_naked_int32s is =
+  match Int32.Set.get_singleton is with
+  | Some i -> this_naked_int32 i
+  | _ ->
+    if Int32.Set.is_empty is
+    then bottom_naked_int32
+    else Naked_int32 (TD.create is)
+
+let these_naked_int64s is =
+  match Int64.Set.get_singleton is with
+  | Some i -> this_naked_int64 i
+  | _ ->
+    if Int64.Set.is_empty is
+    then bottom_naked_int64
+    else Naked_int64 (TD.create is)
+
+let these_naked_nativeints is =
+  match Targetint_32_64.Set.get_singleton is with
+  | Some i -> this_naked_nativeint i
+  | _ ->
+    if Targetint_32_64.Set.is_empty is
+    then bottom_naked_nativeint
+    else Naked_nativeint (TD.create is)
+
+let these_naked_vec128s vs =
+  match Vector_types.Vec128.Bit_pattern.Set.get_singleton vs with
+  | Some v -> this_naked_vec128 v
+  | _ ->
+    if Vector_types.Vec128.Bit_pattern.Set.is_empty vs
+    then bottom_naked_vec128
+    else Naked_vec128 (TD.create vs)
+
+let these_naked_vec256s vs =
+  match Vector_types.Vec256.Bit_pattern.Set.get_singleton vs with
+  | Some v -> this_naked_vec256 v
+  | _ ->
+    if Vector_types.Vec256.Bit_pattern.Set.is_empty vs
+    then bottom_naked_vec256
+    else Naked_vec256 (TD.create vs)
+
+let these_naked_vec512s vs =
+  match Vector_types.Vec512.Bit_pattern.Set.get_singleton vs with
+  | Some v -> this_naked_vec512 v
+  | _ ->
+    if Vector_types.Vec512.Bit_pattern.Set.is_empty vs
+    then bottom_naked_vec512
+    else Naked_vec512 (TD.create vs)
+
+let box_float32 (t : t) alloc_mode : t =
+  match t with
+  | Naked_float32 _ -> non_null_value (Boxed_float32 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_int32 _ | Naked_float _ | Naked_int64 _
+  | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _ | Naked_nativeint _
+  | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_float32]: %a" print t
+
+let box_float (t : t) alloc_mode : t =
+  match t with
+  | Naked_float _ -> non_null_value (Boxed_float (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_int32 _ | Naked_float32 _
+  | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
+  | Naked_nativeint _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_float]: %a" print t
+
+let box_int32 (t : t) alloc_mode : t =
+  match t with
+  | Naked_int32 _ -> non_null_value (Boxed_int32 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
+  | Naked_nativeint _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_int32]: %a" print t
+
+let box_int64 (t : t) alloc_mode : t =
+  match t with
+  | Naked_int64 _ -> non_null_value (Boxed_int64 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int32 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
+  | Naked_nativeint _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_int64]: %a" print t
+
+let box_nativeint (t : t) alloc_mode : t =
+  match t with
+  | Naked_nativeint _ -> non_null_value (Boxed_nativeint (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int32 _ | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _
+  | Naked_vec512 _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_nativeint]: %a" print t
+
+let box_vec128 (t : t) alloc_mode : t =
+  match t with
+  | Naked_vec128 _ -> non_null_value (Boxed_vec128 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec256 _
+  | Naked_vec512 _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_vec128]: %a" print t
+
+let box_vec256 (t : t) alloc_mode : t =
+  match t with
+  | Naked_vec256 _ -> non_null_value (Boxed_vec256 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
+  | Naked_vec512 _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_vec256]: %a" print t
+
+let box_vec512 (t : t) alloc_mode : t =
+  match t with
+  | Naked_vec512 _ -> non_null_value (Boxed_vec512 (t, alloc_mode))
+  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
+  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
+  | Naked_vec256 _ | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [box_vec512]: %a" print t
+
+let null : t = Value (TD.create { non_null = Bottom; is_null = Maybe_null })
+
+let any_non_null_value : t =
+  Value (TD.create { non_null = Unknown; is_null = Not_null })
+
+let this_tagged_immediate imm : t =
+  Value (TD.create_equals (Simple.const (RWC.tagged_immediate imm)))
+
+let tag_immediate t : t =
+  match t with
+  | Naked_immediate _ ->
+    non_null_value
+      (Variant
+         { is_unique = false;
+           immediates = Known t;
+           extensions = No_extensions;
+           relations = Function.Map.empty;
+           blocks = Known Row_like_for_blocks.bottom
+         })
+  | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
+  | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
+  | Rec_info _ | Region _ ->
+    Misc.fatal_errorf "Type of wrong kind for [tag_immediate]: %a" print t
+
+let tagged_immediate_alias_to ~naked_immediate : t =
+  tag_immediate
+    (Naked_immediate (TD.create_equals (Simple.var naked_immediate)))
+
+let is_int_for_scrutinee ~scrutinee : t =
+  Naked_immediate (TD.create (Is_int (alias_type_of K.value scrutinee)))
+
+let get_tag_for_block ~block : t =
+  Naked_immediate (TD.create (Get_tag (alias_type_of K.value block)))
+
+let is_null ~scrutinee : t =
+  Naked_immediate (TD.create (Is_null (alias_type_of K.value scrutinee)))
+
+let boxed_float32_alias_to ~naked_float32 =
+  box_float32 (Naked_float32 (TD.create_equals (Simple.var naked_float32)))
+
+let boxed_float_alias_to ~naked_float =
+  box_float (Naked_float (TD.create_equals (Simple.var naked_float)))
+
+let boxed_int32_alias_to ~naked_int32 =
+  box_int32 (Naked_int32 (TD.create_equals (Simple.var naked_int32)))
+
+let boxed_int64_alias_to ~naked_int64 =
+  box_int64 (Naked_int64 (TD.create_equals (Simple.var naked_int64)))
+
+let boxed_nativeint_alias_to ~naked_nativeint =
+  box_nativeint
+    (Naked_nativeint (TD.create_equals (Simple.var naked_nativeint)))
+
+let boxed_vec128_alias_to ~naked_vec128 =
+  box_vec128 (Naked_vec128 (TD.create_equals (Simple.var naked_vec128)))
+
+let boxed_vec256_alias_to ~naked_vec256 =
+  box_vec256 (Naked_vec256 (TD.create_equals (Simple.var naked_vec256)))
+
+let boxed_vec512_alias_to ~naked_vec512 =
+  box_vec512 (Naked_vec512 (TD.create_equals (Simple.var naked_vec512)))
+
+let this_immutable_string str =
+  let size = Targetint_31_63.of_int (String.length str) in
+  let string_info =
+    String_info.Set.singleton
+      (String_info.create ~contents:(Contents str) ~size)
+  in
+  non_null_value (String string_info)
+
+let mutable_string ~size =
+  let size = Targetint_31_63.of_int size in
+  let string_info =
+    String_info.Set.singleton
+      (String_info.create ~contents:Unknown_or_mutable ~size)
+  in
+  non_null_value (String string_info)
+
+let array_of_length ~element_kind ~length alloc_mode =
+  non_null_value
+    (Array { element_kind; length; contents = Unknown; alloc_mode })
+
+let mutable_array ~element_kind ~length alloc_mode =
+  non_null_value
+    (Array { element_kind; length; contents = Known Mutable; alloc_mode })
+
+let immutable_array ~element_kind ~fields alloc_mode =
+  non_null_value
+    (Array
+       { element_kind;
+         length =
+           this_tagged_immediate (Targetint_31_63.of_int (List.length fields));
+         contents = Known (Immutable { fields = Array.of_list fields });
+         alloc_mode
+       })
+
+let this_rec_info (rec_info_expr : Rec_info_expr.t) =
+  match rec_info_expr with
+  | Var dv -> Rec_info (TD.create_equals (Simple.var dv))
+  | Const _ | Succ _ | Unroll_to _ -> Rec_info (TD.create rec_info_expr)
+
+module Descr = struct
+  type t =
+    | Value of head_of_kind_value TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_immediate of
+        head_of_kind_naked_immediate TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_float32 of
+        head_of_kind_naked_float32 TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_float of head_of_kind_naked_float TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_int32 of head_of_kind_naked_int32 TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_int64 of head_of_kind_naked_int64 TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_nativeint of
+        head_of_kind_naked_nativeint TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_vec128 of
+        head_of_kind_naked_vec128 TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_vec256 of
+        head_of_kind_naked_vec256 TD.Descr.t Or_unknown_or_bottom.t
+    | Naked_vec512 of
+        head_of_kind_naked_vec512 TD.Descr.t Or_unknown_or_bottom.t
+    | Rec_info of head_of_kind_rec_info TD.Descr.t Or_unknown_or_bottom.t
+    | Region of head_of_kind_region TD.Descr.t Or_unknown_or_bottom.t
+end
+
+let descr t : Descr.t =
+  match t with
+  | Value ty -> Value (TD.descr ty)
+  | Naked_immediate ty -> Naked_immediate (TD.descr ty)
+  | Naked_float32 ty -> Naked_float32 (TD.descr ty)
+  | Naked_float ty -> Naked_float (TD.descr ty)
+  | Naked_int32 ty -> Naked_int32 (TD.descr ty)
+  | Naked_int64 ty -> Naked_int64 (TD.descr ty)
+  | Naked_nativeint ty -> Naked_nativeint (TD.descr ty)
+  | Naked_vec128 ty -> Naked_vec128 (TD.descr ty)
+  | Naked_vec256 ty -> Naked_vec256 (TD.descr ty)
+  | Naked_vec512 ty -> Naked_vec512 (TD.descr ty)
+  | Rec_info ty -> Rec_info (TD.descr ty)
+  | Region ty -> Region (TD.descr ty)
+
+let create_from_head_value head = Value (TD.create head)
+
+let create_from_head_naked_immediate head = Naked_immediate (TD.create head)
+
+let create_from_head_naked_float32 head = Naked_float32 (TD.create head)
+
+let create_from_head_naked_float head = Naked_float (TD.create head)
+
+let create_from_head_naked_int32 head = Naked_int32 (TD.create head)
+
+let create_from_head_naked_int64 head = Naked_int64 (TD.create head)
+
+let create_from_head_naked_nativeint head = Naked_nativeint (TD.create head)
+
+let create_from_head_naked_vec128 head = Naked_vec128 (TD.create head)
+
+let create_from_head_naked_vec256 head = Naked_vec256 (TD.create head)
+
+let create_from_head_naked_vec512 head = Naked_vec512 (TD.create head)
+
+let create_from_head_rec_info head = Rec_info (TD.create head)
+
+let create_from_head_region head = Region (TD.create head)
+
+module Head_of_kind_value = struct
+  type t = head_of_kind_value
+
+  let null = { non_null = Bottom; is_null = Maybe_null }
+
+  let mk_non_null non_null = { non_null = Ok non_null; is_null = Not_null }
+
+  let create_variant ~is_unique ~blocks ~immediates ~extensions =
+    mk_non_null
+      (Variant
+         { is_unique;
+           blocks;
+           immediates;
+           extensions;
+           relations = Function.Map.empty
+         })
+
+  let create_mutable_block alloc_mode =
+    mk_non_null (Mutable_block { alloc_mode })
+
+  let create_boxed_float32 ty alloc_mode =
+    mk_non_null (Boxed_float32 (ty, alloc_mode))
+
+  let create_boxed_float ty alloc_mode =
+    mk_non_null (Boxed_float (ty, alloc_mode))
+
+  let create_boxed_int32 ty alloc_mode =
+    mk_non_null (Boxed_int32 (ty, alloc_mode))
+
+  let create_boxed_int64 ty alloc_mode =
+    mk_non_null (Boxed_int64 (ty, alloc_mode))
+
+  let create_boxed_nativeint ty alloc_mode =
+    mk_non_null (Boxed_nativeint (ty, alloc_mode))
+
+  let create_boxed_vec128 ty alloc_mode =
+    mk_non_null (Boxed_vec128 (ty, alloc_mode))
+
+  let create_boxed_vec256 ty alloc_mode =
+    mk_non_null (Boxed_vec256 (ty, alloc_mode))
+
+  let create_boxed_vec512 ty alloc_mode =
+    mk_non_null (Boxed_vec512 (ty, alloc_mode))
+
+  let create_tagged_immediate imm : t =
+    mk_non_null
+      (Variant
+         { is_unique = false;
+           immediates = Known (this_naked_immediate imm);
+           blocks = Known Row_like_for_blocks.bottom;
+           extensions = No_extensions;
+           relations = Function.Map.empty
+         })
+
+  let create_closures by_function_slot alloc_mode =
+    mk_non_null (Closures { by_function_slot; alloc_mode })
+
+  let create_string info = mk_non_null (String info)
+
+  let create_array_with_contents ~element_kind ~length contents alloc_mode =
+    mk_non_null (Array { element_kind; length; contents; alloc_mode })
+end
+
+module Head_of_kind_value_non_null = struct
+  type t = head_of_kind_value_non_null
+
+  let create_variant ~is_unique ~blocks ~immediates ~extensions =
+    Variant
+      { is_unique;
+        blocks;
+        immediates;
+        extensions;
+        relations = Function.Map.empty
+      }
+
+  let create_mutable_block alloc_mode = Mutable_block { alloc_mode }
+
+  let create_boxed_float32 ty alloc_mode = Boxed_float32 (ty, alloc_mode)
+
+  let create_boxed_float ty alloc_mode = Boxed_float (ty, alloc_mode)
+
+  let create_boxed_int32 ty alloc_mode = Boxed_int32 (ty, alloc_mode)
+
+  let create_boxed_int64 ty alloc_mode = Boxed_int64 (ty, alloc_mode)
+
+  let create_boxed_nativeint ty alloc_mode = Boxed_nativeint (ty, alloc_mode)
+
+  let create_boxed_vec128 ty alloc_mode = Boxed_vec128 (ty, alloc_mode)
+
+  let create_boxed_vec256 ty alloc_mode = Boxed_vec256 (ty, alloc_mode)
+
+  let create_boxed_vec512 ty alloc_mode = Boxed_vec512 (ty, alloc_mode)
+
+  let create_tagged_immediate imm : t =
+    Variant
+      { is_unique = false;
+        immediates = Known (this_naked_immediate imm);
+        blocks = Known Row_like_for_blocks.bottom;
+        extensions = No_extensions;
+        relations = Function.Map.empty
+      }
+
+  let create_closures by_function_slot alloc_mode =
+    Closures { by_function_slot; alloc_mode }
+
+  let create_string info = String info
+
+  let create_array_with_contents ~element_kind ~length contents alloc_mode =
+    Array { element_kind; length; contents; alloc_mode }
+end
+
+module type Head_of_kind_naked_number_intf = sig
+  type t
+
+  type n
+
+  type n_set
+
+  val create : n -> t
+
+  val create_set : n_set -> t Or_bottom.t
+
+  val create_non_empty_set : n_set -> t
+
+  val union : t -> t -> t
+
+  val inter : t -> t -> t Or_bottom.t
+end
+
+module Head_of_kind_naked_immediate = struct
+  type t = head_of_kind_naked_immediate
+
+  let create_naked_immediate imm =
+    Naked_immediates (Targetint_31_63.Set.singleton imm)
+
+  let create_naked_immediates imms : _ Or_bottom.t =
+    if Targetint_31_63.Set.is_empty imms
+    then Bottom
+    else Ok (Naked_immediates imms)
+
+  let create_naked_immediates_non_empty imms =
+    if Targetint_31_63.Set.is_empty imms
+    then
+      Misc.fatal_error
+        "Head_of_kind_naked_immediates.create_naked_immediates_non_empty";
+    Naked_immediates imms
+
+  let create_is_int ty = Is_int ty
+
+  let create_get_tag ty = Get_tag ty
+
+  let create_is_null ty = Is_null ty
+end
+
+module Make_head_of_kind_naked_number (N : Container_types.S) = struct
+  type t = N.Set.t
+
+  type n = N.t
+
+  type n_set = N.Set.t
+
+  let create i = N.Set.singleton i
+
+  let create_set is : _ Or_bottom.t =
+    if N.Set.is_empty is then Bottom else Ok is
+
+  let create_non_empty_set is =
+    if N.Set.is_empty is
+    then Misc.fatal_error "Make_head_of_kind_naked_number.create_non_empty_set";
+    is
+
+  let union = N.Set.union
+
+  let inter t1 t2 : _ Or_bottom.t =
+    let t = N.Set.inter t1 t2 in
+    if N.Set.is_empty t then Bottom else Ok t
+end
+
+module Head_of_kind_naked_float32 = Make_head_of_kind_naked_number (Float32)
+module Head_of_kind_naked_float = Make_head_of_kind_naked_number (Float)
+module Head_of_kind_naked_int32 = Make_head_of_kind_naked_number (Int32)
+module Head_of_kind_naked_int64 = Make_head_of_kind_naked_number (Int64)
+module Head_of_kind_naked_nativeint =
+  Make_head_of_kind_naked_number (Targetint_32_64)
+module Head_of_kind_naked_vec128 =
+  Make_head_of_kind_naked_number (Vector_types.Vec128.Bit_pattern)
+module Head_of_kind_naked_vec256 =
+  Make_head_of_kind_naked_number (Vector_types.Vec256.Bit_pattern)
+module Head_of_kind_naked_vec512 =
+  Make_head_of_kind_naked_number (Vector_types.Vec512.Bit_pattern)
+
+let rec must_be_singleton t : RWC.t option =
+  match t with
+  | Value ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom
+    (* CR vlaviron: Recover null aliases *)
+    | Ok (No_alias { is_null = Maybe_null; _ })
+    | Ok
+        (No_alias
+          { is_null = Not_null;
+            non_null =
+              ( Unknown | Bottom
+              | Ok
+                  ( Mutable_block _ | Boxed_float _ | Boxed_float32 _
+                  | Boxed_int32 _ | Boxed_int64 _ | Boxed_vec128 _
+                  | Boxed_vec256 _ | Boxed_vec512 _ | Boxed_nativeint _
+                  | String _ | Closures _ | Array _ ) )
+          }) ->
+      None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok
+        (No_alias
+          { is_null = Not_null;
+            non_null =
+              Ok
+                (Variant
+                  { immediates;
+                    blocks;
+                    extensions = _;
+                    relations = _;
+                    is_unique = _
+                  })
+          }) -> (
+      match blocks with
+      | Unknown -> None
+      | Known blocks -> (
+        if not (Row_like_for_blocks.is_bottom blocks)
+        then None
+        else
+          match immediates with
+          | Unknown -> None
+          | Known immediates -> (
+            match must_be_singleton immediates with
+            | None -> None
+            | Some const -> (
+              match RWC.descr const with
+              | Naked_immediate i -> Some (RWC.tagged_immediate i)
+              | Tagged_immediate _ | Naked_float _ | Naked_float32 _
+              | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _
+              | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _ | Null ->
+                Misc.fatal_errorf
+                  "Immediates case returned wrong kind of constant:@ %a"
+                  Reg_width_const.print const)))))
+  | Naked_immediate ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom | Ok (No_alias (Is_int _ | Get_tag _ | Is_null _)) ->
+      None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias (Naked_immediates is)) -> (
+      match Targetint_31_63.Set.get_singleton is with
+      | Some i -> Some (RWC.naked_immediate i)
+      | None -> None))
+  | Naked_float32 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias fs) -> (
+      match Float32.Set.get_singleton fs with
+      | Some f -> Some (RWC.naked_float32 f)
+      | None -> None))
+  | Naked_float ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias fs) -> (
+      match Float.Set.get_singleton fs with
+      | Some f -> Some (RWC.naked_float f)
+      | None -> None))
+  | Naked_int32 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Int32.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_int32 f)
+      | None -> None))
+  | Naked_int64 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Int64.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_int64 f)
+      | None -> None))
+  | Naked_nativeint ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Targetint_32_64.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_nativeint f)
+      | None -> None))
+  | Naked_vec128 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Vec128.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_vec128 f)
+      | None -> None))
+  | Naked_vec256 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Vec256.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_vec256 f)
+      | None -> None))
+  | Naked_vec512 ty -> (
+    match TD.descr ty with
+    | Unknown | Bottom -> None
+    | Ok (Equals simple) -> Simple.must_be_const simple
+    | Ok (No_alias is) -> (
+      match Vec512.Set.get_singleton is with
+      | Some f -> Some (RWC.naked_vec512 f)
+      | None -> None))
+  | Rec_info _ | Region _ -> None
+
+let reduce_const_relations const_relations (immediates, blocks) =
+  Function.Map.fold
+    (fun fn const_value (immediates, blocks) : (_ Or_unknown.t * _ Or_unknown.t) ->
+      match Function.descr fn, RWC.descr const_value with
+      | Is_int, Naked_immediate is_int ->
+        if I.equal is_int I.zero
+        then Known bottom_naked_immediate, blocks
+        else if I.equal is_int I.one
+        then immediates, Known Row_like_for_blocks.bottom
+        else
+          (* Invalid value for is_int. *)
+          Known bottom_naked_immediate, Known Row_like_for_blocks.bottom
+      | Get_tag, Naked_immediate get_tag -> (
+        match
+          ( (blocks : row_like_for_blocks Or_unknown.t),
+            Tag.create_from_targetint get_tag )
+        with
+        | Unknown, Some tag ->
+          ( immediates,
+            Known
+              (Row_like_for_blocks.create_blocks_with_these_tags
+                 (Tag.Map.singleton tag Or_unknown.Unknown)
+                 (Alloc_mode.For_types.unknown ())) )
+        | Known blocks, Some tag ->
+          immediates, Known (Row_like_for_blocks.this_tag blocks tag)
+        | _, None ->
+          (* Invalid tag -- block case is impossible *)
+          immediates, Known Row_like_for_blocks.bottom)
+      | ( (Is_int | Get_tag),
+          ( Tagged_immediate _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
+          | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _
+          | Naked_vec512 _ | Null ) ) ->
+        assert false
+      | Is_null, _ -> assert false
+      | (Untag_imm | Tag_imm), _ -> immediates, blocks)
+    const_relations (immediates, blocks)
+
 let rec remove_unused_value_slots_and_shortcut_aliases t ~used_value_slots
     ~canonicalise =
   match t with
@@ -1886,17 +3180,46 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value head
     then head
     else { non_null = Ok non_null'; is_null = head.is_null }
 
+and remove_unused_value_slots_and_shortcut_aliases_relations relations
+    ~used_value_slots:_ ~canonicalise =
+  let const_relations = ref Function.Map.empty in
+  let relations' =
+    Function.Map.filter_map_sharing
+      (fun fn name ->
+        let simple = Simple.name name in
+        let canonical_simple = canonicalise simple in
+        if canonical_simple == simple
+        then Some name
+        else
+          Simple.pattern_match canonical_simple
+            ~name:(fun name ~coercion ->
+              assert (Coercion.is_id coercion);
+              Some name)
+            ~const:(fun const ->
+              const_relations := Function.Map.add fn const !const_relations;
+              None))
+      relations
+  in
+  relations', !const_relations
+
 and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value_non_null
     head ~used_value_slots ~canonicalise =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique } ->
+  | Variant { blocks; immediates; extensions; relations; is_unique } ->
+    let relations', const_relations =
+      remove_unused_value_slots_and_shortcut_aliases_relations relations
+        ~used_value_slots ~canonicalise
+    in
+    let immediates', blocks' =
+      reduce_const_relations const_relations (immediates, blocks)
+    in
     let immediates' =
-      let>+$ immediates = immediates in
+      let>+$ immediates = immediates' in
       remove_unused_value_slots_and_shortcut_aliases immediates
         ~used_value_slots ~canonicalise
     in
     let blocks' =
-      let>+$ blocks = blocks in
+      let>+$ blocks = blocks' in
       remove_unused_value_slots_and_shortcut_aliases_row_like_for_blocks blocks
         ~used_value_slots ~canonicalise
     in
@@ -1905,14 +3228,15 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value_non_null
         extensions ~used_value_slots ~canonicalise
     in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions'
+       && extensions == extensions' && relations == relations'
     then head
     else
       Variant
         { is_unique;
           blocks = blocks';
           immediates = immediates';
-          extensions = extensions'
+          extensions = extensions';
+          relations = relations'
         }
   | Mutable_block { alloc_mode = _ } -> head
   | Boxed_float32 (ty, alloc_mode) ->
@@ -2543,29 +3867,62 @@ and project_head_of_kind_value ~to_project ~expand head =
     then head
     else { non_null = Ok non_null'; is_null = head.is_null }
 
+and project_relations ~to_project ~expand relations =
+  let const_relations = ref Function.Map.empty in
+  let relations' =
+    Function.Map.filter_map_sharing
+      (fun fn name ->
+        Name.pattern_match name
+          ~symbol:(fun _ -> Some name)
+          ~var:(fun var ->
+            if Variable.Set.mem var to_project
+            then
+              match get_alias_opt (expand var) with
+              | None -> None
+              | Some simple ->
+                Simple.pattern_match simple
+                  ~name:(fun name ~coercion ->
+                    assert (Coercion.is_id coercion);
+                    Some name)
+                  ~const:(fun const ->
+                    const_relations
+                      := Function.Map.add fn const !const_relations;
+                    None)
+            else Some name))
+      relations
+  in
+  relations', !const_relations
+
 and project_head_of_kind_value_non_null ~to_project ~expand head =
   match head with
-  | Variant { blocks; immediates; extensions; is_unique } ->
+  | Variant { blocks; immediates; extensions; relations; is_unique } ->
+    let relations', const_relations =
+      project_relations ~to_project ~expand relations
+    in
+    let immediates', blocks' =
+      reduce_const_relations const_relations (immediates, blocks)
+    in
     let immediates' =
-      let>+$ immediates = immediates in
+      let>+$ immediates = immediates' in
       project_variables_out ~to_project ~expand immediates
     in
     let blocks' =
-      let>+$ blocks = blocks in
+      let>+$ blocks = blocks' in
       project_row_like_for_blocks ~to_project ~expand blocks
     in
     let extensions' =
       project_variant_extensions ~to_project ~expand extensions
     in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions'
+       && extensions == extensions' && relations == relations'
     then head
     else
       Variant
         { is_unique;
           blocks = blocks';
           immediates = immediates';
-          extensions = extensions'
+          extensions = extensions';
+          relations = relations'
         }
   | Mutable_block _ -> head
   | Boxed_float32 (ty, alloc_mode) ->
@@ -2839,1172 +4196,3 @@ and project_variant_extensions ~to_project ~expand
     if when_immediate == when_immediate' && when_block == when_block'
     then extensions
     else Ext { when_immediate = when_immediate'; when_block = when_block' }
-
-let kind t =
-  match t with
-  | Value _ -> K.value
-  | Naked_immediate _ -> K.naked_immediate
-  | Naked_float32 _ -> K.naked_float32
-  | Naked_float _ -> K.naked_float
-  | Naked_int32 _ -> K.naked_int32
-  | Naked_int64 _ -> K.naked_int64
-  | Naked_nativeint _ -> K.naked_nativeint
-  | Naked_vec128 _ -> K.naked_vec128
-  | Naked_vec256 _ -> K.naked_vec256
-  | Naked_vec512 _ -> K.naked_vec512
-  | Rec_info _ -> K.rec_info
-  | Region _ -> K.region
-
-let non_null_value non_null =
-  Value (TD.create { non_null = Ok non_null; is_null = Not_null })
-
-let create_variant ~is_unique ~(immediates : _ Or_unknown.t) ~blocks ~extensions
-    =
-  (match immediates with
-  | Unknown -> ()
-  | Known immediates ->
-    if not (K.equal (kind immediates) K.naked_immediate)
-    then
-      Misc.fatal_errorf
-        "Cannot create [immediates] with type that is not of kind \
-         [Naked_immediate]:@ %a"
-        print immediates);
-  non_null_value (Variant { immediates; blocks; extensions; is_unique })
-
-let mutable_block alloc_mode = non_null_value (Mutable_block { alloc_mode })
-
-let create_closures alloc_mode by_function_slot =
-  non_null_value (Closures { by_function_slot; alloc_mode })
-
-module Function_type = struct
-  type t = function_type
-
-  let create code_id ~rec_info = { code_id; rec_info }
-
-  let code_id t = t.code_id
-
-  let rec_info t = t.rec_info
-end
-
-module Closures_entry = struct
-  type t = closures_entry
-
-  let create ~function_types ~closure_types ~value_slot_types =
-    { function_types; closure_types; value_slot_types }
-
-  let find_function_type t ~exact function_slot : _ Or_unknown_or_bottom.t =
-    match Function_slot.Map.find function_slot t.function_types with
-    | exception Not_found -> if exact then Bottom else Unknown
-    | func_decl -> func_decl
-
-  let value_slot_types { value_slot_types; _ } =
-    value_slot_types.value_slot_components_by_index
-end
-
-module Product = struct
-  module Function_slot_indexed = struct
-    type t = function_slot_indexed_product
-
-    let create function_slot_components_by_index =
-      let function_slot_components_by_index =
-        Function_slot.Map.map
-          (fun ty ->
-            if not (K.equal (kind ty) K.value)
-            then
-              Misc.fatal_errorf
-                "Function-slot-indexed products can only hold types of kind \
-                 [Value]:@ %a"
-                (Function_slot.Map.print print)
-                function_slot_components_by_index
-            else ty)
-          function_slot_components_by_index
-      in
-      { function_slot_components_by_index }
-
-    let top = { function_slot_components_by_index = Function_slot.Map.empty }
-
-    let width t =
-      Targetint_31_63.of_int
-        (Function_slot.Map.cardinal t.function_slot_components_by_index)
-  end
-
-  module Value_slot_indexed = struct
-    type t = value_slot_indexed_product
-
-    let create value_slot_components_by_index =
-      { value_slot_components_by_index }
-
-    let top = { value_slot_components_by_index = Value_slot.Map.empty }
-
-    let width t =
-      Targetint_31_63.of_int
-        (Value_slot.Map.cardinal t.value_slot_components_by_index)
-  end
-
-  module Int_indexed = struct
-    type t = flambda_type array
-
-    let create_from_list tys = Array.of_list tys
-
-    let create_from_array fields = fields
-
-    let create_top () = [||]
-
-    let width t = Targetint_31_63.of_int (Array.length t)
-
-    let components t = Array.to_list t
-  end
-end
-
-module Row_like_index = struct
-  type ('lattice, 'shape) t = ('lattice, 'shape) row_like_index
-
-  let create ~domain ~shape = { domain; shape }
-end
-
-module Row_like_index_domain = struct
-  type 'lattice t = 'lattice row_like_index_domain
-
-  let known index = Known index
-
-  let at_least index = At_least index
-end
-
-module Row_like_case = struct
-  type ('lattice, 'shape, 'maps_to) t =
-    ('lattice, 'shape, 'maps_to) row_like_case
-
-  let create ~maps_to ~index ~env_extension = { maps_to; index; env_extension }
-end
-
-module Row_like_for_blocks = struct
-  type t = row_like_for_blocks
-
-  type open_or_closed =
-    | Open of Tag.t Or_unknown.t
-    | Closed of Tag.t
-
-  let bottom =
-    { known_tags = Tag.Map.empty;
-      other_tags = Bottom;
-      alloc_mode = Alloc_mode.For_types.unknown ()
-    }
-
-  let is_bottom { known_tags; other_tags; alloc_mode = _ } =
-    Tag.Map.is_empty known_tags
-    && match other_tags with Bottom -> true | Ok _ -> false
-
-  let all_tags { known_tags; other_tags; alloc_mode = _ } :
-      Tag.Set.t Or_unknown.t =
-    match other_tags with
-    | Ok _ -> Unknown
-    | Bottom -> Known (Tag.Map.keys known_tags)
-
-  let create_exactly tag index shape maps_to alloc_mode =
-    { known_tags =
-        Tag.Map.singleton tag
-          (Or_unknown.Known
-             { maps_to;
-               index = { domain = Known index; shape };
-               env_extension = { equations = Name.Map.empty }
-             });
-      other_tags = Bottom;
-      alloc_mode
-    }
-
-  let create_at_least tag index shape maps_to alloc_mode =
-    { known_tags =
-        Tag.Map.singleton tag
-          (Or_unknown.Known
-             { maps_to;
-               index = { domain = At_least index; shape };
-               env_extension = { equations = Name.Map.empty }
-             });
-      other_tags = Bottom;
-      alloc_mode
-    }
-
-  let create_at_least_unknown_tag index shape maps_to alloc_mode =
-    { known_tags = Tag.Map.empty;
-      other_tags =
-        Ok
-          { maps_to;
-            index = { domain = At_least index; shape };
-            env_extension = { equations = Name.Map.empty }
-          };
-      alloc_mode
-    }
-
-  let check_field_tys ~shape ~field_tys =
-    if Flambda_features.check_invariants ()
-    then
-      List.iteri
-        (fun i ty ->
-          let field_kind = kind ty in
-          let shape_kind =
-            match (shape : K.Block_shape.t) with
-            | Scannable Value_only -> K.value
-            | Scannable (Mixed_record kinds) ->
-              (K.Mixed_block_shape.field_kinds kinds).(i)
-            | Float_record -> K.naked_float
-          in
-          if not (Flambda_kind.equal field_kind shape_kind)
-          then
-            Misc.fatal_errorf
-              "Kind mismatch for field %d: %a doesn't match its shape (%a)" i
-              Flambda_kind.print field_kind Flambda_kind.print shape_kind)
-        field_tys
-
-  let create ~(shape : K.Block_shape.t) ~field_tys
-      (open_or_closed : open_or_closed) alloc_mode =
-    check_field_tys ~shape ~field_tys;
-    let tag : _ Or_unknown.t =
-      let tag : _ Or_unknown.t =
-        match open_or_closed with
-        | Open (Known tag) -> Known tag
-        | Open Unknown -> Unknown
-        | Closed tag -> Known tag
-      in
-      match tag with
-      | Unknown -> (
-        match shape with
-        | Scannable (Value_only | Mixed_record _) -> Unknown
-        | Float_record -> Known Tag.double_array_tag)
-      | Known tag -> (
-        match shape with
-        | Scannable (Value_only | Mixed_record _) -> (
-          match Tag.Scannable.of_tag tag with
-          | Some _ -> Known tag
-          | None ->
-            Misc.fatal_error
-              "Blocks must have a tag less than [No_scan_tag] (except for \
-               float records)")
-        | Float_record ->
-          if not (Tag.equal tag Tag.double_array_tag)
-          then
-            Misc.fatal_error
-              "Blocks full of naked floats must have tag [Tag.double_array_tag]";
-          Known tag)
-    in
-    let product = Array.of_list field_tys in
-    let size = Targetint_31_63.of_int (List.length field_tys) in
-    match open_or_closed with
-    | Open _ -> (
-      match tag with
-      | Known tag -> create_at_least tag size shape product alloc_mode
-      | Unknown -> create_at_least_unknown_tag size shape product alloc_mode)
-    | Closed _ -> (
-      match tag with
-      | Known tag -> create_exactly tag size shape product alloc_mode
-      | Unknown -> assert false)
-  (* see above *)
-
-  let create_blocks_with_these_tags tags alloc_mode =
-    let maps_to = Product.Int_indexed.create_top () in
-    let case shape =
-      Or_unknown.map
-        ~f:(fun shape ->
-          { maps_to;
-            index = { domain = At_least Targetint_31_63.zero; shape };
-            env_extension = { equations = Name.Map.empty }
-          })
-        shape
-    in
-    { known_tags = Tag.Map.map case tags; other_tags = Bottom; alloc_mode }
-
-  let create_exactly_multiple ~shape_and_field_tys_by_tag alloc_mode =
-    let known_tags =
-      Tag.Map.map
-        (fun (shape, field_tys) ->
-          check_field_tys ~shape ~field_tys;
-          let maps_to = Array.of_list field_tys in
-          let size = Targetint_31_63.of_int (List.length field_tys) in
-          Or_unknown.Known
-            { maps_to;
-              index = { domain = Known size; shape };
-              env_extension = { equations = Name.Map.empty }
-            })
-        shape_and_field_tys_by_tag
-    in
-    { known_tags; other_tags = Bottom; alloc_mode }
-
-  let create_raw ~known_tags ~other_tags ~alloc_mode =
-    (* CR-someday mshinwell: add invariant check? *)
-    { known_tags; other_tags; alloc_mode }
-
-  let all_tags_and_sizes t :
-      (Targetint_31_63.t * K.Block_shape.t) Tag.Map.t Or_unknown.t =
-    match t.other_tags with
-    | Ok _ -> Unknown
-    | Bottom ->
-      let any_unknown = ref false in
-      let by_tag =
-        Tag.Map.map
-          (fun case ->
-            match (case : _ Or_unknown.t) with
-            | Unknown ->
-              any_unknown := true;
-              (* result doesn't matter as it is unused *)
-              Targetint_31_63.zero, K.Block_shape.Scannable Value_only
-            | Known { index = { domain; shape }; _ } -> (
-              match domain with
-              | Known size -> size, shape
-              | At_least size ->
-                any_unknown := true;
-                size, shape))
-          t.known_tags
-      in
-      if !any_unknown then Unknown else Known by_tag
-
-  let get_singleton { known_tags; other_tags; alloc_mode } =
-    match other_tags with
-    | Ok _ -> None
-    | Bottom -> (
-      match Tag.Map.get_singleton known_tags with
-      | None -> None
-      | Some (_tag, Unknown) -> None
-      (* CR pchambart: We lose the tag information when we don't know the shape.
-         Example where this could matter: in Provers.prove_physical_equality
-         this could miss some physical inequality *)
-      | Some (tag, Known { maps_to; index; env_extension = _ }) -> (
-        (* If this is a singleton all the information from the env_extension is
-           already part of the environment *)
-        match index.domain with
-        | At_least _ -> None
-        | Known size -> Some (tag, index.shape, size, maps_to, alloc_mode)))
-
-  let project_int_indexed_product fields index : _ Or_unknown.t =
-    if Array.length fields <= index then Unknown else Known fields.(index)
-
-  let get_field t index : _ Or_unknown_or_bottom.t =
-    match get_singleton t with
-    (* CR pchambart vlaviron: This is missing the 'Other' case. It would be easy
-       to be efficient to get the the field when there is only the 'Other' case.
-       Also we could be slightly better when there are multiple tags with
-       exactly the same type: we could do a trivial join *)
-    | None -> Unknown
-    | Some (_tag, _shape, size, maps_to, _alloc_mode) -> (
-      if Targetint_31_63.( <= ) size index
-      then Bottom
-      else
-        match
-          project_int_indexed_product maps_to (Targetint_31_63.to_int index)
-        with
-        | Unknown -> Unknown
-        | Known res -> Ok res)
-end
-
-module Row_like_for_closures = struct
-  type t = row_like_for_closures
-
-  let create_exactly (function_slot : Function_slot.t)
-      (contents : Set_of_closures_contents.t) (closures_entry : closures_entry)
-      =
-    let known_closures =
-      Function_slot.Map.singleton function_slot
-        { index = { domain = Known contents; shape = () };
-          maps_to = closures_entry;
-          env_extension = { equations = Name.Map.empty }
-        }
-    in
-    { known_closures; other_closures = Bottom }
-
-  let create_at_least (function_slot : Function_slot.t)
-      (contents : Set_of_closures_contents.t) (closures_entry : closures_entry)
-      =
-    let known_closures =
-      Function_slot.Map.singleton function_slot
-        { index = { domain = At_least contents; shape = () };
-          maps_to = closures_entry;
-          env_extension = { equations = Name.Map.empty }
-        }
-    in
-    { known_closures; other_closures = Bottom }
-
-  let create_raw ~known_closures ~other_closures =
-    (* CR-someday mshinwell: add invariant check? *)
-    { known_closures; other_closures }
-
-  type get_single_tag_result =
-    | No_singleton
-    | Exact_closure of Function_slot.t * closures_entry
-    | Incomplete_closure of Function_slot.t * closures_entry
-
-  let get_single_tag { known_closures; other_closures } : get_single_tag_result
-      =
-    match other_closures with
-    | Ok _ -> No_singleton
-    | Bottom -> (
-      match Function_slot.Map.get_singleton known_closures with
-      | None -> No_singleton
-      | Some (tag, { maps_to; index; env_extension = _ }) -> (
-        (* If this is a singleton all the information from the env_extension is
-           already part of the environment *)
-        match index.domain with
-        | At_least index ->
-          if Function_slot.Set.mem tag (Set_of_closures_contents.closures index)
-          then Incomplete_closure (tag, maps_to)
-          else No_singleton
-        | Known index ->
-          if Function_slot.Set.mem tag (Set_of_closures_contents.closures index)
-          then Exact_closure (tag, maps_to)
-          else
-            Misc.fatal_errorf
-              "Function slot %a not bound in Known closure type with contents \
-               %a"
-              Function_slot.print tag Set_of_closures_contents.print index))
-
-  let get_closure t function_slot : _ Or_unknown.t =
-    match get_single_tag t with
-    | No_singleton -> Unknown
-    | Exact_closure (_tag, maps_to) | Incomplete_closure (_tag, maps_to) -> (
-      match
-        Function_slot.Map.find_opt function_slot
-          maps_to.closure_types.function_slot_components_by_index
-      with
-      | None -> Unknown
-      | Some closure_ty -> Known closure_ty)
-
-  let get_env_var t env_var : _ Or_unknown.t =
-    match get_single_tag t with
-    | No_singleton -> Unknown
-    | Exact_closure (_tag, maps_to) | Incomplete_closure (_tag, maps_to) -> (
-      match
-        Value_slot.Map.find_opt env_var
-          maps_to.value_slot_types.value_slot_components_by_index
-      with
-      | None -> Unknown
-      | Some env_var_ty -> Known env_var_ty)
-end
-
-module Env_extension = struct
-  type t = env_extension
-
-  let empty = { equations = Name.Map.empty }
-
-  let create ~equations = { equations }
-
-  let ids_for_export = ids_for_export_env_extension
-
-  let apply_renaming = apply_renaming_env_extension
-
-  let free_names = free_names_env_extension ~follow_value_slots:true
-
-  let print = print_env_extension
-
-  let to_map t = t.equations
-end
-
-let is_obviously_bottom t =
-  match t with
-  | Value ty -> TD.is_obviously_bottom ty
-  | Naked_immediate ty -> TD.is_obviously_bottom ty
-  | Naked_float32 ty -> TD.is_obviously_bottom ty
-  | Naked_float ty -> TD.is_obviously_bottom ty
-  | Naked_int32 ty -> TD.is_obviously_bottom ty
-  | Naked_int64 ty -> TD.is_obviously_bottom ty
-  | Naked_nativeint ty -> TD.is_obviously_bottom ty
-  | Naked_vec128 ty -> TD.is_obviously_bottom ty
-  | Naked_vec256 ty -> TD.is_obviously_bottom ty
-  | Naked_vec512 ty -> TD.is_obviously_bottom ty
-  | Rec_info ty -> TD.is_obviously_bottom ty
-  | Region ty -> TD.is_obviously_bottom ty
-
-let is_obviously_unknown t =
-  match t with
-  | Value ty -> TD.is_obviously_unknown ty
-  | Naked_immediate ty -> TD.is_obviously_unknown ty
-  | Naked_float32 ty -> TD.is_obviously_unknown ty
-  | Naked_float ty -> TD.is_obviously_unknown ty
-  | Naked_int32 ty -> TD.is_obviously_unknown ty
-  | Naked_int64 ty -> TD.is_obviously_unknown ty
-  | Naked_nativeint ty -> TD.is_obviously_unknown ty
-  | Naked_vec128 ty -> TD.is_obviously_unknown ty
-  | Naked_vec256 ty -> TD.is_obviously_unknown ty
-  | Naked_vec512 ty -> TD.is_obviously_unknown ty
-  | Rec_info ty -> TD.is_obviously_unknown ty
-  | Region ty -> TD.is_obviously_unknown ty
-
-let alias_type_of (kind : K.t) name : t =
-  match kind with
-  | Value -> Value (TD.create_equals name)
-  | Naked_number Naked_immediate -> Naked_immediate (TD.create_equals name)
-  | Naked_number Naked_float32 -> Naked_float32 (TD.create_equals name)
-  | Naked_number Naked_float -> Naked_float (TD.create_equals name)
-  | Naked_number Naked_int32 -> Naked_int32 (TD.create_equals name)
-  | Naked_number Naked_int64 -> Naked_int64 (TD.create_equals name)
-  | Naked_number Naked_nativeint -> Naked_nativeint (TD.create_equals name)
-  | Naked_number Naked_vec128 -> Naked_vec128 (TD.create_equals name)
-  | Naked_number Naked_vec256 -> Naked_vec256 (TD.create_equals name)
-  | Naked_number Naked_vec512 -> Naked_vec512 (TD.create_equals name)
-  | Rec_info -> Rec_info (TD.create_equals name)
-  | Region -> Region (TD.create_equals name)
-
-let bottom_value = Value TD.bottom
-
-let bottom_naked_immediate = Naked_immediate TD.bottom
-
-let bottom_naked_float32 = Naked_float32 TD.bottom
-
-let bottom_naked_float = Naked_float TD.bottom
-
-let bottom_naked_int32 = Naked_int32 TD.bottom
-
-let bottom_naked_int64 = Naked_int64 TD.bottom
-
-let bottom_naked_nativeint = Naked_nativeint TD.bottom
-
-let bottom_naked_vec128 = Naked_vec128 TD.bottom
-
-let bottom_naked_vec256 = Naked_vec256 TD.bottom
-
-let bottom_naked_vec512 = Naked_vec512 TD.bottom
-
-let bottom_rec_info = Rec_info TD.bottom
-
-let bottom_region = Region TD.bottom
-
-let any_value = Value TD.unknown
-
-let any_naked_immediate = Naked_immediate TD.unknown
-
-let any_naked_float32 = Naked_float32 TD.unknown
-
-let any_naked_float = Naked_float TD.unknown
-
-let any_naked_int32 = Naked_int32 TD.unknown
-
-let any_naked_int64 = Naked_int64 TD.unknown
-
-let any_naked_nativeint = Naked_nativeint TD.unknown
-
-let any_naked_vec128 = Naked_vec128 TD.unknown
-
-let any_naked_vec256 = Naked_vec256 TD.unknown
-
-let any_naked_vec512 = Naked_vec512 TD.unknown
-
-let any_region = Region TD.unknown
-
-let any_rec_info = Rec_info TD.unknown
-
-let this_naked_immediate i : t =
-  Naked_immediate (TD.create_equals (Simple.const (RWC.naked_immediate i)))
-
-let this_naked_float32 f : t =
-  Naked_float32 (TD.create_equals (Simple.const (RWC.naked_float32 f)))
-
-let this_naked_float f : t =
-  Naked_float (TD.create_equals (Simple.const (RWC.naked_float f)))
-
-let this_naked_int32 i : t =
-  Naked_int32 (TD.create_equals (Simple.const (RWC.naked_int32 i)))
-
-let this_naked_int64 i : t =
-  Naked_int64 (TD.create_equals (Simple.const (RWC.naked_int64 i)))
-
-let this_naked_nativeint i : t =
-  Naked_nativeint (TD.create_equals (Simple.const (RWC.naked_nativeint i)))
-
-let this_naked_vec128 i : t =
-  Naked_vec128 (TD.create_equals (Simple.const (RWC.naked_vec128 i)))
-
-let this_naked_vec256 i : t =
-  Naked_vec256 (TD.create_equals (Simple.const (RWC.naked_vec256 i)))
-
-let this_naked_vec512 i : t =
-  Naked_vec512 (TD.create_equals (Simple.const (RWC.naked_vec512 i)))
-
-let these_naked_immediates is =
-  match Targetint_31_63.Set.get_singleton is with
-  | Some i -> this_naked_immediate i
-  | _ ->
-    if Targetint_31_63.Set.is_empty is
-    then bottom_naked_immediate
-    else Naked_immediate (TD.create (Naked_immediates is))
-
-let these_naked_float32s fs =
-  match Float32.Set.get_singleton fs with
-  | Some f -> this_naked_float32 f
-  | _ ->
-    if Float32.Set.is_empty fs
-    then bottom_naked_float32
-    else Naked_float32 (TD.create fs)
-
-let these_naked_floats fs =
-  match Float.Set.get_singleton fs with
-  | Some f -> this_naked_float f
-  | _ ->
-    if Float.Set.is_empty fs
-    then bottom_naked_float
-    else Naked_float (TD.create fs)
-
-let these_naked_int32s is =
-  match Int32.Set.get_singleton is with
-  | Some i -> this_naked_int32 i
-  | _ ->
-    if Int32.Set.is_empty is
-    then bottom_naked_int32
-    else Naked_int32 (TD.create is)
-
-let these_naked_int64s is =
-  match Int64.Set.get_singleton is with
-  | Some i -> this_naked_int64 i
-  | _ ->
-    if Int64.Set.is_empty is
-    then bottom_naked_int64
-    else Naked_int64 (TD.create is)
-
-let these_naked_nativeints is =
-  match Targetint_32_64.Set.get_singleton is with
-  | Some i -> this_naked_nativeint i
-  | _ ->
-    if Targetint_32_64.Set.is_empty is
-    then bottom_naked_nativeint
-    else Naked_nativeint (TD.create is)
-
-let these_naked_vec128s vs =
-  match Vector_types.Vec128.Bit_pattern.Set.get_singleton vs with
-  | Some v -> this_naked_vec128 v
-  | _ ->
-    if Vector_types.Vec128.Bit_pattern.Set.is_empty vs
-    then bottom_naked_vec128
-    else Naked_vec128 (TD.create vs)
-
-let these_naked_vec256s vs =
-  match Vector_types.Vec256.Bit_pattern.Set.get_singleton vs with
-  | Some v -> this_naked_vec256 v
-  | _ ->
-    if Vector_types.Vec256.Bit_pattern.Set.is_empty vs
-    then bottom_naked_vec256
-    else Naked_vec256 (TD.create vs)
-
-let these_naked_vec512s vs =
-  match Vector_types.Vec512.Bit_pattern.Set.get_singleton vs with
-  | Some v -> this_naked_vec512 v
-  | _ ->
-    if Vector_types.Vec512.Bit_pattern.Set.is_empty vs
-    then bottom_naked_vec512
-    else Naked_vec512 (TD.create vs)
-
-let box_float32 (t : t) alloc_mode : t =
-  match t with
-  | Naked_float32 _ -> non_null_value (Boxed_float32 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_int32 _ | Naked_float _ | Naked_int64 _
-  | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _ | Naked_nativeint _
-  | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_float32]: %a" print t
-
-let box_float (t : t) alloc_mode : t =
-  match t with
-  | Naked_float _ -> non_null_value (Boxed_float (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_int32 _ | Naked_float32 _
-  | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
-  | Naked_nativeint _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_float]: %a" print t
-
-let box_int32 (t : t) alloc_mode : t =
-  match t with
-  | Naked_int32 _ -> non_null_value (Boxed_int32 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
-  | Naked_nativeint _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_int32]: %a" print t
-
-let box_int64 (t : t) alloc_mode : t =
-  match t with
-  | Naked_int64 _ -> non_null_value (Boxed_int64 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int32 _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
-  | Naked_nativeint _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_int64]: %a" print t
-
-let box_nativeint (t : t) alloc_mode : t =
-  match t with
-  | Naked_nativeint _ -> non_null_value (Boxed_nativeint (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int32 _ | Naked_int64 _ | Naked_vec128 _ | Naked_vec256 _
-  | Naked_vec512 _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_nativeint]: %a" print t
-
-let box_vec128 (t : t) alloc_mode : t =
-  match t with
-  | Naked_vec128 _ -> non_null_value (Boxed_vec128 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec256 _
-  | Naked_vec512 _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_vec128]: %a" print t
-
-let box_vec256 (t : t) alloc_mode : t =
-  match t with
-  | Naked_vec256 _ -> non_null_value (Boxed_vec256 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
-  | Naked_vec512 _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_vec256]: %a" print t
-
-let box_vec512 (t : t) alloc_mode : t =
-  match t with
-  | Naked_vec512 _ -> non_null_value (Boxed_vec512 (t, alloc_mode))
-  | Value _ | Naked_immediate _ | Naked_float _ | Naked_float32 _
-  | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _
-  | Naked_vec256 _ | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [box_vec512]: %a" print t
-
-let null : t = Value (TD.create { non_null = Bottom; is_null = Maybe_null })
-
-let any_non_null_value : t =
-  Value (TD.create { non_null = Unknown; is_null = Not_null })
-
-let this_tagged_immediate imm : t =
-  Value (TD.create_equals (Simple.const (RWC.tagged_immediate imm)))
-
-let tag_immediate t : t =
-  match t with
-  | Naked_immediate _ ->
-    non_null_value
-      (Variant
-         { is_unique = false;
-           immediates = Known t;
-           extensions = No_extensions;
-           blocks = Known Row_like_for_blocks.bottom
-         })
-  | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
-  | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _
-  | Rec_info _ | Region _ ->
-    Misc.fatal_errorf "Type of wrong kind for [tag_immediate]: %a" print t
-
-let tagged_immediate_alias_to ~naked_immediate : t =
-  tag_immediate
-    (Naked_immediate (TD.create_equals (Simple.var naked_immediate)))
-
-let is_int_for_scrutinee ~scrutinee : t =
-  Naked_immediate (TD.create (Is_int (alias_type_of K.value scrutinee)))
-
-let get_tag_for_block ~block : t =
-  Naked_immediate (TD.create (Get_tag (alias_type_of K.value block)))
-
-let is_null ~scrutinee : t =
-  Naked_immediate (TD.create (Is_null (alias_type_of K.value scrutinee)))
-
-let boxed_float32_alias_to ~naked_float32 =
-  box_float32 (Naked_float32 (TD.create_equals (Simple.var naked_float32)))
-
-let boxed_float_alias_to ~naked_float =
-  box_float (Naked_float (TD.create_equals (Simple.var naked_float)))
-
-let boxed_int32_alias_to ~naked_int32 =
-  box_int32 (Naked_int32 (TD.create_equals (Simple.var naked_int32)))
-
-let boxed_int64_alias_to ~naked_int64 =
-  box_int64 (Naked_int64 (TD.create_equals (Simple.var naked_int64)))
-
-let boxed_nativeint_alias_to ~naked_nativeint =
-  box_nativeint
-    (Naked_nativeint (TD.create_equals (Simple.var naked_nativeint)))
-
-let boxed_vec128_alias_to ~naked_vec128 =
-  box_vec128 (Naked_vec128 (TD.create_equals (Simple.var naked_vec128)))
-
-let boxed_vec256_alias_to ~naked_vec256 =
-  box_vec256 (Naked_vec256 (TD.create_equals (Simple.var naked_vec256)))
-
-let boxed_vec512_alias_to ~naked_vec512 =
-  box_vec512 (Naked_vec512 (TD.create_equals (Simple.var naked_vec512)))
-
-let this_immutable_string str =
-  let size = Targetint_31_63.of_int (String.length str) in
-  let string_info =
-    String_info.Set.singleton
-      (String_info.create ~contents:(Contents str) ~size)
-  in
-  non_null_value (String string_info)
-
-let mutable_string ~size =
-  let size = Targetint_31_63.of_int size in
-  let string_info =
-    String_info.Set.singleton
-      (String_info.create ~contents:Unknown_or_mutable ~size)
-  in
-  non_null_value (String string_info)
-
-let array_of_length ~element_kind ~length alloc_mode =
-  non_null_value
-    (Array { element_kind; length; contents = Unknown; alloc_mode })
-
-let mutable_array ~element_kind ~length alloc_mode =
-  non_null_value
-    (Array { element_kind; length; contents = Known Mutable; alloc_mode })
-
-let immutable_array ~element_kind ~fields alloc_mode =
-  non_null_value
-    (Array
-       { element_kind;
-         length =
-           this_tagged_immediate (Targetint_31_63.of_int (List.length fields));
-         contents = Known (Immutable { fields = Array.of_list fields });
-         alloc_mode
-       })
-
-let this_rec_info (rec_info_expr : Rec_info_expr.t) =
-  match rec_info_expr with
-  | Var dv -> Rec_info (TD.create_equals (Simple.var dv))
-  | Const _ | Succ _ | Unroll_to _ -> Rec_info (TD.create rec_info_expr)
-
-module Descr = struct
-  type t =
-    | Value of head_of_kind_value TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_immediate of
-        head_of_kind_naked_immediate TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_float32 of
-        head_of_kind_naked_float32 TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_float of head_of_kind_naked_float TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_int32 of head_of_kind_naked_int32 TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_int64 of head_of_kind_naked_int64 TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_nativeint of
-        head_of_kind_naked_nativeint TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_vec128 of
-        head_of_kind_naked_vec128 TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_vec256 of
-        head_of_kind_naked_vec256 TD.Descr.t Or_unknown_or_bottom.t
-    | Naked_vec512 of
-        head_of_kind_naked_vec512 TD.Descr.t Or_unknown_or_bottom.t
-    | Rec_info of head_of_kind_rec_info TD.Descr.t Or_unknown_or_bottom.t
-    | Region of head_of_kind_region TD.Descr.t Or_unknown_or_bottom.t
-end
-
-let descr t : Descr.t =
-  match t with
-  | Value ty -> Value (TD.descr ty)
-  | Naked_immediate ty -> Naked_immediate (TD.descr ty)
-  | Naked_float32 ty -> Naked_float32 (TD.descr ty)
-  | Naked_float ty -> Naked_float (TD.descr ty)
-  | Naked_int32 ty -> Naked_int32 (TD.descr ty)
-  | Naked_int64 ty -> Naked_int64 (TD.descr ty)
-  | Naked_nativeint ty -> Naked_nativeint (TD.descr ty)
-  | Naked_vec128 ty -> Naked_vec128 (TD.descr ty)
-  | Naked_vec256 ty -> Naked_vec256 (TD.descr ty)
-  | Naked_vec512 ty -> Naked_vec512 (TD.descr ty)
-  | Rec_info ty -> Rec_info (TD.descr ty)
-  | Region ty -> Region (TD.descr ty)
-
-let create_from_head_value head = Value (TD.create head)
-
-let create_from_head_naked_immediate head = Naked_immediate (TD.create head)
-
-let create_from_head_naked_float32 head = Naked_float32 (TD.create head)
-
-let create_from_head_naked_float head = Naked_float (TD.create head)
-
-let create_from_head_naked_int32 head = Naked_int32 (TD.create head)
-
-let create_from_head_naked_int64 head = Naked_int64 (TD.create head)
-
-let create_from_head_naked_nativeint head = Naked_nativeint (TD.create head)
-
-let create_from_head_naked_vec128 head = Naked_vec128 (TD.create head)
-
-let create_from_head_naked_vec256 head = Naked_vec256 (TD.create head)
-
-let create_from_head_naked_vec512 head = Naked_vec512 (TD.create head)
-
-let create_from_head_rec_info head = Rec_info (TD.create head)
-
-let create_from_head_region head = Region (TD.create head)
-
-module Head_of_kind_value = struct
-  type t = head_of_kind_value
-
-  let null = { non_null = Bottom; is_null = Maybe_null }
-
-  let mk_non_null non_null = { non_null = Ok non_null; is_null = Not_null }
-
-  let create_variant ~is_unique ~blocks ~immediates ~extensions =
-    mk_non_null (Variant { is_unique; blocks; immediates; extensions })
-
-  let create_mutable_block alloc_mode =
-    mk_non_null (Mutable_block { alloc_mode })
-
-  let create_boxed_float32 ty alloc_mode =
-    mk_non_null (Boxed_float32 (ty, alloc_mode))
-
-  let create_boxed_float ty alloc_mode =
-    mk_non_null (Boxed_float (ty, alloc_mode))
-
-  let create_boxed_int32 ty alloc_mode =
-    mk_non_null (Boxed_int32 (ty, alloc_mode))
-
-  let create_boxed_int64 ty alloc_mode =
-    mk_non_null (Boxed_int64 (ty, alloc_mode))
-
-  let create_boxed_nativeint ty alloc_mode =
-    mk_non_null (Boxed_nativeint (ty, alloc_mode))
-
-  let create_boxed_vec128 ty alloc_mode =
-    mk_non_null (Boxed_vec128 (ty, alloc_mode))
-
-  let create_boxed_vec256 ty alloc_mode =
-    mk_non_null (Boxed_vec256 (ty, alloc_mode))
-
-  let create_boxed_vec512 ty alloc_mode =
-    mk_non_null (Boxed_vec512 (ty, alloc_mode))
-
-  let create_tagged_immediate imm : t =
-    mk_non_null
-      (Variant
-         { is_unique = false;
-           immediates = Known (this_naked_immediate imm);
-           blocks = Known Row_like_for_blocks.bottom;
-           extensions = No_extensions
-         })
-
-  let create_closures by_function_slot alloc_mode =
-    mk_non_null (Closures { by_function_slot; alloc_mode })
-
-  let create_string info = mk_non_null (String info)
-
-  let create_array_with_contents ~element_kind ~length contents alloc_mode =
-    mk_non_null (Array { element_kind; length; contents; alloc_mode })
-end
-
-module Head_of_kind_value_non_null = struct
-  type t = head_of_kind_value_non_null
-
-  let create_variant ~is_unique ~blocks ~immediates ~extensions =
-    Variant { is_unique; blocks; immediates; extensions }
-
-  let create_mutable_block alloc_mode = Mutable_block { alloc_mode }
-
-  let create_boxed_float32 ty alloc_mode = Boxed_float32 (ty, alloc_mode)
-
-  let create_boxed_float ty alloc_mode = Boxed_float (ty, alloc_mode)
-
-  let create_boxed_int32 ty alloc_mode = Boxed_int32 (ty, alloc_mode)
-
-  let create_boxed_int64 ty alloc_mode = Boxed_int64 (ty, alloc_mode)
-
-  let create_boxed_nativeint ty alloc_mode = Boxed_nativeint (ty, alloc_mode)
-
-  let create_boxed_vec128 ty alloc_mode = Boxed_vec128 (ty, alloc_mode)
-
-  let create_boxed_vec256 ty alloc_mode = Boxed_vec256 (ty, alloc_mode)
-
-  let create_boxed_vec512 ty alloc_mode = Boxed_vec512 (ty, alloc_mode)
-
-  let create_tagged_immediate imm : t =
-    Variant
-      { is_unique = false;
-        immediates = Known (this_naked_immediate imm);
-        blocks = Known Row_like_for_blocks.bottom;
-        extensions = No_extensions
-      }
-
-  let create_closures by_function_slot alloc_mode =
-    Closures { by_function_slot; alloc_mode }
-
-  let create_string info = String info
-
-  let create_array_with_contents ~element_kind ~length contents alloc_mode =
-    Array { element_kind; length; contents; alloc_mode }
-end
-
-module type Head_of_kind_naked_number_intf = sig
-  type t
-
-  type n
-
-  type n_set
-
-  val create : n -> t
-
-  val create_set : n_set -> t Or_bottom.t
-
-  val create_non_empty_set : n_set -> t
-
-  val union : t -> t -> t
-
-  val inter : t -> t -> t Or_bottom.t
-end
-
-module Head_of_kind_naked_immediate = struct
-  type t = head_of_kind_naked_immediate
-
-  let create_naked_immediate imm =
-    Naked_immediates (Targetint_31_63.Set.singleton imm)
-
-  let create_naked_immediates imms : _ Or_bottom.t =
-    if Targetint_31_63.Set.is_empty imms
-    then Bottom
-    else Ok (Naked_immediates imms)
-
-  let create_naked_immediates_non_empty imms =
-    if Targetint_31_63.Set.is_empty imms
-    then
-      Misc.fatal_error
-        "Head_of_kind_naked_immediates.create_naked_immediates_non_empty";
-    Naked_immediates imms
-
-  let create_is_int ty = Is_int ty
-
-  let create_get_tag ty = Get_tag ty
-
-  let create_is_null ty = Is_null ty
-end
-
-module Make_head_of_kind_naked_number (N : Container_types.S) = struct
-  type t = N.Set.t
-
-  type n = N.t
-
-  type n_set = N.Set.t
-
-  let create i = N.Set.singleton i
-
-  let create_set is : _ Or_bottom.t =
-    if N.Set.is_empty is then Bottom else Ok is
-
-  let create_non_empty_set is =
-    if N.Set.is_empty is
-    then Misc.fatal_error "Make_head_of_kind_naked_number.create_non_empty_set";
-    is
-
-  let union = N.Set.union
-
-  let inter t1 t2 : _ Or_bottom.t =
-    let t = N.Set.inter t1 t2 in
-    if N.Set.is_empty t then Bottom else Ok t
-end
-
-module Head_of_kind_naked_float32 = Make_head_of_kind_naked_number (Float32)
-module Head_of_kind_naked_float = Make_head_of_kind_naked_number (Float)
-module Head_of_kind_naked_int32 = Make_head_of_kind_naked_number (Int32)
-module Head_of_kind_naked_int64 = Make_head_of_kind_naked_number (Int64)
-module Head_of_kind_naked_nativeint =
-  Make_head_of_kind_naked_number (Targetint_32_64)
-module Head_of_kind_naked_vec128 =
-  Make_head_of_kind_naked_number (Vector_types.Vec128.Bit_pattern)
-module Head_of_kind_naked_vec256 =
-  Make_head_of_kind_naked_number (Vector_types.Vec256.Bit_pattern)
-module Head_of_kind_naked_vec512 =
-  Make_head_of_kind_naked_number (Vector_types.Vec512.Bit_pattern)
-
-let rec must_be_singleton t : RWC.t option =
-  match t with
-  | Value ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom
-    (* CR vlaviron: Recover null aliases *)
-    | Ok (No_alias { is_null = Maybe_null; _ })
-    | Ok
-        (No_alias
-          { is_null = Not_null;
-            non_null =
-              ( Unknown | Bottom
-              | Ok
-                  ( Mutable_block _ | Boxed_float _ | Boxed_float32 _
-                  | Boxed_int32 _ | Boxed_int64 _ | Boxed_vec128 _
-                  | Boxed_vec256 _ | Boxed_vec512 _ | Boxed_nativeint _
-                  | String _ | Closures _ | Array _ ) )
-          }) ->
-      None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok
-        (No_alias
-          { is_null = Not_null;
-            non_null =
-              Ok (Variant { immediates; blocks; extensions = _; is_unique = _ })
-          }) -> (
-      match blocks with
-      | Unknown -> None
-      | Known blocks -> (
-        if not (Row_like_for_blocks.is_bottom blocks)
-        then None
-        else
-          match immediates with
-          | Unknown -> None
-          | Known immediates -> (
-            match must_be_singleton immediates with
-            | None -> None
-            | Some const -> (
-              match RWC.descr const with
-              | Naked_immediate i -> Some (RWC.tagged_immediate i)
-              | Tagged_immediate _ | Naked_float _ | Naked_float32 _
-              | Naked_int32 _ | Naked_int64 _ | Naked_nativeint _
-              | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _ | Null ->
-                Misc.fatal_errorf
-                  "Immediates case returned wrong kind of constant:@ %a"
-                  Reg_width_const.print const)))))
-  | Naked_immediate ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom | Ok (No_alias (Is_int _ | Get_tag _ | Is_null _)) ->
-      None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias (Naked_immediates is)) -> (
-      match Targetint_31_63.Set.get_singleton is with
-      | Some i -> Some (RWC.naked_immediate i)
-      | None -> None))
-  | Naked_float32 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias fs) -> (
-      match Float32.Set.get_singleton fs with
-      | Some f -> Some (RWC.naked_float32 f)
-      | None -> None))
-  | Naked_float ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias fs) -> (
-      match Float.Set.get_singleton fs with
-      | Some f -> Some (RWC.naked_float f)
-      | None -> None))
-  | Naked_int32 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Int32.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_int32 f)
-      | None -> None))
-  | Naked_int64 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Int64.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_int64 f)
-      | None -> None))
-  | Naked_nativeint ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Targetint_32_64.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_nativeint f)
-      | None -> None))
-  | Naked_vec128 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Vec128.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_vec128 f)
-      | None -> None))
-  | Naked_vec256 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Vec256.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_vec256 f)
-      | None -> None))
-  | Naked_vec512 ty -> (
-    match TD.descr ty with
-    | Unknown | Bottom -> None
-    | Ok (Equals simple) -> Simple.must_be_const simple
-    | Ok (No_alias is) -> (
-      match Vec512.Set.get_singleton is with
-      | Some f -> Some (RWC.naked_vec512 f)
-      | None -> None))
-  | Rec_info _ | Region _ -> None
