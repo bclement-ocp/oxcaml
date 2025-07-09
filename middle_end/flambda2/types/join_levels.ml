@@ -43,8 +43,8 @@ let check_join_inputs ~env_at_fork _envs_with_levels ~params
           Symbol.print symbol)
     extra_lifted_consts_in_use_envs
 
-let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-    ~extra_lifted_consts_in_use_envs =
+let cut_and_n_way_join ?join_id:_ definition_typing_env ts_and_use_ids ~params
+    ~cut_after ~extra_lifted_consts_in_use_envs =
   let params = Bound_parameters.to_list params in
   check_join_inputs ~env_at_fork:definition_typing_env ts_and_use_ids ~params
     ~extra_lifted_consts_in_use_envs;
@@ -62,15 +62,15 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
         Format.eprintf "====================================@.");
       t)
 
-let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-    ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
+let cut_and_n_way_join ?join_id definition_typing_env ts_and_use_ids ~params
+    ~cut_after ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
   match Flambda_features.join_algorithm () with
   | Binary ->
     Join_levels_old.cut_and_n_way_join definition_typing_env ts_and_use_ids
       ~params ~cut_after ~extra_lifted_consts_in_use_envs ~extra_allowed_names
   | N_way ->
-    cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
-      ~extra_lifted_consts_in_use_envs
+    cut_and_n_way_join ?join_id definition_typing_env ts_and_use_ids ~params
+      ~cut_after ~extra_lifted_consts_in_use_envs
   | Checked ->
     let ignore_names =
       String.split_on_char ','
