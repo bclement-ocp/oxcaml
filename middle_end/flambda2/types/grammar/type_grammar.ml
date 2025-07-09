@@ -41,8 +41,6 @@ module Block_size = struct
   let inter t1 t2 = Targetint_31_63.min t1 t2
 end
 
-module Function = Database.Function
-
 type is_null =
   | Not_null
   | Maybe_null
@@ -76,7 +74,8 @@ and head_of_kind_value_non_null =
       { immediates : t Or_unknown.t;
         blocks : row_like_for_blocks Or_unknown.t;
         extensions : variant_extensions;
-        relations : Name.t Function.Map.t;
+        is_int_var : Name.t option;
+        get_tag_var : Name.t option;
         is_unique : bool
       }
   | Mutable_block of { alloc_mode : Alloc_mode.For_types.t }
@@ -234,6 +233,12 @@ and variant_extensions =
 
 type flambda_type = t
 
+let map_sharing_option f = function
+  | None -> None
+  | Some x as opt ->
+    let x' = f x in
+    if x' == x then opt else Some x'
+
 let bottom_value = Value TD.bottom
 
 let bottom_naked_immediate = Naked_immediate TD.bottom
@@ -355,22 +360,23 @@ and free_names_head_of_kind_value0 ~follow_value_slots { non_null; is_null = _ }
   | Ok non_null ->
     free_names_head_of_kind_value_non_null ~follow_value_slots non_null
 
-and free_names_relations relations =
-  Function.Map.fold
-    (fun _ name free_names ->
-      Name_occurrences.add_name free_names name Name_mode.in_types)
-    relations Name_occurrences.empty
+and free_names_relation_var relation_var =
+  Option.fold relation_var ~none:Name_occurrences.empty ~some:(fun name ->
+      Name_occurrences.singleton_name name Name_mode.in_types)
 
 and free_names_head_of_kind_value_non_null ~follow_value_slots head =
   match head with
-  | Variant { blocks; immediates; extensions; relations; is_unique = _ } ->
+  | Variant
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique = _ }
+    ->
     Name_occurrences.union_list
       [ Or_unknown.free_names
           (free_names_row_like_for_blocks ~follow_value_slots)
           blocks;
         Or_unknown.free_names (free_names0 ~follow_value_slots) immediates;
         free_names_variant_extensions ~follow_value_slots extensions;
-        free_names_relations relations ]
+        free_names_relation_var is_int_var;
+        free_names_relation_var get_tag_var ]
   | Mutable_block { alloc_mode = _ } -> Name_occurrences.empty
   | Boxed_float32 (ty, _alloc_mode) -> free_names0 ~follow_value_slots ty
   | Boxed_float (ty, _alloc_mode) -> free_names0 ~follow_value_slots ty
@@ -681,7 +687,8 @@ and apply_renaming_head_of_kind_value head renaming =
 
 and apply_renaming_head_of_kind_value_non_null head renaming =
   match head with
-  | Variant { blocks; immediates; extensions; relations; is_unique } ->
+  | Variant
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique } ->
     let immediates' =
       let>+$ immediates = immediates in
       apply_renaming immediates renaming
@@ -691,11 +698,15 @@ and apply_renaming_head_of_kind_value_non_null head renaming =
       apply_renaming_row_like_for_blocks blocks renaming
     in
     let extensions' = apply_renaming_variant_extensions extensions renaming in
-    let relations' =
-      Function.Map.map_sharing (Renaming.apply_name renaming) relations
+    let is_int_var' =
+      map_sharing_option (Renaming.apply_name renaming) is_int_var
+    in
+    let get_tag_var' =
+      map_sharing_option (Renaming.apply_name renaming) get_tag_var
     in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions' && relations == relations'
+       && extensions == extensions' && is_int_var == is_int_var'
+       && get_tag_var == get_tag_var'
     then head
     else
       Variant
@@ -703,7 +714,8 @@ and apply_renaming_head_of_kind_value_non_null head renaming =
           blocks = blocks';
           immediates = immediates';
           extensions = extensions';
-          relations = relations'
+          is_int_var = is_int_var';
+          get_tag_var = get_tag_var'
         }
   | Mutable_block { alloc_mode = _ } -> head
   | Boxed_float32 (ty, alloc_mode) ->
@@ -1012,7 +1024,14 @@ and print_head_of_kind_value ppf { non_null; is_null } =
 
 and print_head_of_kind_value_non_null ppf head =
   match head with
-  | Variant { blocks; immediates; extensions; relations = _; is_unique } ->
+  | Variant
+      { blocks;
+        immediates;
+        extensions;
+        is_int_var = _;
+        get_tag_var = _;
+        is_unique
+      } ->
     (* CR bclement: print relations *)
     (* CR-someday mshinwell: Improve so that we elide blocks and/or immediates
        when they're empty. *)
@@ -1294,19 +1313,21 @@ and ids_for_export_head_of_kind_value { non_null; is_null = _ } =
   | Unknown | Bottom -> Ids_for_export.empty
   | Ok non_null -> ids_for_export_head_of_kind_value_non_null non_null
 
-and ids_for_export_relations relations =
-  Function.Map.fold
-    (fun _ name ids_for_export -> Ids_for_export.add_name ids_for_export name)
-    relations Ids_for_export.empty
+and ids_for_export_relation_var relation_var =
+  Option.fold relation_var ~none:Ids_for_export.empty ~some:(fun name ->
+      Ids_for_export.add_name Ids_for_export.empty name)
 
 and ids_for_export_head_of_kind_value_non_null head =
   match head with
-  | Variant { blocks; immediates; extensions; relations; is_unique = _ } ->
+  | Variant
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique = _ }
+    ->
     Ids_for_export.union_list
       [ Or_unknown.ids_for_export ids_for_export_row_like_for_blocks blocks;
         Or_unknown.ids_for_export ids_for_export immediates;
         ids_for_export_variant_extensions extensions;
-        ids_for_export_relations relations ]
+        ids_for_export_relation_var is_int_var;
+        ids_for_export_relation_var get_tag_var ]
   | Mutable_block { alloc_mode = _ } -> Ids_for_export.empty
   | Boxed_float (t, _alloc_mode) -> ids_for_export t
   | Boxed_float32 (t, _alloc_mode) -> ids_for_export t
@@ -1876,7 +1897,8 @@ let create_variant ~is_unique ~(immediates : _ Or_unknown.t) ~blocks ~extensions
        { immediates;
          blocks;
          extensions;
-         relations = Function.Map.empty;
+         is_int_var = None;
+         get_tag_var = None;
          is_unique
        })
 
@@ -2564,7 +2586,8 @@ let tag_immediate t : t =
          { is_unique = false;
            immediates = Known t;
            extensions = No_extensions;
-           relations = Function.Map.empty;
+           is_int_var = None;
+           get_tag_var = None;
            blocks = Known Row_like_for_blocks.bottom
          })
   | Value _ | Naked_float _ | Naked_float32 _ | Naked_int32 _ | Naked_int64 _
@@ -2724,7 +2747,8 @@ module Head_of_kind_value = struct
            blocks;
            immediates;
            extensions;
-           relations = Function.Map.empty
+           is_int_var = None;
+           get_tag_var = None
          })
 
   let create_mutable_block alloc_mode =
@@ -2761,7 +2785,8 @@ module Head_of_kind_value = struct
            immediates = Known (this_naked_immediate imm);
            blocks = Known Row_like_for_blocks.bottom;
            extensions = No_extensions;
-           relations = Function.Map.empty
+           is_int_var = None;
+           get_tag_var = None
          })
 
   let create_closures by_function_slot alloc_mode =
@@ -2782,7 +2807,8 @@ module Head_of_kind_value_non_null = struct
         blocks;
         immediates;
         extensions;
-        relations = Function.Map.empty
+        is_int_var = None;
+        get_tag_var = None
       }
 
   let create_mutable_block alloc_mode = Mutable_block { alloc_mode }
@@ -2809,7 +2835,8 @@ module Head_of_kind_value_non_null = struct
         immediates = Known (this_naked_immediate imm);
         blocks = Known Row_like_for_blocks.bottom;
         extensions = No_extensions;
-        relations = Function.Map.empty
+        is_int_var = None;
+        get_tag_var = None
       }
 
   let create_closures by_function_slot alloc_mode =
@@ -2930,7 +2957,8 @@ let rec must_be_singleton t : RWC.t option =
                   { immediates;
                     blocks;
                     extensions = _;
-                    relations = _;
+                    is_int_var = _;
+                    get_tag_var = _;
                     is_unique = _
                   })
           }) -> (
@@ -3029,42 +3057,42 @@ let rec must_be_singleton t : RWC.t option =
       | None -> None))
   | Rec_info _ | Region _ -> None
 
-let reduce_const_relations const_relations (immediates, blocks) =
-  Function.Map.fold
-    (fun fn const_value (immediates, blocks) : (_ Or_unknown.t * _ Or_unknown.t) ->
-      match Function.descr fn, RWC.descr const_value with
-      | Is_int, Naked_immediate is_int ->
-        if I.equal is_int I.zero
-        then Known bottom_naked_immediate, blocks
-        else if I.equal is_int I.one
-        then immediates, Known Row_like_for_blocks.bottom
-        else
-          (* Invalid value for is_int. *)
-          Known bottom_naked_immediate, Known Row_like_for_blocks.bottom
-      | Get_tag, Naked_immediate get_tag -> (
-        match
-          ( (blocks : row_like_for_blocks Or_unknown.t),
-            Tag.create_from_targetint get_tag )
-        with
-        | Unknown, Some tag ->
-          ( immediates,
-            Known
-              (Row_like_for_blocks.create_blocks_with_these_tags
-                 (Tag.Map.singleton tag Or_unknown.Unknown)
-                 (Alloc_mode.For_types.unknown ())) )
-        | Known blocks, Some tag ->
-          immediates, Known (Row_like_for_blocks.this_tag blocks tag)
-        | _, None ->
-          (* Invalid tag -- block case is impossible *)
-          immediates, Known Row_like_for_blocks.bottom)
-      | ( (Is_int | Get_tag),
-          ( Tagged_immediate _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
-          | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _
-          | Naked_vec512 _ | Null ) ) ->
-        assert false
-      | Is_null, _ -> assert false
-      | (Untag_imm | Tag_imm), _ -> immediates, blocks)
-    const_relations (immediates, blocks)
+let reduce_is_int is_int_const (immediates, blocks) =
+  match is_int_const with
+  | None -> immediates, blocks
+  | Some is_int -> (
+    match RWC.descr is_int with
+    | Naked_immediate is_int when I.equal is_int I.bool_true ->
+      immediates, Or_unknown.Known Row_like_for_blocks.bottom
+    | Naked_immediate is_int when I.equal is_int I.bool_false ->
+      Or_unknown.Known bottom_naked_immediate, blocks
+    | Naked_immediate _ ->
+      (* Suspicious! *)
+      immediates, blocks
+    | Tagged_immediate _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
+    | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _
+    | Naked_vec512 _ | Null ->
+      Misc.fatal_error "Wrong kind")
+
+let reduce_get_tag get_tag_const (blocks : _ Or_unknown.t) : _ Or_unknown.t =
+  match Option.map RWC.descr get_tag_const with
+  | None -> blocks
+  | Some (Naked_immediate get_tag) -> (
+    match Tag.create_from_targetint get_tag with
+    | None -> (* Suspicious! *) blocks
+    | Some tag -> (
+      match blocks with
+      | Known blocks -> Known (Row_like_for_blocks.this_tag blocks tag)
+      | Unknown ->
+        Known
+          (Row_like_for_blocks.create_blocks_with_these_tags
+             (Tag.Map.singleton tag Or_unknown.Unknown)
+             (Alloc_mode.For_types.unknown ()))))
+  | Some
+      ( Tagged_immediate _ | Naked_float32 _ | Naked_float _ | Naked_int32 _
+      | Naked_int64 _ | Naked_nativeint _ | Naked_vec128 _ | Naked_vec256 _
+      | Naked_vec512 _ | Null ) ->
+    Misc.fatal_error "Wrong kind"
 
 let rec remove_unused_value_slots_and_shortcut_aliases t ~used_value_slots
     ~canonicalise =
@@ -3180,39 +3208,39 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value head
     then head
     else { non_null = Ok non_null'; is_null = head.is_null }
 
-and remove_unused_value_slots_and_shortcut_aliases_relations relations
+and remove_unused_value_slots_and_shortcut_aliases_relation_var relation_var
     ~used_value_slots:_ ~canonicalise =
-  let const_relations = ref Function.Map.empty in
-  let relations' =
-    Function.Map.filter_map_sharing
-      (fun fn name ->
-        let simple = Simple.name name in
-        let canonical_simple = canonicalise simple in
-        if canonical_simple == simple
-        then Some name
-        else
-          Simple.pattern_match canonical_simple
-            ~name:(fun name ~coercion ->
-              assert (Coercion.is_id coercion);
-              Some name)
-            ~const:(fun const ->
-              const_relations := Function.Map.add fn const !const_relations;
-              None))
-      relations
-  in
-  relations', !const_relations
+  match relation_var with
+  | None -> None, None
+  | Some name ->
+    let simple = Simple.name name in
+    let canonical_simple = canonicalise simple in
+    if canonical_simple == simple
+    then Some name, None
+    else
+      Simple.pattern_match canonical_simple
+        ~name:(fun name ~coercion ->
+          assert (Coercion.is_id coercion);
+          Some name, None)
+        ~const:(fun const -> None, Some const)
 
 and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value_non_null
     head ~used_value_slots ~canonicalise =
   match head with
-  | Variant { blocks; immediates; extensions; relations; is_unique } ->
-    let relations', const_relations =
-      remove_unused_value_slots_and_shortcut_aliases_relations relations
+  | Variant
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique } ->
+    let is_int_var', is_int_const =
+      remove_unused_value_slots_and_shortcut_aliases_relation_var is_int_var
+        ~used_value_slots ~canonicalise
+    in
+    let get_tag_var', get_tag_const =
+      remove_unused_value_slots_and_shortcut_aliases_relation_var get_tag_var
         ~used_value_slots ~canonicalise
     in
     let immediates', blocks' =
-      reduce_const_relations const_relations (immediates, blocks)
+      reduce_is_int is_int_const (immediates, blocks)
     in
+    let blocks' = reduce_get_tag get_tag_const blocks' in
     let immediates' =
       let>+$ immediates = immediates' in
       remove_unused_value_slots_and_shortcut_aliases immediates
@@ -3228,7 +3256,8 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value_non_null
         extensions ~used_value_slots ~canonicalise
     in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions' && relations == relations'
+       && extensions == extensions' && is_int_var == is_int_var'
+       && get_tag_var == get_tag_var'
     then head
     else
       Variant
@@ -3236,7 +3265,8 @@ and remove_unused_value_slots_and_shortcut_aliases_head_of_kind_value_non_null
           blocks = blocks';
           immediates = immediates';
           extensions = extensions';
-          relations = relations'
+          is_int_var = is_int_var';
+          get_tag_var = get_tag_var'
         }
   | Mutable_block { alloc_mode = _ } -> head
   | Boxed_float32 (ty, alloc_mode) ->
@@ -3867,41 +3897,39 @@ and project_head_of_kind_value ~to_project ~expand head =
     then head
     else { non_null = Ok non_null'; is_null = head.is_null }
 
-and project_relations ~to_project ~expand relations =
-  let const_relations = ref Function.Map.empty in
-  let relations' =
-    Function.Map.filter_map_sharing
-      (fun fn name ->
-        Name.pattern_match name
-          ~symbol:(fun _ -> Some name)
-          ~var:(fun var ->
-            if Variable.Set.mem var to_project
-            then
-              match get_alias_opt (expand var) with
-              | None -> None
-              | Some simple ->
-                Simple.pattern_match simple
-                  ~name:(fun name ~coercion ->
-                    assert (Coercion.is_id coercion);
-                    Some name)
-                  ~const:(fun const ->
-                    const_relations
-                      := Function.Map.add fn const !const_relations;
-                    None)
-            else Some name))
-      relations
-  in
-  relations', !const_relations
+and project_relation_var ~to_project ~expand relation_var =
+  match relation_var with
+  | None -> None, None
+  | Some name ->
+    Name.pattern_match name
+      ~symbol:(fun _ -> relation_var, None)
+      ~var:(fun var ->
+        if Variable.Set.mem var to_project
+        then
+          match get_alias_opt (expand var) with
+          | None -> None, None
+          | Some simple ->
+            Simple.pattern_match simple
+              ~name:(fun name ~coercion ->
+                assert (Coercion.is_id coercion);
+                Some name, None)
+              ~const:(fun const -> None, Some const)
+        else relation_var, None)
 
 and project_head_of_kind_value_non_null ~to_project ~expand head =
   match head with
-  | Variant { blocks; immediates; extensions; relations; is_unique } ->
-    let relations', const_relations =
-      project_relations ~to_project ~expand relations
+  | Variant
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique } ->
+    let is_int_var', is_int_const =
+      project_relation_var ~to_project ~expand is_int_var
+    in
+    let get_tag_var', get_tag_const =
+      project_relation_var ~to_project ~expand get_tag_var
     in
     let immediates', blocks' =
-      reduce_const_relations const_relations (immediates, blocks)
+      reduce_is_int is_int_const (immediates, blocks)
     in
+    let blocks' = reduce_get_tag get_tag_const blocks' in
     let immediates' =
       let>+$ immediates = immediates' in
       project_variables_out ~to_project ~expand immediates
@@ -3914,7 +3942,8 @@ and project_head_of_kind_value_non_null ~to_project ~expand head =
       project_variant_extensions ~to_project ~expand extensions
     in
     if immediates == immediates' && blocks == blocks'
-       && extensions == extensions' && relations == relations'
+       && extensions == extensions' && is_int_var == is_int_var'
+       && get_tag_var == get_tag_var'
     then head
     else
       Variant
@@ -3922,7 +3951,8 @@ and project_head_of_kind_value_non_null ~to_project ~expand head =
           blocks = blocks';
           immediates = immediates';
           extensions = extensions';
-          relations = relations'
+          is_int_var = is_int_var';
+          get_tag_var = get_tag_var'
         }
   | Mutable_block _ -> head
   | Boxed_float32 (ty, alloc_mode) ->

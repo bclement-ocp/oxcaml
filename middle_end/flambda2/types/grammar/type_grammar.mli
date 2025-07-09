@@ -57,7 +57,8 @@ and head_of_kind_value_non_null = private
       { immediates : t Or_unknown.t;
         blocks : row_like_for_blocks Or_unknown.t;
         extensions : variant_extensions;
-        relations : Name.t Database.Function.Map.t;
+        is_int_var : Name.t option;
+        get_tag_var : Name.t option;
         is_unique : bool
       }
   (* CR mshinwell: It would be better to track per-field mutability. *)
