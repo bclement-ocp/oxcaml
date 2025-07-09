@@ -227,8 +227,8 @@ and env_extension = { equations : t Name.Map.t } [@@unboxed]
 and variant_extensions =
   | No_extensions
   | Ext of
-      { when_immediate : env_extension;
-        when_block : env_extension
+      { when_block : env_extension;
+        when_immediate : env_extension
       }
 
 type flambda_type = t
@@ -1025,23 +1025,22 @@ and print_head_of_kind_value ppf { non_null; is_null } =
 and print_head_of_kind_value_non_null ppf head =
   match head with
   | Variant
-      { blocks;
-        immediates;
-        extensions;
-        is_int_var = _;
-        get_tag_var = _;
-        is_unique
-      } ->
+      { blocks; immediates; extensions; is_int_var; get_tag_var; is_unique } ->
     (* CR bclement: print relations *)
     (* CR-someday mshinwell: Improve so that we elide blocks and/or immediates
        when they're empty. *)
     Format.fprintf ppf
       "@[<hov 1>(Variant%s@ @[<hov 1>(blocks@ %a)@]@ @[<hov 1>(tagged_imms@ \
-       %a)@]%a)@]"
+       %a))@]@]%a%a%a)@]"
       (if is_unique then " unique" else "")
       (Or_unknown.print print_row_like_for_blocks)
-      blocks (Or_unknown.print print) immediates print_variant_extensions
-      extensions
+      blocks (Or_unknown.print print) immediates
+      (Format.pp_print_option (fun ppf name ->
+           Format.fprintf ppf "@ @[<hov 1>(is_int@ %a)@]" Name.print name))
+      is_int_var
+      (Format.pp_print_option (fun ppf name ->
+           Format.fprintf ppf "@ @[<hov 1>(get_tag@ %a)@]" Name.print name))
+      get_tag_var print_variant_extensions extensions
   | Mutable_block { alloc_mode } ->
     Format.fprintf ppf "@[<hov 1>(Mutable_block@ %a)@]"
       Alloc_mode.For_types.print alloc_mode
@@ -2801,15 +2800,10 @@ end
 module Head_of_kind_value_non_null = struct
   type t = head_of_kind_value_non_null
 
-  let create_variant ~is_unique ~blocks ~immediates ~extensions =
+  let create_variant ~is_unique ~blocks ~immediates ~extensions ~is_int_var
+      ~get_tag_var =
     Variant
-      { is_unique;
-        blocks;
-        immediates;
-        extensions;
-        is_int_var = None;
-        get_tag_var = None
-      }
+      { is_unique; blocks; immediates; extensions; is_int_var; get_tag_var }
 
   let create_mutable_block alloc_mode = Mutable_block { alloc_mode }
 

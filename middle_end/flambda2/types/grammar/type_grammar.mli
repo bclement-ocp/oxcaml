@@ -174,8 +174,8 @@ and env_extension = private { equations : t Name.Map.t } [@@unboxed]
 and variant_extensions =
   | No_extensions
   | Ext of
-      { when_immediate : env_extension;
-        when_block : env_extension
+      { when_block : env_extension;
+        when_immediate : env_extension
       }
 
 type flambda_type = t
@@ -776,6 +776,8 @@ module Head_of_kind_value_non_null : sig
     blocks:Row_like_for_blocks.t Or_unknown.t ->
     immediates:flambda_type Or_unknown.t ->
     extensions:variant_extensions ->
+    is_int_var:Name.t option ->
+    get_tag_var:Name.t option ->
     t
 
   val create_mutable_block : Alloc_mode.For_types.t -> t

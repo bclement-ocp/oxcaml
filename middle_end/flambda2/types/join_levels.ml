@@ -50,8 +50,17 @@ let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
     ~extra_lifted_consts_in_use_envs;
   let ts = List.rev_map (fun (t, _, _) -> t) ts_and_use_ids in
   Meet_env.use_meet_env definition_typing_env ~f:(fun target_env ->
-      Join_env.cut_and_n_way_join ~meet_type:Meet_and_n_way_join.meet_type
-        ~n_way_join_type:Meet_and_n_way_join.n_way_join target_env ~cut_after ts)
+      let t =
+        Join_env.cut_and_n_way_join ~meet_type:Meet_and_n_way_join.meet_type
+          ~n_way_join_type:Meet_and_n_way_join.n_way_join target_env ~cut_after
+          ts
+      in
+      if Flambda_features.debug_flambda2 ()
+      then (
+        Format.eprintf "====== DOING A JOIN ======@.";
+        Format.eprintf "%a@." TE.print (Meet_env.typing_env t);
+        Format.eprintf "====================================@.");
+      t)
 
 let cut_and_n_way_join definition_typing_env ts_and_use_ids ~params ~cut_after
     ~extra_lifted_consts_in_use_envs ~extra_allowed_names =
