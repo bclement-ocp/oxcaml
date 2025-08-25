@@ -219,26 +219,94 @@ let find_cse_simple ?(required = true) dacc required_names prim =
       filter_and_choose_alias required_names
         (find_all_aliases (DA.typing_env dacc) simple))
 
+(* CR bclement: This is now also used to distinguish between affine switches
+   that are computed using naked or tagged immediates expressions and the name
+   is no longer appropriate. *)
 type must_untag_lookup_table_result =
   | Must_untag
   | Leave_as_tagged_immediate
 
+type single_arg_to_same_destination_switch =
+  | Affine of
+      { offset : TI.t;
+        slope : TI.t
+      }
+  | Lookup_table of TI.t list
+
+type affine_domain =
+  | Empty_domain
+  | Singleton_domain of
+      { arg : TI.t;
+        value : TI.t
+      }
+  | Affine_domain of
+      { offset : TI.t;
+        slope : TI.t
+      }
+
+let recognize_affine_switch consts =
+  match
+    TI.Map.fold
+      (fun arg value affine_domain ->
+        match affine_domain with
+        | Empty_domain -> Singleton_domain { arg; value }
+        | Singleton_domain { arg = arg'; value = value' } ->
+          (* slope * arg + offset = value
+           * slope * arg' + offset = value'
+           *
+           * ==>
+           *
+           * slope = (value - value') / (arg - arg')
+           * offset = value - slope * arg
+           *)
+          let delta_arg = TI.sub arg arg' in
+          let delta_value = TI.sub value value' in
+          if TI.equal TI.zero (TI.mod_ delta_value delta_arg)
+          then
+            let slope = TI.div delta_value delta_arg in
+            let offset = TI.sub value (TI.mul slope arg) in
+            Affine_domain { slope; offset }
+          else raise Not_found
+        | Affine_domain { slope; offset } ->
+          let expected_value = TI.add offset (TI.mul arg slope) in
+          if TI.equal expected_value value
+          then affine_domain
+          else raise Not_found)
+      consts Empty_domain
+  with
+  | Empty_domain | Singleton_domain _ | (exception Not_found) -> None
+  | Affine_domain { offset; slope } -> Some (Affine { offset; slope })
+
+(* Only switches from (0..n-1) can be compiled to lookup tables.
+
+   There are some other cases (e.g. a switch from (0, 2, 4)) that could be
+   compiled to lookup tables by transforming their input, but we don't try to do
+   so. *)
+let recognize_lookup_table_switch consts =
+  match
+    TI.Map.fold
+      (fun arg _value expected_arg ->
+        if TI.equal arg expected_arg
+        then TI.add TI.one expected_arg
+        else raise Not_found)
+      consts TI.zero
+  with
+  | _ -> Some (TI.Map.data consts)
+  | exception Not_found -> None
+
 (* Recognise sufficiently-large Switch expressions where all of the arms provide
    a single argument to a unique destination. These expressions can be compiled
-   using lookup tables, which dramatically reduces code size. *)
+   using lookup tables or affine expressions, which dramatically reduces code
+   size. *)
 let recognize_switch_with_single_arg_to_same_destination0 ~arms =
-  let check_arm discr dest dest_and_args_rev_and_expected_discr =
+  let check_arm discr dest expected_dest_and_args_map =
     let dest' = AC.continuation dest in
-    match dest_and_args_rev_and_expected_discr with
+    match expected_dest_and_args_map with
     | None -> None
-    | Some (expected_dest, args_rev, expected_discr) -> (
+    | Some (expected_dest, args_map) -> (
       match expected_dest with
       | Some expected_dest when not (Continuation.equal dest' expected_dest) ->
         (* All arms must go to the same continuation. *)
-        None
-      | _ when not (TI.equal discr expected_discr) ->
-        (* Discriminants must be 0..(num_arms-1) (note that it is possible to
-           have Switches that do not satisfy this criterion in Flambda 2). *)
         None
       | Some _ | None -> (
         match AC.to_one_arg_without_trap_action dest with
@@ -251,25 +319,35 @@ let recognize_switch_with_single_arg_to_same_destination0 ~arms =
             ~name:(fun _ ~coercion:_ ->
               (* Aliases should have been followed by now. *) None)
             ~const:(fun const ->
-              let expected_discr = TI.add TI.one expected_discr in
-              Some (Some dest', const :: args_rev, expected_discr))))
+              Some (Some dest', TI.Map.add discr const args_map))))
   in
-  match TI.Map.fold check_arm arms (Some (None, [], TI.zero)) with
-  | None | Some (None, _, _) | Some (_, [], _) -> None
-  | Some (Some dest, args_rev, _) -> (
-    let args = List.rev args_rev in
-    assert (List.compare_length_with args 1 >= 0);
+  match TI.Map.fold check_arm arms (Some (None, TI.Map.empty)) with
+  | None | Some (None, _) -> None
+  | Some (_, args_map) when TI.Map.is_empty args_map -> None
+  | Some (Some dest, args_map) -> (
     (* For the moment just do this for things that can be put in scannable
        blocks (which might then need untagging depending on how they appeared in
        the original [Switch]). *)
-    let[@inline] check_args prover must_untag_lookup_table_result =
-      let args' = List.filter_map prover args in
-      if List.compare_lengths args args' = 0
-      then Some (dest, must_untag_lookup_table_result, args')
-      else None
+    let[@inline] check_args prover single_arg_switch_kind =
+      match
+        TI.Map.map
+          (fun const ->
+            match prover const with Some imm -> imm | None -> raise Not_found)
+          args_map
+      with
+      | args_map' -> (
+        match recognize_affine_switch args_map' with
+        | Some affine_switch ->
+          Some (dest, single_arg_switch_kind, affine_switch)
+        | None -> (
+          match recognize_lookup_table_switch args_map' with
+          | Some lookup ->
+            Some (dest, single_arg_switch_kind, Lookup_table lookup)
+          | None -> None))
+      | exception Not_found -> None
     in
     (* All arguments must be of an appropriate kind and the same kind. *)
-    match Reg_width_const.descr (List.hd args) with
+    match Reg_width_const.descr (snd (TI.Map.choose args_map)) with
     | Naked_immediate _ ->
       check_args Reg_width_const.is_naked_immediate Must_untag
     | Tagged_immediate _ ->
@@ -288,7 +366,7 @@ let recognize_switch_with_single_arg_to_same_destination ~arms =
   then None
   else recognize_switch_with_single_arg_to_same_destination0 ~arms
 
-let rebuild_switch_with_single_arg_to_same_destination uacc ~dacc_before_switch
+let rebuild_lookup_table_switch_to_same_destination uacc ~dacc_before_switch
     ~original ~tagged_scrutinee ~dest ~consts ~must_untag_lookup_table_result
     dbg =
   let rebuilding = UA.are_rebuilding_terms uacc in
@@ -389,6 +467,79 @@ let rebuild_switch_with_single_arg_to_same_destination uacc ~dacc_before_switch
   in
   expr, uacc
 
+(* Tiny DSL to preserve sanity while rebuilding expressions. *)
+
+let bound_prim name kind prim dbg = name, kind, prim, dbg
+
+let ( let$ ) (name, kind, prim, dbg) k uacc ~dacc_before_switch =
+  match
+    find_cse_simple ~required:false dacc_before_switch (UA.required_names uacc)
+      prim
+  with
+  | Some simple -> k simple uacc ~dacc_before_switch
+  | None ->
+    let named = Named.create_prim prim dbg in
+    let var = Variable.create name kind in
+    let uacc = UA.add_free_names uacc (NO.singleton_variable var NM.normal) in
+    let body, uacc = k (Simple.var var) uacc ~dacc_before_switch in
+    let duid = Flambda_debug_uid.none in
+    let binding : EB.binding_to_place =
+      { let_bound = BPt.singleton (BV.create var duid NM.normal);
+        simplified_defining_expr = Simplified_named.create named;
+        original_defining_expr = None
+      }
+    in
+    EB.make_new_let_bindings uacc ~bindings_outermost_first:[binding] ~body
+
+let return ~code_size ~free_names expr uacc ~dacc_before_switch:_ =
+  let uacc = UA.notify_added ~code_size uacc in
+  let uacc = UA.add_free_names uacc free_names in
+  expr, uacc
+
+let run uacc ~dacc_before_switch k = k uacc ~dacc_before_switch
+
+let rebuild_affine_switch_to_same_destination uacc ~dacc_before_switch ~original
+    ~scrutinee ~tagged_scrutinee ~dest ~offset ~slope
+    ~must_untag_lookup_table_result dbg =
+  (* We are creating the following fragment: *)
+  (* let scaled = x * slope in
+   * let final = scaled + offset in
+   * apply_cont k final
+   *)
+  let scrutinee, kind, standard_int, const =
+    match must_untag_lookup_table_result with
+    | Must_untag ->
+      ( scrutinee,
+        K.naked_immediate,
+        K.Standard_int.Naked_immediate,
+        Reg_width_const.naked_immediate )
+    | Leave_as_tagged_immediate ->
+      ( tagged_scrutinee,
+        K.value,
+        K.Standard_int.Tagged_immediate,
+        Reg_width_const.tagged_immediate )
+  in
+  run ~dacc_before_switch uacc
+    (let mul_prim : P.t =
+       Binary
+         (Int_arith (standard_int, Mul), scrutinee, Simple.const (const slope))
+     in
+     let$ scaled_arg = bound_prim "scaled_arg" kind mul_prim dbg in
+     let prim : P.t =
+       Binary
+         (Int_arith (standard_int, Add), scaled_arg, Simple.const (const offset))
+     in
+     let$ final_arg = bound_prim "final_arg" kind prim dbg in
+     let apply_cont = Apply_cont.create dest ~args:[final_arg] ~dbg in
+     let free_names = Apply_cont.free_names apply_cont in
+     let increase_in_code_size =
+       Code_size.( - )
+         (Code_size.apply_cont apply_cont)
+         (Code_size.switch original)
+     in
+     return ~code_size:increase_in_code_size ~free_names
+       (RE.create_apply_cont apply_cont))
+
 let rebuild_switch ~original ~arms ~condition_dbg ~scrutinee ~scrutinee_ty
     ~dacc_before_switch uacc ~after_rebuild =
   let new_let_conts, arms, mergeable_arms, identity_arms, not_arms =
@@ -461,18 +612,24 @@ let rebuild_switch ~original ~arms ~condition_dbg ~scrutinee ~scrutinee_ty
       let[@inline] normal_case uacc =
         match switch_is_single_arg_to_same_destination with
         | None -> normal_case0 uacc
-        | Some (dest, must_untag_lookup_table_result, consts) -> (
-          assert (List.length consts = TI.Map.cardinal arms);
+        | Some (dest, must_untag_lookup_table_result, single_arg_switch) -> (
           let tagging_prim : P.t = Unary (Tag_immediate, scrutinee) in
           match
             find_cse_simple dacc_before_switch (UA.required_names uacc)
               tagging_prim
           with
           | None -> normal_case0 uacc
-          | Some tagged_scrutinee ->
-            rebuild_switch_with_single_arg_to_same_destination uacc
-              ~dacc_before_switch ~original ~tagged_scrutinee ~dest ~consts
-              ~must_untag_lookup_table_result dbg)
+          | Some tagged_scrutinee -> (
+            match single_arg_switch with
+            | Affine { offset; slope } ->
+              rebuild_affine_switch_to_same_destination uacc ~dacc_before_switch
+                ~original ~scrutinee ~tagged_scrutinee ~dest ~offset ~slope
+                ~must_untag_lookup_table_result dbg
+            | Lookup_table consts ->
+              assert (List.length consts = TI.Map.cardinal arms);
+              rebuild_lookup_table_switch_to_same_destination uacc
+                ~dacc_before_switch ~original ~tagged_scrutinee ~dest ~consts
+                ~must_untag_lookup_table_result dbg))
       in
       match switch_merged with
       | Some (dest, args) ->
