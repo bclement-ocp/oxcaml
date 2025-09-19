@@ -563,7 +563,7 @@ module F = struct
       (* [Indirect] has the function in i.arg.(0) *)
       match op with
       | Direct _ -> 0, Array.length i.arg
-      | Indirect -> 1, Array.length i.arg - 1
+      | Indirect _ -> 1, Array.length i.arg - 1
     in
     let arg_regs = Array.sub i.arg args_begin args_end |> reg_list_for_call in
     let args =
@@ -596,7 +596,7 @@ module F = struct
         ins_call ~cc:Ocaml ~pp_name:pp_global t sym_name args
           (Some (res_type, res_ident));
         res_ident
-      | Indirect ->
+      | Indirect _ ->
         let fun_temp = load_reg_to_temp t i.arg.(0) in
         let fun_ptr_temp = fresh_ident t in
         let res_ident = fresh_ident t in
