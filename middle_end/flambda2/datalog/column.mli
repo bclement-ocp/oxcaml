@@ -35,6 +35,8 @@ type (_, _, _) hlist =
   | [] : ('v, nil, 'v) hlist
   | ( :: ) : ('t, 'k, 's) id * ('s, 'ks, 'v) hlist -> ('t, 'k -> 'ks, 'v) hlist
 
+val name : (_, _, _) id -> string
+
 val value_repr : ('t, 'k, 'v) id -> 'k Value.repr
 
 val equal_key : ('t, 'k, 'v) id -> 'k -> 'k -> bool

@@ -15,6 +15,8 @@
 
 open Heterogenous_list
 
+let () = Lang.dummy
+
 module Datalog = struct
   type nonrec nil = nil = Nil
 

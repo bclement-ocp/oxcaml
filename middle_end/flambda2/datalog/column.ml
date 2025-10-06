@@ -38,6 +38,8 @@ type ('t, 'k, 'v) id =
     repr : ('t, 'k, 'v) repr
   }
 
+let name { name; _ } = name
+
 let equal_key { value_repr; _ } = Value.equal_repr value_repr
 
 let print_key { value_repr; _ } = Value.print_repr value_repr

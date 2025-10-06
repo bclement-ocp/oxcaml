@@ -62,7 +62,19 @@ end
 let create_channel = Channel.Uninitialized.create
 
 (* This is the [Type] module from OCaml 5's Stdlib *)
-module Type = struct
+module Type : sig
+  type (_, _) eq = Equal : ('a, 'a) eq
+
+  module Id : sig
+    type !'a t
+
+    val make : unit -> 'a t
+
+    val uid : 'a t -> int
+
+    val provably_equal : 'a t -> 'b t -> ('a, 'b) eq option
+  end
+end = struct
   type (_, _) eq = Equal : ('a, 'a) eq
 
   module Id = struct
