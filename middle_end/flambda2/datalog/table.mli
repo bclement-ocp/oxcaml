@@ -13,11 +13,7 @@
 (*                                                                        *)
 (**************************************************************************)
 
-open Datalog_imports
-
-module Type : sig
-  type (_, _) eq = Equal : ('a, 'a) eq
-end
+open! Datalog_imports
 
 module Id : sig
   type ('t, 'k, 'v) t

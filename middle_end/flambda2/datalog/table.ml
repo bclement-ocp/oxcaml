@@ -13,43 +13,12 @@
 (*                                                                        *)
 (**************************************************************************)
 
-open Datalog_imports
+open! Datalog_imports
 
 module Int = struct
   include Numbers.Int
   module Tree = Patricia_tree.Make (Numbers.Int)
   module Map = Tree.Map
-end
-
-(* This is the [Type] module from OCaml 5's Stdlib *)
-module Type = struct
-  type (_, _) eq = Equal : ('a, 'a) eq
-
-  module Id = struct
-    type _ id = ..
-
-    module type ID = sig
-      type t
-
-      type _ id += Id : t id
-    end
-
-    type !'a t = (module ID with type t = 'a)
-
-    let make (type a) () : a t =
-      (module struct
-        type t = a
-
-        type _ id += Id : t id
-      end)
-
-    let[@inline] uid (type a) ((module A) : a t) : int =
-      Obj.Extension_constructor.id [%extension_constructor A.Id]
-
-    let provably_equal (type a b) ((module A) : a t) ((module B) : b t) :
-        (a, b) eq option =
-      match A.Id with B.Id -> Some Equal | _ -> None
-  end
 end
 
 let concat is_trie ~earlier:t1 ~later:t2 =
