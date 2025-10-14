@@ -23,10 +23,17 @@ module String = struct
   end)
 end
 
+let fresh_stamp =
+  let cnt = ref 0 in
+  fun () ->
+    incr cnt;
+    !cnt
+
 module Parameter = struct
   module T0 = struct
     type 'a t =
       { name : string;
+        stamp : int;
         sender : 'a Sender.t;
         receiver : 'a Receiver.t
       }
@@ -35,9 +42,11 @@ module Parameter = struct
   include T0
   include Heterogenous_list.Make (T0)
 
+  let name { name; _ } = name
+
   let create name =
     let sender, receiver = create_channel () in
-    { name; sender; receiver }
+    { name; stamp = fresh_stamp (); sender; receiver }
 
   let rec list : type a. a String.hlist -> a hlist = function
     | [] -> []
@@ -56,6 +65,7 @@ module Variable = struct
   module T0 = struct
     type 'a t =
       { name : string;
+        stamp : int;
         mutable repr : 'a Value.repr option;
         mutable level : 'a Cursor.Level.t option
       }
@@ -66,7 +76,7 @@ module Variable = struct
 
   let name { name; _ } = name
 
-  let create name = { name; repr = None; level = None }
+  let create name = { name; stamp = fresh_stamp (); repr = None; level = None }
 
   let rec list : type a. a String.hlist -> a hlist = function
     | [] -> []
@@ -421,8 +431,191 @@ let rec unbind_vars : type a. _ -> a Variable.hlist -> unit =
 
 let unbind_levels context (Levels vars) = unbind_vars context vars
 
+type any_parameter = Any_parameter : _ Parameter.t -> any_parameter
+[@@unboxed]
+
+let rec nparams :
+    type a.
+    (any_parameter, int) Hashtbl.t -> a Parameter.hlist -> int -> string list =
+ fun cache parameters pos ->
+  match parameters with
+  | [] -> []
+  | p :: ps ->
+    Hashtbl.replace cache (Any_parameter p) pos;
+    Parameter.name p :: nparams cache ps (pos + 1)
+
+type any_variable = Any_variable : _ Variable.t -> any_variable [@@unboxed]
+
+let rec nvars :
+    type a.
+    (any_variable, int) Hashtbl.t -> a Variable.hlist -> int -> string list =
+ fun cache variables pos ->
+  match variables with
+  | [] -> []
+  | p :: ps ->
+    Hashtbl.replace cache (Any_variable p) pos;
+    Variable.name p :: nvars cache ps (pos + 1)
+
 let compile_program parameters
     { conditions; filters; callbacks; terminator; levels } =
+  let () =
+    let (Levels vars) = levels in
+    let table_vars = Hashtbl.create 17 in
+    let variables = nvars table_vars vars 0 in
+    let table_parameters = Hashtbl.create 17 in
+    let parameters = nparams table_parameters parameters 0 in
+    let table_table = Hashtbl.create 17 in
+    let _, rev_parameters =
+      List.fold_left
+        (fun (nb, rev_ps) (Where_atom (table, _)) ->
+          let uid = Table.Id.uid table in
+          if Hashtbl.mem table_table uid
+          then nb, rev_ps
+          else (
+            Hashtbl.replace table_table uid nb;
+            nb + 1, Table.Id.name table :: rev_ps))
+        (List.length parameters, [])
+        conditions
+    in
+    let parameters = parameters @ List.rev rev_parameters in
+    let _, rev_parameters =
+      List.fold_left
+        (fun (nb, rev_ps) filter ->
+          match filter with
+          | Unless_eq _ | User _ -> nb, rev_ps
+          | Unless_atom (table, _) ->
+            let uid = Table.Id.uid table in
+            if Hashtbl.mem table_table uid
+            then nb, rev_ps
+            else (
+              Hashtbl.replace table_table uid nb;
+              nb + 1, Table.Id.name table :: rev_ps))
+        (List.length parameters, [])
+        filters
+    in
+    let parameters = parameters @ List.rev rev_parameters in
+    Lang.with_builder ~parameters ~variables
+      (fun ~parameters ~variables builder ->
+        let table_vars' = Hashtbl.create 17 in
+        Hashtbl.iter
+          (fun a b -> Hashtbl.replace table_vars' a (List.nth variables b))
+          table_vars;
+        let table_params' = Hashtbl.create 17 in
+        Hashtbl.iter
+          (fun a b -> Hashtbl.replace table_params' a (List.nth parameters b))
+          table_parameters;
+        let table_table' = Hashtbl.create 17 in
+        Hashtbl.iter
+          (fun a b -> Hashtbl.replace table_table' a (List.nth parameters b))
+          table_table;
+        let getterm : type a. a Term.t -> Lang.variable =
+         fun term ->
+          match term with
+          | Constant c -> Lang.constant builder c
+          | Variable var -> Hashtbl.find table_vars' (Any_variable var)
+          | Parameter param -> Hashtbl.find table_params' (Any_parameter param)
+        in
+        let rec add_lookup : type a. Lang.variable -> a Term.hlist -> unit =
+         fun langvar terms ->
+          match terms with
+          | [] -> ()
+          | Constant c :: terms ->
+            let var = Lang.constant builder c in
+            add_lookup (Lang.index builder langvar var) terms
+          | Variable var :: terms ->
+            let key = Hashtbl.find table_vars' (Any_variable var) in
+            add_lookup (Lang.index builder langvar key) terms
+          | Parameter param :: terms ->
+            let key = Hashtbl.find table_params' (Any_parameter param) in
+            add_lookup (Lang.index builder langvar key) terms
+        in
+        let rec add_lookup' :
+            type a. Lang.variable -> a Term.hlist -> Lang.variable =
+         fun langvar terms ->
+          match terms with
+          | [] -> langvar
+          | term :: terms ->
+            let key =
+              match term with
+              | Constant c -> Lang.constant builder c
+              | Variable var -> Hashtbl.find table_vars' (Any_variable var)
+              | Parameter param ->
+                Hashtbl.find table_params' (Any_parameter param)
+            in
+            let langvar, default =
+              match terms with
+              | [] -> Lang.map builder langvar, Some "true"
+              | _ :: _ -> langvar, None
+            in
+            add_lookup' (Lang.index' ?default builder langvar key) terms
+        in
+        List.iter
+          (fun (Where_atom (table, args)) ->
+            let langvar = Hashtbl.find table_table' (Table.Id.uid table) in
+            add_lookup langvar args)
+          conditions;
+        List.iter
+          (fun filter ->
+            match filter with
+            | Unless_atom (table, args) ->
+              let langvar = Hashtbl.find table_table' (Table.Id.uid table) in
+              Lang.if' builder (add_lookup' langvar args)
+            | Unless_eq (_, x, y) ->
+              Lang.if' builder (Lang.eq builder (getterm x) (getterm y))
+            | User _ -> ())
+          filters;
+        let printc = function
+          | Callback { name; args; _ } ->
+            Format.eprintf "call %s @[(" name;
+            let rec loop : type a. bool -> a Term.hlist -> unit =
+             fun first terms ->
+              match terms with
+              | [] -> ()
+              | term :: terms ->
+                if not first then Format.eprintf ",@ ";
+                let var = getterm term in
+                Format.eprintf "%a" Lang.print_variable var;
+                loop false terms
+            in
+            loop true args;
+            Format.eprintf ")@]@."
+          | Callback_with_bindings { name; args; _ } ->
+            Format.eprintf "call %s @[(" name;
+            let rec loop : type a. bool -> a Term.hlist -> unit =
+             fun first terms ->
+              match terms with
+              | [] -> ()
+              | term :: terms ->
+                if not first then Format.eprintf ",@ ";
+                let var = getterm term in
+                Format.eprintf "%a" Lang.print_variable var;
+                loop false terms
+            in
+            loop true args;
+            Format.eprintf ")@]@."
+        in
+        List.iter printc callbacks;
+        let printt : type a b. (a, b) terminator -> unit =
+         fun terminator ->
+          match terminator with
+          | Yield None | Map _ -> ()
+          | Yield (Some ts) ->
+            Format.eprintf "yield @[(";
+            let rec loop : type a. bool -> a Term.hlist -> unit =
+             fun first terms ->
+              match terms with
+              | [] -> ()
+              | term :: terms ->
+                if not first then Format.eprintf ",@ ";
+                let var = getterm term in
+                Format.eprintf "%a" Lang.print_variable var;
+                loop false terms
+            in
+            loop true ts;
+            Format.eprintf ")@]@."
+        in
+        printt terminator)
+  in
   let context = Cursor.create_context () in
   bind_levels context levels;
   Fun.protect
