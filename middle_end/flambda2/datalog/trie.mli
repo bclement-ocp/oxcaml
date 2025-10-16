@@ -56,6 +56,14 @@ val fold :
   'a ->
   'a
 
+val meet :
+  ('t, 'k, 'v) is_trie ->
+  'k Constant.hlist ->
+  ('v -> 'v -> 'v) ->
+  'v ->
+  't ->
+  't
+
 module Iterator : sig
   include Leapfrog.Iterator
 

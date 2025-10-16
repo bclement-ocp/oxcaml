@@ -82,6 +82,33 @@ let add_or_replace :
     type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t -> t =
  fun w k v t -> match k, w with [], _ -> . | k :: ks, _ -> add0 w k ks v t
 
+let rec meet0 :
+    type t k r v.
+    (t, k -> r, v) is_trie ->
+    k ->
+    r Constant.hlist ->
+    (v -> v -> v) ->
+    v ->
+    t ->
+    t =
+ fun w k ks meet_v v t ->
+  match ks, w with
+  | [], Nested_trie _ -> .
+  | [], Map_is_trie ->
+    Int.Map.update k
+      (function None -> Some v | Some v0 -> Some (meet_v v0 v))
+      t
+  | k' :: ks', Nested_trie w' -> (
+    match Int.Map.find_opt k t with
+    | Some m -> Int.Map.add k (meet0 w' k' ks' meet_v v m) t
+    | None -> Int.Map.add k (singleton0 w' k' ks' v) t)
+
+let meet :
+    type t k v.
+    (t, k, v) is_trie -> k Constant.hlist -> (v -> v -> v) -> v -> t -> t =
+ fun w k meet_v v t ->
+  match k, w with [], _ -> . | k :: ks, _ -> meet0 w k ks meet_v v t
+
 let rec remove0 :
     type t k r v. (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> t =
  fun w k ks t ->
