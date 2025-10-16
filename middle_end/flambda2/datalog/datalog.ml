@@ -146,10 +146,51 @@ type atom = Atom : ('t, 'k, unit) Table.Id.t * 'k Term.hlist -> atom
 type condition =
   | Where_atom : ('t, 'k, 'v) Table.Id.t * 'k Term.hlist -> condition
 
+let print_terms columns ppf terms =
+  let rec loop :
+      type a b c.
+      bool ->
+      (a, b, c) Column.hlist option ->
+      Format.formatter ->
+      b Term.hlist ->
+      unit =
+   fun first columns ppf terms ->
+    match terms with
+    | [] -> ()
+    | term :: terms -> (
+      if not first then Format.fprintf ppf ",@ ";
+      (match term, columns with
+      | Constant cte, Some (column :: _) -> Column.print_key column ppf cte
+      | Constant _, None -> Format.fprintf ppf "<cte>"
+      | Variable v, _ -> Format.fprintf ppf "%s" (Variable.name v)
+      | Parameter p, _ -> Format.fprintf ppf "%s" p.name);
+      match columns with
+      | None -> loop false None ppf terms
+      | Some (_ :: columns) -> loop false (Some columns) ppf terms)
+  in
+  loop true columns ppf terms
+
+let print_condition ppf condition =
+  let (Where_atom (tid, args)) = condition in
+  Format.fprintf ppf "@[%a@[(%a)@]@]" Table.Id.print tid
+    (print_terms (Some (Table.Id.columns tid)))
+    args
+
 type filter =
   | Unless_atom : ('t, 'k, 'v) Table.Id.t * 'k Term.hlist -> filter
   | Unless_eq : 'k Value.repr * 'k Term.t * 'k Term.t -> filter
   | User : ('k Constant.hlist -> bool) * 'k Term.hlist -> filter
+
+let print_filter ppf filter =
+  match filter with
+  | Unless_atom (tid, args) ->
+    Format.fprintf ppf "@[!%a@[(%a)@]@]" Table.Id.print tid
+      (print_terms (Some (Table.Id.columns tid)))
+      args
+  | Unless_eq (_repr, x1, x2) ->
+    Format.fprintf ppf "%a != %a" (print_terms None) [x1] (print_terms None) [x2]
+  | User (_fn, args) ->
+    Format.fprintf ppf "@[<filter>@[(%a)@]@]" (print_terms None) args
 
 type bindings = Bindings : 'a Variable.hlist * 'a Constant.hlist -> bindings
 
@@ -217,6 +258,17 @@ type ('p, 'a) program =
     terminator : ('p, 'a) terminator;
     levels : levels
   }
+
+let print_program ppf { conditions; filters; callbacks; terminator; levels = _ }
+    =
+  Format.fprintf ppf "@[%a :- %a@]"
+    (print_terminator callbacks)
+    terminator
+    (Format.pp_print_list
+       ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
+       (fun ppf pf -> pf ppf))
+    (List.map (fun condition ppf -> print_condition ppf condition) conditions
+    @ List.map (fun filter ppf -> print_filter ppf filter) filters)
 
 let add_condition condition program =
   { program with conditions = condition :: program.conditions }
