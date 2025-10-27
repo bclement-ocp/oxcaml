@@ -33,17 +33,34 @@
      [receiver] types to indicate whether we expect to only write or only read to
      a specific reference. *)
 
-type 'a sender
+module type S = sig
+  type 'a sender
 
-external send : 'a sender -> 'a -> unit = "%setfield0"
+  val send : 'a sender -> 'a -> unit
 
-type 'a receiver
+  type 'a receiver
 
-external recv : 'a receiver -> 'a = "%field0"
+  val recv : 'a receiver -> 'a
+end
 
-(** Create a pair [sender, receiver].
+module Initialized : sig
+  include S
 
-    The value read (using [recv]) from the [receiver] is the last value that was
-    sent (using [send]) to the [sender], or the initial value provided to
-    [channel]. *)
-val create : 'a -> 'a sender * 'a receiver
+  (** Create a pair [sender, receiver].
+
+           The value read (using [recv]) from the [receiver] is the last value that was
+           sent (using [send]) to the [sender], or the initial value provided to
+           [channel]. *)
+  val create : 'a -> 'a sender * 'a receiver
+end
+
+module Uninitialized : sig
+  include S
+
+  val create : unit -> 'a sender * 'a receiver
+end
+
+include
+  module type of Initialized
+    with type 'a sender = 'a Initialized.sender
+     and type 'a receiver = 'a Initialized.receiver

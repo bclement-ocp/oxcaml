@@ -98,7 +98,10 @@ module type Iterator = sig
   val compare_key : 'a t -> 'a -> 'a -> int
 end
 
-module Map (T : Container_types.S_plus_iterator) : sig
+module Map
+    (C1 : Channel.S)
+    (C2 : Channel.S)
+    (T : Container_types.S_plus_iterator) : sig
   include Iterator
 
   (** [create cell handler] returns a new imperative iterator that iterates over
@@ -109,7 +112,7 @@ module Map (T : Container_types.S_plus_iterator) : sig
 
        - Calling [accept] will set the [handler] reference to the current value
          of the iterator. *)
-  val create : 'a T.Map.t Channel.receiver -> 'a Channel.sender -> T.t t
+  val create : 'a T.Map.t C1.receiver -> 'a C2.sender -> T.t t
 end
 
 module Join (Iterator : Iterator) : sig

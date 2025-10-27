@@ -131,7 +131,7 @@ let rec fold :
       t acc
 
 module Iterator = struct
-  include Leapfrog.Map (Int)
+  include Leapfrog.Map (Channel.Initialized) (Channel.Initialized) (Int)
 
   include Heterogenous_list.Make (struct
     type nonrec 'a t = 'a t

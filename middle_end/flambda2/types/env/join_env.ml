@@ -144,7 +144,8 @@ module Iterator_utils : sig
     ('a, 'b Name.Map.t incremental) folder ->
     'c
 end = struct
-  module Name_map_iterator = Leapfrog.Map (Name)
+  module Name_map_iterator =
+    Leapfrog.Map (Channel.Initialized) (Channel.Initialized) (Name)
   module Name_map_join_iterator = Leapfrog.Join (Name_map_iterator)
 
   let create_iterator ~init ~dummy =

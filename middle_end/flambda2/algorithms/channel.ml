@@ -27,14 +27,110 @@
  * DEALINGS IN THE SOFTWARE.                                                  *
  ******************************************************************************)
 
-type 'a sender = 'a ref
+module type S = sig
+  type 'a sender
 
-type 'a receiver = 'a ref
+  val send : 'a sender -> 'a -> unit
 
-let create v =
-  let r = ref v in
-  r, r
+  type 'a receiver
 
-external send : 'a sender -> 'a -> unit = "%setfield0"
+  val recv : 'a receiver -> 'a
+end
 
-external recv : 'a receiver -> 'a = "%field0"
+module Dummy : sig
+  type 'stamp dummy
+
+  type fresh_dummy = Fresh : 'stamp dummy -> fresh_dummy
+
+  val fresh : unit -> fresh_dummy
+
+  module Ref : sig
+    type 'a t
+
+    val create : 'dummy dummy -> 'a t
+
+    external set : 'a t -> 'a -> unit = "%setfield0"
+
+    val get : 'a t -> 'a
+  end
+end = struct
+  type 'stamp dummy = < >
+
+  type fresh_dummy = Fresh : 'stamp dummy -> fresh_dummy
+
+  let fresh () =
+    let r = ref None in
+    let dummy =
+      object
+        val x = r
+      end
+    in
+    r := Some dummy;
+    Fresh dummy
+
+  type ('a, 'stamp) or_dummy
+
+  external from_dummy : 'stamp dummy -> ('a, 'stamp) or_dummy = "%opaque"
+
+  external unsafe_to_val : ('a, 'stamp) or_dummy -> 'a = "%opaque"
+
+  module Ref = struct
+    type 'a t =
+      | Ref :
+          { mutable contents : ('a, 'stamp) or_dummy;
+            dummy : 'stamp dummy
+          }
+          -> 'a t
+
+    let create dummy = Ref { contents = from_dummy dummy; dummy }
+
+    external set : 'a t -> 'a -> unit = "%setfield0"
+
+    let get (Ref { contents; dummy }) =
+      if contents == from_dummy dummy
+      then Misc.fatal_error "Trying to read from uninitialized reference"
+      else unsafe_to_val contents
+  end
+end
+
+module Initialized : sig
+  include S
+
+  val create : 'a -> 'a sender * 'a receiver
+end = struct
+  type 'a sender = 'a ref
+
+  type 'a receiver = 'a ref
+
+  let send = ( := )
+
+  let recv = ( ! )
+
+  let create v =
+    let r = ref v in
+    r, r
+end
+
+module Uninitialized : sig
+  include S
+
+  val create : unit -> 'a sender * 'a receiver
+end = struct
+  let global_dummy = Dummy.fresh ()
+
+  type 'a sender = 'a Dummy.Ref.t
+
+  type 'a receiver = 'a Dummy.Ref.t
+
+  let create v =
+    ignore v;
+    let (Fresh dummy) = global_dummy in
+    let r = Dummy.Ref.create dummy in
+    r, r
+
+  let send = Dummy.Ref.set
+
+  let recv = Dummy.Ref.get
+end
+
+include Initialized
