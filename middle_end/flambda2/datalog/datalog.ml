@@ -27,8 +27,8 @@ module Parameter = struct
   module T0 = struct
     type 'a t =
       { name : string;
-        sender : 'a option Channel.sender;
-        receiver : 'a option Channel.receiver
+        sender : 'a Sender.t;
+        receiver : 'a Receiver.t
       }
   end
 
@@ -36,7 +36,7 @@ module Parameter = struct
   include Heterogenous_list.Make (T0)
 
   let create name =
-    let sender, receiver = Channel.create None in
+    let sender, receiver = create_channel () in
     { name; sender; receiver }
 
   let rec list : type a. a String.hlist -> a hlist = function
@@ -47,7 +47,7 @@ module Parameter = struct
 
   let get_receiver { receiver; _ } = receiver
 
-  let rec to_senders : type a. a hlist -> a Option_sender.hlist = function
+  let rec to_senders : type a. a hlist -> a Sender.hlist = function
     | [] -> []
     | p :: ps -> get_sender p :: to_senders ps
 end
@@ -268,9 +268,10 @@ let rec bind_atom :
     let this_iterator = { value = this_iterator; name = this_iterator_name } in
     match this_arg with
     | Constant cte ->
-      let _send, recv = Channel.create (Some cte) in
+      let sender, receiver = create_channel () in
+      Sender.send sender cte;
       bind_iterator post_level
-        { value = recv; name = "<constant>" }
+        { value = receiver; name = "<constant>" }
         this_iterator;
       bind_atom ~order post_level other_args other_iterators
         other_iterators_names
@@ -315,18 +316,18 @@ let rec find_last_binding0 : type a. order:_ -> _ -> a Term.hlist -> _ =
 let find_last_binding post_level args =
   find_last_binding0 ~order:Cursor.Order.parameters post_level args
 
-let compile_term : 'a Term.t -> 'a option Channel.receiver with_name = function
+let compile_term : 'a Term.t -> 'a Receiver.t with_name = function
   | Constant cte ->
-    let _send, recv = Channel.create (Some cte) in
-    { value = recv; name = "<constant>" }
+    let sender, receiver = create_channel () in
+    Sender.send sender cte;
+    { value = receiver; name = "<constant>" }
   | Parameter param ->
     { value = Parameter.get_receiver param; name = param.name }
   | Variable var ->
     let var = Option.get var.level in
     Cursor.Level.use_output var
 
-let rec compile_terms :
-    type a. a Term.hlist -> a Option_receiver.hlist with_names =
+let rec compile_terms : type a. a Term.hlist -> a Receiver.hlist with_names =
  fun vars ->
   match vars with
   | [] -> { values = []; names = [] }

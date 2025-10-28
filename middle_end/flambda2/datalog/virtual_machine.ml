@@ -28,10 +28,7 @@ struct
   type 's stack =
     | Stack_nil : nil stack
     | Stack_cons :
-        'a Iterator.t
-        * 'a option Channel.sender
-        * ('a -> 's) continuation
-        * 's stack
+        'a Iterator.t * 'a Sender.t * ('a -> 's) continuation * 's stack
         -> ('a -> 's) stack
 
   and 's continuation = 's stack -> unit
@@ -41,15 +38,11 @@ struct
     | Up : ('x, 's) instruction -> ('x, 'a -> 's) instruction
     | Dispatch : ('a, 'b -> 's) instruction
     | Seek :
-        'b option Channel.receiver
-        * 'b Iterator.t
-        * ('a, 's) instruction
-        * string
-        * string
+        'b Receiver.t * 'b Iterator.t * ('a, 's) instruction * string * string
         -> ('a, 's) instruction
     | Open :
         'b Iterator.t
-        * 'b option Channel.sender
+        * 'b Sender.t
         * ('a, 'b -> 's) instruction
         * ('a, 'b -> 's) instruction
         * string
@@ -58,7 +51,7 @@ struct
     | Action : 'a * ('a, 's) instruction -> ('a, 's) instruction
     | Call :
         ('b Constant.hlist -> unit)
-        * 'b Option_receiver.hlist
+        * 'b Receiver.hlist
         * ('a, 's) instruction
         * string
         * string list
@@ -130,7 +123,7 @@ struct
     match Iterator.current iterator with
     | Some current_key ->
       Iterator.accept iterator;
-      Channel.send cell (Some current_key);
+      Sender.send cell current_key;
       level stack
     | None -> advance next_stack
 
@@ -156,7 +149,7 @@ struct
         Iterator.init iterator;
         execute k (Stack_cons (iterator, cell, execute for_each, stack))
       | Seek (key_ref, iterator, k, _key_ref_name, _iterator_name) -> (
-        let key = Option.get (Channel.recv key_ref) in
+        let key = Receiver.recv key_ref in
         Iterator.init iterator;
         Iterator.seek iterator key;
         match Iterator.current iterator with
@@ -170,7 +163,7 @@ struct
         | Accept -> execute k stack
         | Skip -> advance stack)
       | Call (f, rs, k, _name, _names) ->
-        f (Option_receiver.recv rs);
+        f (Receiver.recv_many rs);
         execute k stack
     in
     execute instruction

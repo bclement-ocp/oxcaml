@@ -13,7 +13,7 @@
 (*                                                                        *)
 (**************************************************************************)
 
-open Heterogenous_list
+open Datalog_imports
 
 module Int = struct
   include Numbers.Int
@@ -131,7 +131,7 @@ let rec fold :
       t acc
 
 module Iterator = struct
-  include Leapfrog.Map (Channel.Initialized) (Channel.Initialized) (Int)
+  include Leapfrog.Map (Channel.Uninitialized) (Channel.Uninitialized) (Int)
 
   include Heterogenous_list.Make (struct
     type nonrec 'a t = 'a t
@@ -140,13 +140,12 @@ module Iterator = struct
   let create_iterator = create
 
   let rec create :
-      type m k v.
-      (m, k, v) is_trie -> m Channel.receiver -> v Channel.sender -> k hlist =
+      type m k v. (m, k, v) is_trie -> m Receiver.t -> v Sender.t -> k hlist =
    fun is_trie this_ref value_handler ->
     match is_trie with
     | Map_is_trie -> [create_iterator this_ref value_handler]
     | Nested_trie next_trie ->
-      let send_next, recv_next = Channel.create (empty next_trie) in
+      let send_next, recv_next = create_channel () in
       create_iterator this_ref send_next
       :: create next_trie recv_next value_handler
 

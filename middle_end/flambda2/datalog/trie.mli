@@ -13,7 +13,7 @@
 (*                                                                        *)
 (**************************************************************************)
 
-open Heterogenous_list
+open Datalog_imports
 
 (** [('t, 'k, 'v) is_trie] is a witness that the type ['t] is a trie from keys
     of type ['k Constant.hlist] to values of type ['v]. *)
@@ -69,6 +69,5 @@ module Iterator : sig
       The [output] reference is set to the corresponding value when [accept] is
       called on the last iterator.
   *)
-  val create :
-    ('m, 'k, 'v) is_trie -> 'm Channel.receiver -> 'v Channel.sender -> 'k hlist
+  val create : ('m, 'k, 'v) is_trie -> 'm Receiver.t -> 'v Sender.t -> 'k hlist
 end

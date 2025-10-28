@@ -20,25 +20,21 @@ open Datalog_imports
 type vm_action =
   | Unless :
       ('t, 'k, 'v) Trie.is_trie
-      * 't Channel.receiver
-      * 'k Option_receiver.hlist
+      * 't Receiver.t
+      * 'k Receiver.hlist
       * string
       * string list
       -> vm_action
   | Unless_eq :
-      'k option Channel.receiver
-      * 'k option Channel.receiver
-      * string
-      * string
-      * 'k Value.repr
+      'k Receiver.t * 'k Receiver.t * string * string * 'k Value.repr
       -> vm_action
   | Filter :
-      ('k Constant.hlist -> bool) * 'k Option_receiver.hlist * string list
+      ('k Constant.hlist -> bool) * 'k Receiver.hlist * string list
       -> vm_action
 
 type action =
   | Bind_iterator :
-      'a option Channel.receiver with_name * 'a Trie.Iterator.t with_name
+      'a Receiver.t with_name * 'a Trie.Iterator.t with_name
       -> action
   | VM_action : vm_action -> action
 
@@ -54,8 +50,7 @@ let unless_eq repr cell1 cell2 =
 
 let filter f args = VM_action (Filter (f, args.values, args.names))
 
-type binder =
-  | Bind_table : ('t, 'k, 'v) Table.Id.t * 't Channel.sender -> binder
+type binder = Bind_table : ('t, 'k, 'v) Table.Id.t * 't Sender.t -> binder
 
 type actions = { mutable rev_actions : action list }
 
@@ -108,8 +103,7 @@ module Level = struct
       order : Order.t;
       actions : actions;
       mutable iterators : 'a Trie.Iterator.t with_name list;
-      mutable output :
-        ('a option Channel.sender * 'a option Channel.receiver) with_name option
+      mutable output : ('a Sender.t * 'a Receiver.t) with_name option
     }
 
   let print ppf { name; order; _ } =
@@ -121,7 +115,7 @@ module Level = struct
   let use_output level =
     match level.output with
     | None ->
-      let channel = Channel.create None in
+      let channel = create_channel () in
       let output = { value = channel; name = level.name } in
       level.output <- Some output;
       { output with value = snd output.value }
@@ -194,9 +188,7 @@ let add_iterator context id =
   iterators
 
 let add_naive_binder context id =
-  let send_trie, recv_trie =
-    Channel.create (Trie.empty (Table.Id.is_trie id))
-  in
+  let send_trie, recv_trie = create_channel () in
   add_binder context.naive_binders (Bind_table (id, send_trie));
   recv_trie
 
@@ -261,7 +253,7 @@ let rec open_rev_vars :
         match var.output with
         | Some output -> { output with value = fst output.value }
         | None ->
-          let send, _recv = Channel.create None in
+          let send, _recv = create_channel () in
           { value = send; name = "_" }
       in
       let iterators = List.map (fun it -> it.value) var.iterators in
@@ -291,7 +283,7 @@ type call =
   | Call :
       { func : 'a Constant.hlist -> unit;
         name : string;
-        args : 'a Option_receiver.hlist with_names
+        args : 'a Receiver.hlist with_names
       }
       -> call
 
@@ -327,7 +319,7 @@ let create ?(calls = []) ?output context =
 
 let bind_table (Bind_table (id, handler)) database =
   let table = Table.Map.get id database in
-  Channel.send handler table;
+  Sender.send handler table;
   not (Trie.is_empty (Table.Id.is_trie id) table)
 
 let bind_table_list binders database =
@@ -339,7 +331,7 @@ let bind_cursor cursor ?(callback = ignore) db =
   cursor.callback := callback
 
 let unbind_table (Bind_table (id, handler)) =
-  Channel.send handler (Trie.empty (Table.Id.is_trie id))
+  Sender.send handler (Trie.empty (Table.Id.is_trie id))
 
 let unbind_table_list binders = List.iter unbind_table binders
 
@@ -355,17 +347,15 @@ let with_bound_cursor ?callback cursor db f =
 let evaluate = function
   | Unless (is_trie, cell, args, _cell_name, _args_names) ->
     if Option.is_some
-         (Trie.find_opt is_trie (Option_receiver.recv args) (Channel.recv cell))
+         (Trie.find_opt is_trie (Receiver.recv_many args) (Receiver.recv cell))
     then Virtual_machine.Skip
     else Virtual_machine.Accept
   | Unless_eq (cell1, cell2, _cell1_name, _cell2_name, repr) ->
-    if Value.equal_repr repr
-         (Option.get (Channel.recv cell1))
-         (Option.get (Channel.recv cell2))
+    if Value.equal_repr repr (Receiver.recv cell1) (Receiver.recv cell2)
     then Virtual_machine.Skip
     else Virtual_machine.Accept
   | Filter (f, args, _args_names) ->
-    if f (Option_receiver.recv args)
+    if f (Receiver.recv_many args)
     then Virtual_machine.Accept
     else Virtual_machine.Skip
 
@@ -396,7 +386,7 @@ let[@inline] seminaive_run cursor ~previous ~diff ~current =
 
 module With_parameters = struct
   type nonrec ('p, !'v) t =
-    { parameters : 'p Option_sender.hlist;
+    { parameters : 'p Sender.hlist;
       cursor : 'v t
     }
 
@@ -408,14 +398,14 @@ module With_parameters = struct
     { cursor = create ?calls ?output context; parameters }
 
   let naive_fold { parameters; cursor } ps db f acc =
-    Option_sender.send parameters ps;
+    Sender.send_many parameters ps;
     naive_fold cursor db f acc
 
   let naive_iter { parameters; cursor } ps db f =
-    Option_sender.send parameters ps;
+    Sender.send_many parameters ps;
     naive_iter cursor db f
 
   let seminaive_run { parameters; cursor } ps ~previous ~diff ~current =
-    Option_sender.send parameters ps;
+    Sender.send_many parameters ps;
     seminaive_run ~previous ~diff ~current cursor
 end

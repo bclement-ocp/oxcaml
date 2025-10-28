@@ -63,7 +63,7 @@ module Id : sig
 
   val create_iterator :
     ('t, 'k, 'v) t ->
-    't Channel.sender * 'k Trie.Iterator.hlist with_names * 'v Channel.receiver
+    't Sender.t * 'k Trie.Iterator.hlist with_names * 'v Receiver.t
 end
 
 module Map : sig
