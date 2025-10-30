@@ -159,3 +159,86 @@ let main b =
   | 0 -> "zero"
   | 1 -> "one"
 ```
+
+### Match Forwarding (match-in-match)
+
+**This optimization is currently experimental, and requires the
+`--match-in-match` flag.**
+
+Match Forwarding (colloquially known as ``match-in-match'') is an optimization
+where a `match` following a control flow construct is duplicated inside of that
+control flow construct. This optimization only triggers if Match Elimination is
+able to simplify the duplicated `match`, effectively eliminating the `match`.
+
+**Note:** Unlike other match optimizations described in this document, Match
+Forwarding is a *control flow* optimization. It only triggers if the two
+control flow constructs directly follow each other; the presence of any
+non-trivial code in between will prevent the optimization here. This is
+indicated in the examples by a comment marker.
+
+In its simplest incarnation, the scrutinee itself is the result of the previous
+control flow construct.
+
+```ocaml
+(* Before Match Forwarding *)
+let main ~is_none ~is_some b x =
+  let y = if b then None else Some x in
+  (* any code here prevents optimization *)
+  match y with
+  | None -> is_none ()
+  | Some z -> is_some z
+
+(* After Match Forwarding *)
+let main ~is_none ~is_some b x =
+  (* NB: branches are extracted to continuations and shared between the
+     duplicate copies, limiting code duplication. *)
+  let branch_none () = is_none () in
+  let branch_some z () = is_some z () in
+  if b then
+    match None with
+    | None -> branch_none ()
+    | Some z -> branch_some z ()
+  else
+    match Some x with
+    | None -> branch_none ()
+    | Some z -> branch_some z ()
+
+(* After Match Forwarding and Match Elimination *)
+let main ~is_none ~is_some b x =
+  (* [branch_none] and [branch_some] are inlined again here *)
+  if b then is_none () else is_some x
+```
+
+Match Forwarding also triggers on consecutive matches on the same variable. In
+this case, Canonicalization is used to learn the value of `b` in each branch,
+allowing Match Elimination to trigger.
+
+```ocaml
+(* Before Match Forwarding *)
+let main b x y =
+  let z = if b then None else Some x in
+  (* any code here prevents optimization *)
+  if b then (Some y, z) else (z, Some y)
+
+(* After Match Forwarding *)
+let main b x y =
+  let branch_true z () = (Some y, z) in
+  let branch_false z () = (z, Some y) in
+  if b then
+    (* b = true is known *)
+    let z = None in
+    if b then branch_true z ()
+    else branch_false z ()
+  else
+    (* b = false is known *)
+    let z = Some x in
+    if b then branch_true z ()
+    else branch_false z ()
+
+(* After Match Forwarding, Canonicalization, and Match Elimination *)
+let main b x y =
+  if b then
+    (Some y, None)
+  else
+    (Some x, Some y)
+```
