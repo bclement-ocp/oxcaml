@@ -121,6 +121,9 @@ module Bytecode = struct
     | Seminaive_init :
         seminaive_bind list register
         * bool register
+        (* This indicates whether we should iterate on the first iterator in the
+           [seminaive_bind list register] or if we should update it and then
+           move to the next iteration *)
         * seminaive_bind list
         * jump
         -> instruction
@@ -383,8 +386,8 @@ module Bytecode = struct
 
   (*  e.g.
    *
-   *  for (k1, k2, k3, k4) in (t1 & t2 & t3):
-   *    f(k2, k4)
+   *  for (k1, (v1, v2, v3)) in (t1 & t2 & t3):
+   *    f(v1, v3)
    *
    * ==>
    *
