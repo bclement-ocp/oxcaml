@@ -494,7 +494,7 @@ let compile_program parameters
         filters
     in
     let parameters = parameters @ List.rev rev_parameters in
-    Lang.with_builder ~parameters ~variables
+    Lang_builder.with_builder ~parameters ~variables
       (fun ~parameters ~variables builder ->
         let table_vars' = Hashtbl.create 17 in
         Hashtbl.iter
@@ -508,60 +508,69 @@ let compile_program parameters
         Hashtbl.iter
           (fun a b -> Hashtbl.replace table_table' a (List.nth parameters b))
           table_table;
-        let getterm : type a. a Term.t -> Lang.variable =
+        let getterm : type a. a Term.t -> Lang_builder.variable =
          fun term ->
           match term with
-          | Constant c -> Lang.constant builder c
+          | Constant c -> Lang_builder.constant builder c
           | Variable var -> Hashtbl.find table_vars' (Any_variable var)
           | Parameter param -> Hashtbl.find table_params' (Any_parameter param)
         in
-        let rec add_lookup : type a. Lang.variable -> a Term.hlist -> unit =
-         fun langvar terms ->
+        let rec add_lookup :
+            type a. Lang_builder.variable -> a Term.hlist -> unit =
+         fun Lang_buildervar terms ->
           match terms with
           | [] -> ()
           | Constant c :: terms ->
-            let var = Lang.constant builder c in
-            add_lookup (Lang.index builder langvar var) terms
+            let var = Lang_builder.constant builder c in
+            add_lookup (Lang_builder.index builder Lang_buildervar var) terms
           | Variable var :: terms ->
             let key = Hashtbl.find table_vars' (Any_variable var) in
-            add_lookup (Lang.index builder langvar key) terms
+            add_lookup (Lang_builder.index builder Lang_buildervar key) terms
           | Parameter param :: terms ->
             let key = Hashtbl.find table_params' (Any_parameter param) in
-            add_lookup (Lang.index builder langvar key) terms
+            add_lookup (Lang_builder.index builder Lang_buildervar key) terms
         in
         let rec add_lookup' :
-            type a. Lang.variable -> a Term.hlist -> Lang.variable =
-         fun langvar terms ->
+            type a.
+            Lang_builder.variable -> a Term.hlist -> Lang_builder.variable =
+         fun Lang_buildervar terms ->
           match terms with
-          | [] -> langvar
+          | [] -> Lang_buildervar
           | term :: terms ->
             let key =
               match term with
-              | Constant c -> Lang.constant builder c
+              | Constant c -> Lang_builder.constant builder c
               | Variable var -> Hashtbl.find table_vars' (Any_variable var)
               | Parameter param ->
                 Hashtbl.find table_params' (Any_parameter param)
             in
-            let langvar, default =
+            let Lang_buildervar, default =
               match terms with
-              | [] -> Lang.map builder langvar, Some "true"
-              | _ :: _ -> langvar, None
+              | [] -> Lang_builder.map builder Lang_buildervar, Some "true"
+              | _ :: _ -> Lang_buildervar, None
             in
-            add_lookup' (Lang.index' ?default builder langvar key) terms
+            add_lookup'
+              (Lang_builder.index' ?default builder Lang_buildervar key)
+              terms
         in
         List.iter
           (fun (Where_atom (table, args)) ->
-            let langvar = Hashtbl.find table_table' (Table.Id.uid table) in
-            add_lookup langvar args)
+            let Lang_buildervar =
+              Hashtbl.find table_table' (Table.Id.uid table)
+            in
+            add_lookup Lang_buildervar args)
           conditions;
         List.iter
           (fun filter ->
             match filter with
             | Unless_atom (table, args) ->
-              let langvar = Hashtbl.find table_table' (Table.Id.uid table) in
-              Lang.if' builder (add_lookup' langvar args)
+              let Lang_buildervar =
+                Hashtbl.find table_table' (Table.Id.uid table)
+              in
+              Lang_builder.if' builder (add_lookup' Lang_buildervar args)
             | Unless_eq (_, x, y) ->
-              Lang.if' builder (Lang.eq builder (getterm x) (getterm y))
+              Lang_builder.if' builder
+                (Lang_builder.eq builder (getterm x) (getterm y))
             | User _ -> ())
           filters;
         let printc = function
@@ -574,7 +583,7 @@ let compile_program parameters
               | term :: terms ->
                 if not first then Format.eprintf ",@ ";
                 let var = getterm term in
-                Format.eprintf "%a" Lang.print_variable var;
+                Format.eprintf "%a" Lang_builder.print_variable var;
                 loop false terms
             in
             loop true args;
@@ -588,7 +597,7 @@ let compile_program parameters
               | term :: terms ->
                 if not first then Format.eprintf ",@ ";
                 let var = getterm term in
-                Format.eprintf "%a" Lang.print_variable var;
+                Format.eprintf "%a" Lang_builder.print_variable var;
                 loop false terms
             in
             loop true args;
@@ -608,7 +617,7 @@ let compile_program parameters
               | term :: terms ->
                 if not first then Format.eprintf ",@ ";
                 let var = getterm term in
-                Format.eprintf "%a" Lang.print_variable var;
+                Format.eprintf "%a" Lang_builder.print_variable var;
                 loop false terms
             in
             loop true ts;
