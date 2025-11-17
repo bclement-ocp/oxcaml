@@ -163,7 +163,7 @@ let main b =
 ### Match Forwarding (match-in-match)
 
 **This optimization is currently experimental, and requires the
-`--match-in-match` flag.**
+`--flambda2-match-in-match` flag.**
 
 Match Forwarding (colloquially known as ``match-in-match'') is an optimization
 where a `match` following a control flow construct is duplicated inside of that
