@@ -17,9 +17,11 @@ let[@inline] view (t: t) : view =
   | B2 x -> B (false, x)
   | C f -> C f
 
+let[@inline never] fprintf fmt = Format.fprintf fmt
+
 let print fmt (t : t) =
   match view t with
-  | A -> Format.fprintf fmt "A"
-  | B (b, x) -> Format.fprintf fmt "B(%b, %d)" b x
-  | C f -> Format.fprintf fmt "C(%f)" f
+  | A -> fprintf fmt "A"
+  | B (b, x) -> fprintf fmt "B(%b, %d)" b x
+  | C f -> fprintf fmt "C(%f)" f
 
