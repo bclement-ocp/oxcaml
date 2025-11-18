@@ -745,7 +745,7 @@ let decide_continuation_specialization0 ~dacc ~switch ~scrutinee =
             `Cannot_specialize
         in
         dacc, cont, result
-      | Can_specialize spec_cost as spec_cost' -> (
+      | Can_specialize spec_cost -> (
         (* We should never reach here if specialization is disabled, since we
            should never have created a `Can_specialize` value for the
            specialization_cost *)
@@ -811,15 +811,10 @@ let decide_continuation_specialization0 ~dacc ~switch ~scrutinee =
           | `Spec (join_analysis, specialized, generic) ->
             (* Specialization benefit estimation: we use heuristics similar to
                that of inlining to estimate the benefit based on code size and
-               removed operations.
-
-               CR gbury/bclement: currently the size of primtives do not include
-               some primitives that we expect to be simplified away (e.g.
-               Tag_immediate and Get_tag) and thus we often times expect
-               [size_of_primitives] to be 0. We should/could try to use info
-               from the typing env to know which primitives will have their
-               result determined by the values that are known at call_site (and
-               thus will disappear from the specialized versions). *)
+               removed operations (note that we use the join info the the typing
+               env to estimate which operations will be removed during
+               specialization, rather that computing it speculatively like is
+               done for inlining). *)
             let cost_metrics =
               Specialization_cost.cost_metrics (DE.typing_env denv) spec_cost
                 ~switch ~join_analysis ~specialized ~generic
@@ -830,20 +825,6 @@ let decide_continuation_specialization0 ~dacc ~switch ~scrutinee =
                 cost_metrics
             in
             let threshold = Flambda_features.Expert.cont_spec_threshold () in
-            if debug ()
-            then
-              Format.eprintf
-                "*** Continuation specialization %a@\n\
-                 analysis result: %f / %f@\n\
-                 known: %a @\n\
-                 unknown: %a @\n\
-                 spec cost: %a@\n\
-                 %a@."
-                Continuation.print continuation final_cost threshold
-                Apply_cont_rewrite_id.Set.print specialized
-                Apply_cont_rewrite_id.Set.print generic
-                Specialization_cost.print spec_cost'
-                Inlining_report.Context.print_cost_metrics cost_metrics;
             if Float.compare threshold 0. < 0
                || Float.compare final_cost threshold > 0
             then dacc, cont, `Too_costly
@@ -862,55 +843,24 @@ let decide_continuation_specialization ~dacc ~switch ~scrutinee =
   Profile.record_with_counters ~accumulate:true "continuation_specialization"
     (fun () -> decide_continuation_specialization0 ~dacc ~switch ~scrutinee)
     ()
-    ~counter_f:(fun (_, continuation, result) ->
-      let print_debug result_string =
-        if debug ()
-        then
-          Format.eprintf "Specialization decision for '%a': %s@."
-            (Format.pp_print_option Continuation.print)
-            continuation result_string
-      in
+    ~counter_f:(fun (_dacc, _continuation, result) ->
       let counters = Profile.Counters.create () in
       match result with
-      | `Disabled ->
-        print_debug "disabled";
-        counters
-      | `Single_use ->
-        print_debug "single-use";
-        counters
-      | `Exn_handler ->
-        print_debug "exception handler";
-        counters
-      | `Toplevel ->
-        print_debug "top-level";
-        counters
-      | `All_unknown ->
-        print_debug "all unknown";
-        counters
-      | `No_reason_to_spec ->
-        print_debug "no reason to spec";
-        counters
-      | `Not_lifting ->
-        print_debug "not lifting";
-        counters
-      | `Cannot_specialize ->
-        print_debug "cannot specialize";
-        Profile.Counters.incr "cannot_spec" counters
+      | `Disabled -> counters
+      | `Single_use -> counters
+      | `Exn_handler -> counters
+      | `Toplevel -> counters
+      | `All_unknown -> counters
+      | `No_reason_to_spec -> counters
+      | `Not_lifting -> counters
+      | `Cannot_specialize -> Profile.Counters.incr "cannot_spec" counters
       | `Insuficient_lifting_budget ->
-        print_debug "not enough lifting budget";
         Profile.Counters.incr "no_lifting_budget" counters
-      | `Not_enough_join_info ->
-        print_debug "not enough join info";
-        Profile.Counters.incr "no_join_info" counters
+      | `Not_enough_join_info -> Profile.Counters.incr "no_join_info" counters
       | `Too_many_unknown_uses ->
-        print_debug "too many unknown uses";
         Profile.Counters.incr "too_much_unknown" counters
-      | `Too_costly ->
-        print_debug "too costly";
-        Profile.Counters.incr "not_beneficial" counters
-      | `Specialized ->
-        print_debug "specialized";
-        Profile.Counters.incr "specialized" counters)
+      | `Too_costly -> Profile.Counters.incr "not_beneficial" counters
+      | `Specialized -> Profile.Counters.incr "specialized" counters)
 
 let simplify_switch0 dacc switch ~down_to_up =
   let scrutinee = Switch.scrutinee switch in

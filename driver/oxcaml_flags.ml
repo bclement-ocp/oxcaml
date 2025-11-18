@@ -289,14 +289,14 @@ module Flambda2 = struct
     let o2 = {
       default with
       fallback_inlining_heuristic = false;
-      cont_lifting_budget = 10_000;
+      cont_lifting_budget = 100;
       cont_spec_threshold = 0.;
     }
 
     let o3 = {
       default with
-      cont_lifting_budget = 100_000;
-      cont_spec_threshold = 50.;
+      cont_lifting_budget = 1_000; (* worst case : 1_000 budget -> ~+18% compilation time *)
+      cont_spec_threshold = 0.;
     }
 
     let default_for_opt_level opt_level =

@@ -1922,12 +1922,13 @@ module Extra_params = struct
         set Flambda2.Expert.can_inline_recursive_functions
     | "flambda2-expert-max-function-simplify-run" ->
         set_int Flambda2.Expert.max_function_simplify_run
+    | "flambda2-match-in-match" -> set Flambda2.match_in_match
     | "flambda2-expert-cont-lifting-budget" ->
         (match Compenv.check_int ppf name v with
         | Some i -> Flambda2.Expert.cont_lifting_budget := Oxcaml_flags.Set i
         | None -> ());
         true
-    | "flambda2-expert-cont-spec-threshold" ->
+    | "flambda2-expert-cont-specialization-threshold" ->
         (match Compenv.check_int ppf name v with
         | Some i ->
             Flambda2.Expert.cont_spec_threshold :=

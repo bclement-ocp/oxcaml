@@ -91,16 +91,12 @@ let cost_metrics typing_env ~switch ~join_analysis ~specialized ~generic
   let machine_width = Typing_env.machine_width typing_env in
   (* If there is exactly 1 "generic" call site, then that call site is the same
      as a specialized one. *)
-  let n = Apply_cont_rewrite_id.Set.cardinal specialized in
-  let num_specialized_call_sites, zero_generic_call_sites =
-    match Apply_cont_rewrite_id.Set.cardinal generic with
-    | 0 -> n, true
-    | 1 -> n + 1, true
-    | _ -> n, false
-  in
+  let n_specialized = Apply_cont_rewrite_id.Set.cardinal specialized in
+  let n_generic = Apply_cont_rewrite_id.Set.cardinal generic in
+  let n_total = n_specialized + if n_generic = 0 then 0 else 1 in
   (* Cost metrics for a generic call site *)
   let metrics =
-    if zero_generic_call_sites
+    if n_generic = 0
     then
       (* CR gbury: in this case, we actually remove the code size of the
          handler, since it disappears in favor of the specialized calls; we'll
@@ -115,18 +111,18 @@ let cost_metrics typing_env ~switch ~join_analysis ~specialized ~generic
       in
       Cost_metrics.from_size (Code_size.( - ) Code_size.zero code_size)
     else
-      (* The regular case, where the generic continuaion handler stays, and the
+      (* The regular case, where the generic continuation handler stays, and the
          code size is not changed (at least for the generic case *)
       Cost_metrics.zero
   in
   (* Cost metrics for specialized call sites *)
   let metrics =
     (* Each specialized handler eliminates the switch *)
-    repeat num_specialized_call_sites metrics
+    repeat n_specialized metrics
       ~f:(Cost_metrics.notify_removed ~operation:Removed_operations.branch)
   in
-  (* For each primitive, and each specialized call site: - notify it removed if
-     its value is known - else add the prim to the code size *)
+  (* For each primitive, and each specialized call site: 1) notify it removed if
+     its value is known, 2) else add the prim to the code size *)
   List.fold_left
     (fun metrics (bound_var, prim) ->
       let simple = Simple.var (Bound_var.var bound_var) in
@@ -134,7 +130,7 @@ let cost_metrics typing_env ~switch ~join_analysis ~specialized ~generic
         match
           Join_analysis.simple_refined_at_join join_analysis typing_env simple
         with
-        | Not_refined_at_join -> 0, num_specialized_call_sites
+        | Not_refined_at_join -> 0, n_total
         | Invariant_in_all_uses _ ->
           (* if the canonical is a simple already, then specialization does not
              change much *)

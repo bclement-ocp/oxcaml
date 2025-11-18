@@ -63,10 +63,13 @@ type join_algorithm = Oxcaml_flags.join_algorithm =
 
 let join_algorithm () =
   if match_in_match ()
-  then
-    (* CR gbury: check that the join algorithm has not been explicitly set to
-       something else ? *)
-    Oxcaml_flags.N_way
+  then (
+    (match !Oxcaml_flags.Flambda2.join_algorithm with
+    | Set (Binary | Checked) ->
+      Misc.fatal_errorf
+        "The match-in-match optimization requires the N-way join algorithm"
+    | Set N_way | Default -> ());
+    Oxcaml_flags.N_way)
   else
     !Oxcaml_flags.Flambda2.join_algorithm
     |> with_default ~f:(fun d -> d.join_algorithm)
