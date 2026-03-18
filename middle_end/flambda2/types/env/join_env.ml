@@ -1680,6 +1680,14 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_type ~cut_after source_env
       joined_envs;
     Printexc.raise_with_backtrace Misc.Fatal_error bt
 
+let cut_and_n_way_join1 ~n_way_join_type ~meet_type ~cut_after source_env
+    joined_envs equations_to_join symbol_projections_to_join =
+  if Index.Map.is_empty joined_envs
+  then source_env, Name_in_target_env.Map.empty
+  else
+    cut_and_n_way_join0 ~n_way_join_type ~meet_type ~cut_after source_env
+      joined_envs equations_to_join symbol_projections_to_join
+
 (* Join analysis *)
 
 module Analysis = struct
@@ -1775,7 +1783,7 @@ let cut_and_n_way_join ~n_way_join_type ~meet_type ~cut_after source_env
       (Index.Map.empty, Index.Map.empty, Index.Map.empty)
   in
   let target_env, _ =
-    cut_and_n_way_join0 ~n_way_join_type ~meet_type ~cut_after source_env
+    cut_and_n_way_join1 ~n_way_join_type ~meet_type ~cut_after source_env
       joined_envs equations_to_join symbol_projections_to_join
   in
   target_env
@@ -1801,7 +1809,7 @@ let cut_and_n_way_join_with_analysis ~n_way_join_type ~meet_type ~cut_after
   in
   let source_env = ME.create source_env in
   let target_env, bindings =
-    cut_and_n_way_join0 ~n_way_join_type ~meet_type ~cut_after source_env
+    cut_and_n_way_join1 ~n_way_join_type ~meet_type ~cut_after source_env
       joined_envs equations_to_join symbol_projections_to_join
   in
   let target_env = ME.typing_env target_env in
