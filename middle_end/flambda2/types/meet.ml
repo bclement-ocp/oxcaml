@@ -24,7 +24,7 @@ let meet env t1 t2 =
     Format.eprintf "\n@[<v 2>%tContext is:%t meet of@ @[%a@]@ and@ @[%a@]@]\n"
       Flambda_colours.error Flambda_colours.pop Type_grammar.print t1
       Type_grammar.print t2;
-    Format.eprintf "@[<v 2>%tIn typing environment:%t@ %a@]\n"
+    Format.eprintf "%tIn typing environment:%t\n%a\n"
       Flambda_colours.error Flambda_colours.pop Typing_env.print env;
     Printexc.raise_with_backtrace Misc.Fatal_error bt
 

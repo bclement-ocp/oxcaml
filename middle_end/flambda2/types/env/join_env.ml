@@ -1541,7 +1541,16 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
       | Unknown, t -> types_in_target_env, t
       | Known ty, t ->
         let ty = Type_in_target_env.create ty in
-        Name_in_target_env.Map.add name ty types_in_target_env, t)
+        Name_in_target_env.Map.add name ty types_in_target_env, t
+      | exception Misc.Fatal_error ->
+        let bt = Printexc.get_raw_backtrace () in
+        Format.eprintf "\n@[<v 2>%tContext is:%t computing joined type of:@ %a@ @ with types:@ %a@]\n"
+          Flambda_colours.error Flambda_colours.pop
+          Name_in_target_env.print name
+          (Index.Map.print TG.print)
+          (types : Type_in_one_joined_env.t Index.Map.t :> TG.t Index.Map.t);
+        Printexc.raise_with_backtrace Misc.Fatal_error bt
+    )
     equations_to_join (types_in_target_env, t)
 
 (** {2:n-way-join} Cut and n-way join *)
