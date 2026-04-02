@@ -66,123 +66,54 @@ let compare_prefix prefix0 bit0 prefix1 bit1 =
   let c = compare bit0 bit1 in
   if c = 0 then compare prefix0 prefix1 else c
 
-(* A tree structure that will be used to implement a datatype, either sets or
+(* (* A tree structure that will be used to implement a datatype, either sets or
    maps. Many algorithms operate identically on sets and maps, so they are
-   implemented in the functor [Tree_operations] over this module type. *)
-module type Tree = sig
-  (* A Patricia tree. For a prefix P, we write that the tree has prefix P if
-     every node in the tree has a key that matches P. (Note that a tree with
-     prefix P also has any sub-prefix of P. For instance, if the tree has prefix
-     011, it also has prefix 01.) *)
-  type 'a t
+   implemented in the functor [Tree_operations] over this module type. *) module
+   type Tree = sig (* A Patricia tree. For a prefix P, we write that the tree
+   has prefix P if every node in the tree has a key that matches P. (Note that a
+   tree with prefix P also has any sub-prefix of P. For instance, if the tree
+   has prefix 011, it also has prefix 01.) *) type 'a t
 
-  (* A witness that ['a] is a valid type for a value stored in the tree. Maps
-     will allow ['a] to be any value but sets will only allow [unit]. *)
-  type 'a is_value [@@immediate]
+   (* A witness that ['a] is a valid type for a value stored in the tree. Maps
+   will allow ['a] to be any value but sets will only allow [unit]. *) type 'a
+   is_value [@@immediate]
 
-  (* Deduce that ['a] is a value type from a pre-existing ['a t]. *)
-  val is_value_of : 'a t -> 'a is_value
+   (* Deduce that ['a] is a value type from a pre-existing ['a t]. *) val
+   is_value_of : 'a t -> 'a is_value
 
-  (* An empty tree. Since it has no nodes, it is safe to treat it as having any
-     prefix. *)
-  val empty : 'a is_value -> 'a t
+   (* An empty tree. Since it has no nodes, it is safe to treat it as having any
+   prefix. *) val empty : 'a is_value -> 'a t
 
-  (* A tree containing a single key-value pair. It has the entire key as a
-     prefix. *)
-  val leaf : 'a is_value -> key -> 'a -> 'a t
+   (* A tree containing a single key-value pair. It has the entire key as a
+   prefix. *) val leaf : 'a is_value -> key -> 'a -> 'a t
 
-  (* A tree with the given prefix, the length of the prefix, and two subtrees.
-     If the prefix is P, we require that [t0] has prefix P0 and [t1] has prefix
-     P1 (note that this is big-endian notation). For efficiency, [t0] and [t1]
-     are assumed to be non-empty. *)
-  val branch : prefix -> bit -> 'a t -> 'a t -> 'a t
+   (* A tree with the given prefix, the length of the prefix, and two subtrees.
+   If the prefix is P, we require that [t0] has prefix P0 and [t1] has prefix P1
+   (note that this is big-endian notation). For efficiency, [t0] and [t1] are
+   assumed to be non-empty. *) val branch : prefix -> bit -> 'a t -> 'a t -> 'a
+   t
 
-  (* A view on a given node, corresponding to which of [empty], [leaf], or
-     [branch] constructed it. Passing the fields back in as arguments will
-     construct an identical tree. *)
-  type 'a descr =
-    | Empty
-    | Leaf of key * 'a
-    | Branch of prefix * bit * 'a t * 'a t
+   (* A view on a given node, corresponding to which of [empty], [leaf], or
+   [branch] constructed it. Passing the fields back in as arguments will
+   construct an identical tree. *) type 'a descr = | Empty | Leaf of key * 'a |
+   Branch of prefix * bit * 'a t * 'a t
 
-  val descr : 'a t -> 'a descr
-
-  module Binding : sig
-    type 'a t
-
-    val create : key -> 'a -> 'a t
-
-    val key : _ t -> key
-
-    val value : 'a is_value -> 'a t -> 'a
-  end
-
-  module Callback : sig
-    type ('a, 'b) t
-
-    val of_func : 'a is_value -> (key -> 'a -> 'b) -> ('a, 'b) t
-
-    val call : ('a, 'b) t -> key -> 'a -> 'b
-  end
-end
+   val descr : 'a t -> 'a descr end *)
 
 module Set0 = struct
-  type 'a t =
-    | Empty : unit t
-    | Leaf : key -> unit t
-    | Branch : prefix * bit * unit t * unit t -> unit t
+  type t =
+    | Empty : t
+    | Leaf : key -> t
+    | Branch : prefix * bit * t * t -> t
 
-  type 'a is_value = Unit : unit is_value
+  let empty = Empty
 
-  let[@inline always] is_value_of (type a) (t : a t) : a is_value =
-    (* Crucially, this compiles down to just [Unit], making this function cost
-       nothing. *)
-    match t with
-    | Empty -> Unit
-    | Leaf _ -> Unit
-    | Branch _ -> Unit
+  let[@inline always] leaf elt = Leaf elt
 
-  let[@inline always] empty (type a) (Unit : a is_value) : a t = Empty
-
-  let[@inline always] leaf (type a) (Unit : a is_value) elt (() : a) : a t =
-    Leaf elt
-
-  let[@inline always] branch (type a) prefix bit (t0 : a t) (t1 : a t) : a t =
-    let Unit = is_value_of t0 in
-    Branch (prefix, bit, t0, t1)
-
-  type 'a descr =
-    | Empty
-    | Leaf of key * 'a
-    | Branch of prefix * bit * 'a t * 'a t
-
-  let descr (type a) : a t -> a descr = function
-    | Empty -> Empty
-    | Leaf elt -> Leaf (elt, ())
-    | Branch (prefix, bit, t0, t1) -> Branch (prefix, bit, t0, t1)
-
-  module Binding = struct
-    type _ t = key
-
-    let[@inline always] create i _ = i
-
-    let[@inline always] key i = i
-
-    let[@inline always] value (type a) (Unit : a is_value) (_i : a t) : a = ()
-  end
-
-  module Callback = struct
-    type (_, 'b) t = key -> 'b
-
-    let[@inline always] of_func (type a) (Unit : a is_value)
-        (f : key -> a -> 'b) key =
-      (f [@inlined hint]) key ()
-
-    let[@inline always] call f key _ = f key
-  end
+  let[@inline always] branch prefix bit t0 t1 = Branch (prefix, bit, t0, t1)
 end
 
-module _ : Tree = Set0
+(* module _ : Tree = Set0 *)
 
 module Map0 = struct
   type 'a t =
@@ -218,139 +149,648 @@ module Map0 = struct
   end
 
   module Callback = struct
-    type ('a, 'b) t = key -> 'a -> 'b
-
     let[@inline always] call f i d = f i d
 
     let[@inline always] of_func Any f = f
   end
 end
 
-module _ : Tree = Map0
+(* module _ : Tree = Map0 *)
 
-module Tree_operations (Tree : Tree) : sig
-  open! Tree
+module Set_operations = struct
+  open! Set0
+  module Tree = Set0
 
-  val is_empty : 'a t -> bool
+  (* A relaxed version of [Tree.branch], allowing [t0] and/or [t1] to be empty.
+     It still requires that [t0] and [t1] have prefix [P0] and [P1],
+     respectively, where [P] is the bits in [prefix] lower than [bit]. *)
+  let branch prefix bit t0 t1 =
+    match t0, t1 with
+    | Empty, _ -> t1
+    | _, Empty -> t0
+    | (Leaf _ | Branch _), (Leaf _ | Branch _) -> Branch (prefix, bit, t0, t1)
+  [@@inline always]
 
-  val singleton : 'a is_value -> key -> 'a -> 'a t
+  let branch_non_empty prefix bit t0 t1 =
+    (Tree.branch [@inlined hint]) prefix bit t0 t1
+  [@@inline always]
 
-  val mem : key -> 'a t -> bool
+  let is_empty t =
+    match t with Empty -> true | Leaf _ -> false | Branch _ -> false
 
-  val add : key -> 'a -> 'a t -> 'a t
+  let singleton i = leaf i
 
-  val replace : key -> ('a -> 'a) -> 'a t -> 'a t
+  let rec mem i t =
+    match t with
+    | Empty -> false
+    | Leaf j -> j = i
+    | Branch (prefix, bit, t0, t1) ->
+      if not (match_prefix i prefix bit)
+      then false
+      else if zero_bit i bit
+      then mem i t0
+      else mem i t1
 
-  val update : key -> ('a option -> 'a option) -> 'a t -> 'a t
+  (* Join two subtrees whose prefixes are disjoint (neither includes the other)
+     but otherwise arbitrary. Assumes that [t0] has prefix [prefix0] and [t1]
+     has prefix [prefix1]. (Most functions that take a prefix also take a bit
+     representing the length of the prefix, but in this case, the lengths don't
+     matter: the prefixes must differ at some shorter length anyway.) *)
+  let join prefix0 t0 prefix1 t1 =
+    let bit = branching_bit prefix0 prefix1 in
+    if zero_bit prefix0 bit
+    then branch (mask prefix0 bit) bit t0 t1
+    else branch (mask prefix0 bit) bit t1 t0
 
-  val remove : key -> 'a t -> 'a t
+  (* CR mshinwell: This is now [add_or_replace], like [Map] *)
+  let rec add i t =
+    match t with
+    | Empty -> leaf i
+    | Leaf j -> if i = j then leaf i else join i (leaf i) j t
+    | Branch (prefix, bit, t0, t1) ->
+      if match_prefix i prefix bit
+      then
+        if zero_bit i bit
+        then branch_non_empty prefix bit (add i t0) t1
+        else branch_non_empty prefix bit t0 (add i t1)
+      else join i (leaf i) prefix t
 
-  val union : (key -> 'a -> 'a -> 'a option) -> 'a t -> 'a t -> 'a t
+  let rec remove i t =
+    match t with
+    | Empty -> empty
+    | Leaf j -> if i = j then empty else t
+    | Branch (prefix, bit, t0, t1) ->
+      if match_prefix i prefix bit
+      then
+        if zero_bit i bit
+        then branch prefix bit (remove i t0) t1
+        else branch prefix bit t0 (remove i t1)
+      else t
 
-  val union_sharing : (key -> 'a -> 'a -> 'a option) -> 'a t -> 'a t -> 'a t
+  (* [pattern_match_pair t0 t1 ~join ~leaf ~branch] deconstructs two trees
+     simultaneously.
 
-  val union_shared : (key -> 'a -> 'a -> 'a option) -> 'a t -> 'a t -> 'a t
+     - [join descr0 descr1] is called when both trees are disjoint. This might
+     be because they are non-empty trees with incompatible prefixes, or because
+     one (or both) is empty.
 
-  val update_many :
-    (key -> 'a option -> 'b -> 'a option) -> 'a t -> 'b t -> 'a t
+     - [leaf i d0 d1] is called when both trees are are singletons with the same
+     key [i] and data [d0] and [d1], respectively.
 
-  val subset : 'a t -> 'a t -> bool
+     - [branch ?t00 ?t01 ?t10 ?t11 prefix bit] is called when at least one tree
+     is a [Branch] and the domains of the trees intersect. The [prefix] and
+     [bit] correspond to the highest position where at least one of the trees
+     has a branch: it is guaranteed that [t0 = branch prefix bit t00 t01] and
+     [t1 = branch prefix bit t10 t11], where the missing optional arguments are
+     treated as empty.
 
-  val find : key -> 'a t -> 'a
+     {b Note}: The [join], [leaf], and [branch] functions are aggressively
+     inlined. *)
+  (* CR-someday bclement (and lmaurer): We could turn this into a functor over
+     three [Tree] instances and get arbitrary combinations of taking and
+     returning sets and maps. *)
+  let[@inline always] pattern_match_pair t0 t1 ~join ~leaf
+      ~(branch : ?t00:t -> ?t01:t -> ?t10:t -> ?t11:t -> prefix -> bit -> _) =
+    match t0, t1 with
+    (* Empty cases
 
-  val inter : 'c is_value -> (key -> 'a -> 'b -> 'c) -> 'a t -> 'b t -> 'c t
+       Fold the [Empty, Empty] case into the [Empty, _] case in order to benefit
+       from slightly better code generation, as we don't need to look at
+       [descr1] at all in this case. *)
+    | Empty, _ -> (join [@inlined hint]) Empty t1
+    | _, Empty -> (join [@inlined hint]) t0 Empty
+    (* Leaf/Leaf cases *)
+    | Leaf i0, Leaf i1 ->
+      if i0 = i1
+      then (leaf [@inlined hint]) i0
+      else (join [@inlined hint]) t0 t1
+    (* Leaf/Branch cases *)
+    | Leaf i, Branch (prefix, bit, t10, t11) ->
+      if match_prefix i prefix bit
+      then
+        if zero_bit i bit
+        then (branch [@inlined hint]) prefix bit ~t00:t0 ~t10 ~t11
+        else (branch [@inlined hint]) prefix bit ~t01:t0 ~t10 ~t11
+      else (join [@inlined hint]) t0 t1
+    | Branch (prefix, bit, t00, t01), Leaf i ->
+      if match_prefix i prefix bit
+      then
+        if zero_bit i bit
+        then (branch [@inlined hint]) prefix bit ~t00 ~t01 ~t10:t1
+        else (branch [@inlined hint]) prefix bit ~t00 ~t01 ~t11:t1
+      else (join [@inlined hint]) t0 t1
+    (* Branch/Branch case *)
+    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+      if equal_prefix prefix0 bit0 prefix1 bit1
+      then (branch [@inlined hint]) prefix0 bit0 ~t00 ~t01 ~t10 ~t11
+      else if includes_prefix prefix0 bit0 prefix1 bit1
+      then
+        if zero_bit prefix1 bit0
+        then (branch [@inlined hint]) prefix0 bit0 ~t00 ~t01 ~t10:t1
+        else (branch [@inlined hint]) prefix0 bit0 ~t00 ~t01 ~t11:t1
+      else if includes_prefix prefix1 bit1 prefix0 bit0
+      then
+        if zero_bit prefix0 bit1
+        then (branch [@inlined hint]) prefix1 bit1 ~t00:t0 ~t10 ~t11
+        else (branch [@inlined hint]) prefix1 bit1 ~t01:t0 ~t10 ~t11
+      else (join [@inlined hint]) t0 t1
 
-  val inter_domain_is_non_empty : 'a t -> 'b t -> bool
+  (* The following [phys_eq_XXX] helpers are used by [pattern_match_pair_merge]
+     below to exploit physical equality.
 
-  val diff_domains : 'a t -> 'b t -> 'a t
+     They have a slightly complicated interface in order for
+     [pattern_match_pair_merge] to have signature ['a t -> 'b t -> 'c t]. *)
 
-  val diff : (key -> 'a -> 'b -> 'a option) -> 'a t -> 'b t -> 'a t
+  let no_phys_eq_shortcut _t0 _t1 = None
 
-  val diff_sharing : (key -> 'a -> 'b -> 'a option) -> 'a t -> 'b t -> 'a t
+  let phys_eq_shortcut_union_left t0 t1 = if t0 == t1 then Some t0 else None
 
-  val diff_shared : (key -> 'a -> 'a -> 'a option) -> 'a t -> 'a t -> 'a t
+  let phys_eq_shortcut_diff t0 t1 = if t0 == t1 then Some empty else None
 
-  val cardinal : _ t -> int
+  let no_phys_eq_check_branch ~orig_t:_ ~orig_t0:_ ~orig_t1:_ _t0 _t1 = None
 
-  val iter : ('a, unit) Callback.t -> 'a t -> unit
+  let phys_eq_check_branch ~orig_t ~orig_t0 ~orig_t1 t0 t1 =
+    if t0 == orig_t0 && t1 == orig_t1 then Some orig_t else None
 
-  val fold : ('a, 'b -> 'b) Callback.t -> 'a t -> 'b -> 'b
+  (* Perform a pattern-matching on two trees simultaneously, and reconstructs a
+     new tree with similar shape (as in the [merge] function).
 
-  val for_all : ('a, bool) Callback.t -> 'a t -> bool
+     [phys_eq_shortcut] is called before performing the actual pattern-matching
+     and can be used to implement fast paths based on physical equality (e.g.
+     for [union] or [diff] operations).
 
-  val exists : ('a, bool) Callback.t -> 'a t -> bool
+     [phys_eq_check_branch_left], [phys_eq_check_branch_right],
+     [phys_eq_check_leaf_left] and [phys_eq_check_leaf_right] are called when
+     reconstructing a new tree and can be used to enforce sharing. The [_left]
+     variants take precedence over the [_right] variants.
 
-  val filter : ('a, bool) Callback.t -> 'a t -> 'a t
+     [only_left] (resp. [only_right]) is called on sub-trees that of [t0] (resp.
+     [t1]) whose intersection with [t1] (resp. [t0]) is empty. Note that the
+     sub-tree itself might be empty. It must return a tree whose keys are a
+     subset of its argument's keys.
 
-  val partition : ('a, bool) Callback.t -> 'a t -> 'a t * 'a t
+     [both_sides] is called on pairs of sub-tree of [t0] and [t1] that may have
+     a non-empty intersection (and will typically call into the same
+     [pattern_match_pair_merge] recursively). It must return a tree whose keys
+     are present in at least one of its arguments.
 
-  val choose : 'a t -> 'a Binding.t
+     {b Note}: All functions that are named arguments are aggressively inlined,
+     as they are expected to be inline anonymous functions, but the [combine]
+     argument is not, as it is expected to be passed directly from the user in
+     most cases. *)
+  let[@inline always] pattern_match_pair_merge
+      ?(phys_eq_shortcut = no_phys_eq_shortcut)
+      ?(phys_eq_check_branch_left = no_phys_eq_check_branch)
+      ?(phys_eq_check_branch_right = no_phys_eq_check_branch) ~only_left
+      ~only_right ~both_sides ~keep_inter t0 t1 =
+    match (phys_eq_shortcut [@inlined hint]) t0 t1 with
+    | Some t' -> t'
+    | None ->
+      pattern_match_pair t0 t1
+        ~leaf:(fun i -> if keep_inter then leaf i else empty)
+        ~join:(fun t0 t1 ->
+          match t0, t1 with
+          (* Calling [only_right] even when both sides are empty is semantically
+             correct and leads to slighly better code generation, see the note
+             in [pattern_match_pair]. *)
+          | Empty, _ -> (only_right [@inlined hint]) t1
+          | _, Empty -> (only_left [@inlined hint]) t0
+          | ( (Leaf prefix0 | Branch (prefix0, _, _, _)),
+              (Leaf prefix1 | Branch (prefix1, _, _, _)) ) ->
+            join prefix0
+              ((only_left [@inlined hint]) t0)
+              prefix1
+              ((only_right [@inlined hint]) t1))
+        ~branch:(fun ?t00 ?t01 ?t10 ?t11 prefix bit ->
+          (* We expect all of the constructors for the arguments to be
+             statically known here, so the matches below should get simplified
+             to a single path depending on context. *)
+          let both_sides' t0 t1 =
+            match t0, t1 with
+            | None, None -> empty
+            | Some t0, None -> (only_left [@inlined hint]) t0
+            | None, Some t1 -> (only_right [@inlined hint]) t1
+            | Some t0, Some t1 -> (both_sides [@inlined hint]) t0 t1
+              [@@inline always]
+          in
+          let t0' = both_sides' t00 t10 in
+          let t1' = both_sides' t01 t11 in
+          let[@local] branch1 () =
+            match t10, t11 with
+            | None, _ | _, None -> branch prefix bit t0' t1'
+            | Some t10, Some t11 -> (
+              match
+                (phys_eq_check_branch_right [@inlined hint]) ~orig_t:t1
+                  ~orig_t0:t10 ~orig_t1:t11 t0' t1'
+              with
+              | Some t' -> t'
+              | None -> branch prefix bit t0' t1')
+          in
+          let[@local] branch0 () =
+            match t00, t01 with
+            | None, _ | _, None -> branch1 ()
+            | Some t00, Some t01 -> (
+              match
+                (phys_eq_check_branch_left [@inlined hint]) ~orig_t:t0
+                  ~orig_t0:t00 ~orig_t1:t01 t0' t1'
+              with
+              | Some t' -> t'
+              | None -> branch1 ())
+          in
+          branch0 ())
 
-  val choose_opt : 'a t -> 'a Binding.t option
+  let rec union t0 t1 =
+    pattern_match_pair_merge
+      ~only_left:(fun t0 -> t0)
+      ~only_right:(fun t1 -> t1)
+      ~both_sides:(fun t0 t1 -> union t0 t1)
+      ~keep_inter:true t0 t1
 
-  val min_binding : 'a t -> 'a Binding.t
+  (* [_sharing] functions are guaranteed to share with their first argument
+     only.
 
-  val min_binding_opt : 'a t -> 'a Binding.t option
+     Some [_sharing] functions also share with their second argument as an
+     optimisation, when possible. *)
+  let pattern_match_pair_merge_sharing =
+    pattern_match_pair_merge ~phys_eq_check_branch_left:phys_eq_check_branch
 
-  val max_binding : 'a t -> 'a Binding.t
+  let rec union_sharing t0 t1 =
+    pattern_match_pair_merge_sharing
+      ~phys_eq_check_branch_right:phys_eq_check_branch
+      ~only_left:(fun t0 -> t0)
+      ~only_right:(fun t1 -> t1)
+      ~both_sides:(fun t0 t1 -> union_sharing t0 t1)
+      ~keep_inter:true t0 t1
 
-  val max_binding_opt : 'a t -> 'a Binding.t option
+  let rec union_shared t0 t1 =
+    pattern_match_pair_merge_sharing
+      ~phys_eq_shortcut:phys_eq_shortcut_union_left
+      ~phys_eq_check_branch_right:phys_eq_check_branch
+      ~only_left:(fun t0 -> t0)
+      ~only_right:(fun t1 -> t1)
+      ~both_sides:(fun t0 t1 -> union_shared t0 t1)
+      ~keep_inter:true t0 t1
 
-  val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+  let rec diff_sharing t0 t1 =
+    pattern_match_pair_merge_sharing
+      ~only_left:(fun t0 -> t0)
+      ~only_right:(fun _ -> empty)
+      ~both_sides:(fun t0 t1 -> diff_sharing t0 t1)
+      ~keep_inter:false t0 t1
 
-  val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
+  let rec diff_shared t0 t1 =
+    pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_diff
+      ~only_left:(fun t0 -> t0)
+      ~only_right:(fun _ -> empty)
+      ~both_sides:(fun t0 t1 -> diff_shared t0 t1)
+      ~keep_inter:false t0 t1
 
-  val split :
-    found:('a -> 'b) -> not_found:'b -> key -> 'a t -> 'a t * 'b * 'a t
+  (* CR mshinwell: rename to subset_domain and inter_domain? *)
 
-  val to_list : 'a t -> 'a Binding.t list
+  let rec subset t0 t1 =
+    match t0, t1 with
+    | Empty, _ -> true
+    | _, Empty -> false
+    | Branch _, Leaf _ -> false
+    | Leaf i, _ -> mem i t1
+    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+      if equal_prefix prefix0 bit0 prefix1 bit1
+      then subset t00 t10 && subset t01 t11
+      else if includes_prefix prefix1 bit1 prefix0 bit0
+      then if zero_bit prefix0 bit1 then subset t0 t10 else subset t0 t11
+      else false
 
-  val merge :
-    'c is_value ->
-    (key -> 'a option -> 'b option -> 'c option) ->
-    'a t ->
-    'b t ->
-    'c t
+  let rec inter t0 t1 =
+    match t0, t1 with
+    | Empty, _ -> empty
+    | _, Empty -> empty
+    | Leaf i, _ -> if mem i t1 then leaf i else empty
+    | _, Leaf i -> if mem i t0 then leaf i else empty
+    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+      if equal_prefix prefix0 bit0 prefix1 bit1
+      then branch prefix0 bit0 (inter t00 t10) (inter t01 t11)
+      else if includes_prefix prefix0 bit0 prefix1 bit1
+      then if zero_bit prefix1 bit0 then inter t00 t1 else inter t01 t1
+      else if includes_prefix prefix1 bit1 prefix0 bit0
+      then if zero_bit prefix0 bit1 then inter t0 t10 else inter t0 t11
+      else empty
 
-  val find_opt : key -> 'a t -> 'a option
+  let rec inter_domain_is_non_empty t0 t1 =
+    match t0, t1 with
+    | Empty, _ | _, Empty -> false
+    | Leaf i, _ -> mem i t1
+    | _, Leaf i -> mem i t0
+    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+      if equal_prefix prefix0 bit0 prefix1 bit1
+      then
+        inter_domain_is_non_empty t00 t10 || inter_domain_is_non_empty t01 t11
+      else if includes_prefix prefix0 bit0 prefix1 bit1
+      then
+        if zero_bit prefix1 bit0
+        then inter_domain_is_non_empty t00 t1
+        else inter_domain_is_non_empty t01 t1
+      else if includes_prefix prefix1 bit1 prefix0 bit0
+      then
+        if zero_bit prefix0 bit1
+        then inter_domain_is_non_empty t0 t10
+        else inter_domain_is_non_empty t0 t11
+      else false
 
-  val get_singleton : 'a t -> 'a Binding.t option
+  (* CR bclement: this could probably be removed now that we have a more generic
+     [diff]. *)
+  let rec diff_domains t0 t1 =
+    match t0, t1 with
+    | Empty, _ -> empty
+    | _, Empty -> t0
+    | Leaf i, _ -> if mem i t1 then empty else t0
+    | _, Leaf i -> remove i t0
+    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+      if equal_prefix prefix0 bit0 prefix1 bit1
+      then branch prefix0 bit0 (diff_domains t00 t10) (diff_domains t01 t11)
+      else if includes_prefix prefix0 bit0 prefix1 bit1
+      then
+        if zero_bit prefix1 bit0
+        then branch prefix0 bit0 (diff_domains t00 t1) t01
+        else branch prefix0 bit0 t00 (diff_domains t01 t1)
+      else if includes_prefix prefix1 bit1 prefix0 bit0
+      then
+        if zero_bit prefix0 bit1
+        then diff_domains t0 t10
+        else diff_domains t0 t11
+      else t0
 
-  val map : 'b is_value -> ('a -> 'b) -> 'a t -> 'b t
+  let rec cardinal t =
+    match t with
+    | Empty -> 0
+    | Leaf _ -> 1
+    | Branch (_, _, t0, t1) -> cardinal t0 + cardinal t1
 
-  val map_sharing : ('a -> 'a) -> 'a t -> 'a t
+  let[@inline always] order_branches bit t0 t1 =
+    if bit < 0 then t1, t0 else t0, t1
 
-  val mapi : 'b is_value -> ('a, 'b) Callback.t -> 'a t -> 'b t
+  let rec unsigned_iter f t =
+    match t with
+    | Empty -> ()
+    | Leaf key -> f key
+    | Branch (_, _, t0, t1) ->
+      unsigned_iter f t0;
+      unsigned_iter f t1
 
-  val filter_map : 'b is_value -> (key -> 'a -> 'b option) -> 'a t -> 'b t
+  let iter f t =
+    match t with
+    | Empty -> ()
+    | Leaf key -> f key
+    | Branch (_, bit, t0, t1) ->
+      let t0, t1 = order_branches bit t0 t1 in
+      unsigned_iter f t0;
+      unsigned_iter f t1
 
-  val filter_map_sharing : (key -> 'a -> 'a option) -> 'a t -> 'a t
+  let rec unsigned_fold f t acc =
+    match t with
+    | Empty -> acc
+    | Leaf key -> f key acc
+    | Branch (_, _, t0, t1) -> unsigned_fold f t1 (unsigned_fold f t0 acc)
 
-  type 'a iterator
+  let fold f t acc =
+    match t with
+    | Empty -> acc
+    | Leaf key -> f key acc
+    | Branch (_, bit, t0, t1) ->
+      let t0, t1 = order_branches bit t0 t1 in
+      unsigned_fold f t1 (unsigned_fold f t0 acc)
 
-  val iterator : 'a t -> 'a iterator
+  let rec unsigned_for_all p t =
+    match t with
+    | Empty -> true
+    | Leaf key -> p key
+    | Branch (_, _, t0, t1) -> unsigned_for_all p t0 && unsigned_for_all p t1
 
-  val current : 'a iterator -> 'a Binding.t option
+  let for_all p t =
+    match t with
+    | Empty -> true
+    | Leaf key -> p key
+    | Branch (_, bit, t0, t1) ->
+      let t0, t1 = order_branches bit t0 t1 in
+      unsigned_for_all p t0 && unsigned_for_all p t1
 
-  val advance : 'a iterator -> 'a iterator
+  let rec unsigned_exists p t =
+    match t with
+    | Empty -> false
+    | Leaf key -> p key
+    | Branch (_, _, t0, t1) -> unsigned_exists p t0 || unsigned_exists p t1
 
-  val seek : 'a iterator -> key -> 'a iterator
+  let exists p t =
+    match t with
+    | Empty -> false
+    | Leaf key -> p key
+    | Branch (_, bit, t0, t1) ->
+      let t0, t1 = order_branches bit t0 t1 in
+      unsigned_exists p t0 || unsigned_exists p t1
 
-  val to_seq : 'a t -> 'a Binding.t Seq.t
+  let filter p t =
+    let rec loop t =
+      match t with
+      | Empty -> t
+      | Leaf i -> if p i then t else empty
+      | Branch (prefix, bit, t0, t1) -> branch prefix bit (loop t0) (loop t1)
+    in
+    loop t
 
-  val of_list : 'a is_value -> 'a Binding.t list -> 'a t
+  (* CR-someday lmaurer: Make this O(n) rather than O(n log n). *)
+  let partition p t =
+    let rec loop ((true_, false_) as acc) t =
+      match t with
+      | Empty -> acc
+      | Leaf i -> if p i then add i true_, false_ else true_, add i false_
+      | Branch (_, _, t0, t1) -> loop (loop acc t0) t1
+    in
+    loop (empty, empty) t
 
-  val disjoint_union :
-    ?eq:('a -> 'a -> bool) ->
-    print:(Format.formatter -> key -> unit) ->
-    'a t ->
-    'a t ->
-    'a t
+  let rec choose t =
+    match t with
+    | Empty -> raise Not_found
+    | Leaf key -> key
+    | Branch (_, _, t0, _) -> choose t0
 
-  val map_keys : (key -> key) -> 'a t -> 'a t
+  let choose_opt t =
+    match choose t with exception Not_found -> None | choice -> Some choice
 
-  val valid : 'a t -> bool
-end = struct
+  let rec unsigned_min_binding t =
+    match t with
+    | Empty -> raise Not_found
+    | Leaf key -> key
+    | Branch (_, _, t0, _) -> unsigned_min_binding t0
+
+  let min_binding t =
+    match t with
+    | Empty -> raise Not_found
+    | Leaf key -> key
+    | Branch (_, bit, t0, t1) ->
+      unsigned_min_binding (if bit < 0 then t1 else t0)
+
+  let min_binding_opt t =
+    match min_binding t with exception Not_found -> None | min -> Some min
+
+  let rec unsigned_max_binding t =
+    match t with
+    | Empty -> raise Not_found
+    | Leaf key -> key
+    | Branch (_, _, _, t1) -> unsigned_max_binding t1
+
+  let max_binding t =
+    match t with
+    | Empty -> raise Not_found
+    | Leaf key -> key
+    | Branch (_, bit, t0, t1) ->
+      unsigned_max_binding (if bit < 0 then t0 else t1)
+
+  let max_binding_opt t =
+    match max_binding t with exception Not_found -> None | max -> Some max
+
+  let rec equal t0 t1 =
+    if t0 == t1
+    then true
+    else
+      match t0, t1 with
+      | Empty, Empty -> assert false (* already covered *)
+      | Leaf i, Leaf j -> i = j
+      | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+        if equal_prefix prefix0 bit0 prefix1 bit1
+        then equal t00 t10 && equal t01 t11
+        else false
+      | (Empty | Leaf _ | Branch _), _ -> false
+
+  let rec compare t0 t1 =
+    if t0 == t1
+    then 0
+    else
+      match t0, t1 with
+      | Empty, Empty -> assert false (* already covered *)
+      | Leaf i, Leaf j -> if i = j then 0 else if i < j then -1 else 1
+      | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
+        let c = compare_prefix prefix0 bit0 prefix1 bit1 in
+        if c = 0
+        then
+          let c = compare t00 t10 in
+          if c = 0 then compare t01 t11 else c
+        else c
+      | Empty, Leaf _ -> 1
+      | Empty, Branch _ -> 1
+      | Leaf _, Branch _ -> 1
+      | Leaf _, Empty -> -1
+      | Branch _, Empty -> -1
+      | Branch _, Leaf _ -> -1
+
+  (* All entries in [t] have the same sign -- either all are non-negative or all
+     are negative.
+
+     [i] might be any value. *)
+  let same_sign_split ~found ~not_found i t =
+    let rec loop t =
+      match t with
+      | Empty -> empty, not_found, empty
+      | Leaf j ->
+        if i = j
+        then empty, found, empty
+        else if j < i
+        then singleton j, not_found, empty
+        else empty, not_found, singleton j
+      | Branch (prefix, bit, t0, t1) ->
+        if match_prefix i prefix bit
+        then
+          if zero_bit i bit
+          then
+            let lt, mem, gt = loop t0 in
+            lt, mem, branch prefix bit gt t1
+          else
+            let lt, mem, gt = loop t1 in
+            branch prefix bit t0 lt, mem, gt
+        else if i < prefix
+        then empty, not_found, t
+        else t, not_found, empty
+    in
+    loop t
+
+  let split ~found ~not_found i t =
+    match t with
+    | Branch (_, bit, t0, t1) when bit < 0 ->
+      (* prefix is necessarily empty *)
+      if i < 0
+      then
+        let lt, mem, gt = same_sign_split ~found ~not_found i t1 in
+        lt, mem, branch 0 bit t0 gt
+      else
+        let lt, mem, gt = same_sign_split ~found ~not_found i t0 in
+        branch 0 bit lt t1, mem, gt
+    | Empty | Leaf _ | Branch _ ->
+      (same_sign_split [@inlined hint]) ~found ~not_found i t
+
+  let to_list t =
+    let rec loop acc t =
+      match t with
+      | Empty -> acc
+      | Leaf i -> i :: acc
+      | Branch (_, _, t0, t1) -> loop (loop acc t1) t0
+    in
+    match t with
+    | Empty -> []
+    | Leaf i -> [i]
+    | Branch (_, bit, t0, t1) ->
+      let t0, t1 = order_branches bit t0 t1 in
+      loop (loop [] t1) t0
+
+  let get_singleton t =
+    match t with Empty | Branch _ -> None | Leaf key -> Some key
+
+  let to_seq t =
+    let rec aux acc () =
+      match acc with
+      | [] -> Seq.Nil
+      | t0 :: r -> (
+        match t0 with
+        | Empty -> aux r ()
+        | Leaf key -> Seq.Cons (key, aux r)
+        | Branch (_, _, t1, t2) -> aux (t1 :: t2 :: r) ())
+    in
+    fun () ->
+      match t with
+      | Empty -> Seq.Nil
+      | Leaf key -> Seq.Cons (key, aux [])
+      | Branch (_, bit, t0, t1) ->
+        let t0, t1 = order_branches bit t0 t1 in
+        aux [t0; t1] ()
+
+  let[@inline always] of_list l =
+    List.fold_left (fun map b -> add b map) empty l
+
+  let map_keys f t = fold (fun i acc -> add (f i) acc) t empty
+
+  let valid t =
+    let rec check_deep prefix bit t =
+      match t with
+      | Empty -> false (* [Empty] should only occur at top level *)
+      | Leaf i -> (bit = 0 && prefix = i) || match_prefix i prefix bit
+      | Branch (prefix', bit', t0, t1) ->
+        (* CR-someday lmaurer: Should check that [bit'] has a POPCOUNT of 1 *)
+        let prefix0 =
+          (* This should be a no-op, since [prefix'] should already have a zero
+             here *)
+          prefix' land lnot bit'
+        in
+        let prefix1 = prefix' lor bit' in
+        let bit0 = bit' lsr 1 in
+        let bit1 = bit0 in
+        prefix0 = prefix'
+        && (bit = bit' || higher bit bit')
+        && bit <> 0
+        && match_prefix prefix' prefix bit
+        && check_deep prefix0 bit0 t0 && check_deep prefix1 bit1 t1
+    in
+    is_empty t || check_deep 0 min_int t
+end
+
+module Map_operations = struct
+  module Tree = Map0
   include Tree
 
   (* A relaxed version of [Tree.branch], allowing [t0] and/or [t1] to be empty.
@@ -726,21 +1166,6 @@ end = struct
       ~only_right:(fun _ -> empty iv)
       ~both_sides:(fun t0 t1 -> diff_shared f t0 t1)
       iv f t0 t1
-
-  (* CR mshinwell: rename to subset_domain and inter_domain? *)
-
-  let rec subset t0 t1 =
-    match descr t0, descr t1 with
-    | Empty, _ -> true
-    | _, Empty -> false
-    | Branch _, Leaf _ -> false
-    | Leaf (i, _), _ -> mem i t1
-    | Branch (prefix0, bit0, t00, t01), Branch (prefix1, bit1, t10, t11) ->
-      if equal_prefix prefix0 bit0 prefix1 bit1
-      then subset t00 t10 && subset t01 t11
-      else if includes_prefix prefix1 bit1 prefix0 bit0
-      then if zero_bit prefix0 bit1 then subset t0 t10 else subset t0 t11
-      else false
 
   (* CR lmaurer: Should use [raise_notrace] internally *)
   let rec find i t =
@@ -1279,42 +1704,36 @@ end = struct
     in
     is_empty t || check_deep 0 min_int t
 end
-[@@inline always]
 
 module Set = struct
+  include Set0
+
   type elt = key
 
-  type t = unit t0
-
-  and 'a t0 = 'a Set0.t =
-    | Empty : unit t0
-    | Leaf : elt -> unit t0
-    | Branch : elt * elt * unit t0 * unit t0 -> unit t0
-
-  module Ops = Tree_operations (Set0)
+  module Ops = Set_operations
   include Ops
 
   let empty = Empty
 
-  let singleton i = Ops.singleton Unit i ()
+  let singleton i = Ops.singleton i
 
-  let add i t = Ops.add i () t
+  let add i t = Ops.add i t
 
-  let union t0 t1 = Ops.union (fun _ () () -> Some ()) t0 t1
+  let union t0 t1 = Ops.union t0 t1
 
-  let union_shared t0 t1 = Ops.union_shared (fun _ () () -> Some ()) t0 t1
+  let union_shared t0 t1 = Ops.union_shared t0 t1
 
-  let union_sharing t0 t1 = Ops.union_sharing (fun _ () () -> Some ()) t0 t1
+  let union_sharing t0 t1 = Ops.union_sharing t0 t1
 
   let diff = Ops.diff_domains
 
-  let diff_sharing t0 t1 = Ops.diff_sharing (fun _ () () -> None) t0 t1
+  let diff_sharing t0 t1 = Ops.diff_sharing t0 t1
 
-  let diff_shared t0 t1 = Ops.diff_shared (fun _ () () -> None) t0 t1
+  let diff_shared t0 t1 = Ops.diff_shared t0 t1
 
   let disjoint t0 t1 = not (Ops.inter_domain_is_non_empty t0 t1)
 
-  let inter t0 t1 = Ops.inter Unit (fun _ () () -> ()) t0 t1
+  let inter t0 t1 = Ops.inter t0 t1
 
   let rec union_list ts =
     match ts with [] -> empty | t :: ts -> union t (union_list ts)
@@ -1337,22 +1756,22 @@ module Set = struct
 
   let max_elt_opt = Ops.max_binding_opt
 
-  let equal t0 t1 = Ops.equal (fun () () -> true) t0 t1
+  let equal t0 t1 = Ops.equal t0 t1
 
-  let compare t0 t1 = Ops.compare (fun () () -> 0) t0 t1
+  let compare t0 t1 = Ops.compare t0 t1
 
-  let split i t = Ops.split ~found:(fun () -> true) ~not_found:false i t
+  let split i t = Ops.split ~found:true ~not_found:false i t
 
   let find elt t = if mem elt t then elt else raise Not_found
 
-  let of_list l = Ops.of_list Unit l
+  let of_list l = Ops.of_list l
 
   let map f t = Ops.map_keys f t
 end
 
 module Map = struct
   include Map0
-  module Ops = Tree_operations (Map0)
+  module Ops = Map_operations
   include Ops
 
   let empty = Empty
