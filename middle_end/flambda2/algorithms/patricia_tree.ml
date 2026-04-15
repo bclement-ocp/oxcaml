@@ -94,6 +94,10 @@ let compare_prefix prefix0 bit0 prefix1 bit1 =
   let c = compare bit0 bit1 in
   if c = 0 then compare prefix0 prefix1 else c
 
+type empty = [`Empty]
+
+type non_empty = [`Non_empty]
+
 (* A tree structure that will be used to implement a datatype, either sets or
    maps. Many algorithms operate identically on sets and maps, so they are
    implemented in the functor [Tree_operations] over this module type. *)
@@ -104,6 +108,10 @@ module type Tree = sig
      011, it also has prefix 01.) *)
   type 'a t
 
+  type ('a, 'b) tree
+
+  val tree : ('a, 'b) tree -> 'a t
+
   (* A witness that ['a] is a valid type for a value stored in the tree. Maps
      will allow ['a] to be any value but sets will only allow [unit]. *)
   type 'a is_value [@@immediate]
@@ -113,25 +121,41 @@ module type Tree = sig
 
   (* An empty tree. Since it has no nodes, it is safe to treat it as having any
      prefix. *)
-  val empty : 'a is_value -> 'a t
+  val empty : 'a is_value -> ('a, empty) tree
 
   (* A tree containing a single key-value pair. It has the entire key as a
      prefix. *)
-  val leaf : 'a is_value -> key -> 'a -> 'a t
+  val leaf : 'a is_value -> key -> 'a -> ('a, non_empty) tree
 
   (* A tree with the given prefix, the length of the prefix, and two subtrees.
      If the prefix is P, we require that [t0] has prefix P0 and [t1] has prefix
      P1 (note that this is big-endian notation). For efficiency, [t0] and [t1]
      are assumed to be non-empty. *)
-  val branch : prefix_and_bit -> 'a t -> 'a t -> 'a t
+  val branch :
+    prefix_and_bit ->
+    ('a, non_empty) tree ->
+    ('a, non_empty) tree ->
+    ('a, non_empty) tree
 
   (* A view on a given node, corresponding to which of [empty], [leaf], or
      [branch] constructed it. Passing the fields back in as arguments will
      construct an identical tree. *)
+  type (_, _) tree_descr =
+    | Empty : ('a, empty) tree_descr
+    | Leaf : key * 'a -> ('a, non_empty) tree_descr
+    | Branch :
+        prefix_and_bit * ('a, non_empty) tree * ('a, non_empty) tree
+        -> ('a, non_empty) tree_descr
+
+  val tree_descr : ('a, 'b) tree -> ('a, 'b) tree_descr
+
+  type _ is_empty =
+    | Not_empty : non_empty is_empty
+    | Is_empty : empty is_empty
+
   type 'a descr =
     | Empty
-    | Leaf of key * 'a
-    | Branch of prefix_and_bit * 'a t * 'a t
+    | Non_empty of ('a, non_empty) tree
 
   val descr : 'a t -> 'a descr
 
@@ -190,14 +214,20 @@ module type Tree = sig
 end
 
 module Set0 = struct
-  type 'a t =
-    | Empty : unit t
-    | Leaf : key -> unit t
-    | Branch : prefix_and_bit * unit t * unit t -> unit t
+  type (_, _) tree =
+    | Empty : (unit, empty) tree
+    | Leaf : key -> (unit, non_empty) tree
+    | Branch :
+        prefix_and_bit * (unit, non_empty) tree * (unit, non_empty) tree
+        -> (unit, non_empty) tree
+
+  type 'a t = Tree : ('a, _) tree -> 'a t [@@unboxed]
+
+  let tree tree = Tree tree
 
   type 'a is_value = Unit : unit is_value
 
-  let[@inline always] is_value_of (type a) (t : a t) : a is_value =
+  let[@inline always] is_value_of (type a) (Tree t : a t) : a is_value =
     (* Crucially, this compiles down to just [Unit], making this function cost
        nothing. *)
     match t with
@@ -205,25 +235,39 @@ module Set0 = struct
     | Leaf _ -> Unit
     | Branch _ -> Unit
 
-  let[@inline always] empty (type a) (Unit : a is_value) : a t = Empty
+  let[@inline always] empty (type a) (Unit : a is_value) : (a, empty) tree =
+    Empty
 
-  let[@inline always] leaf (type a) (Unit : a is_value) elt (() : a) : a t =
+  let[@inline always] leaf (type a) (Unit : a is_value) elt (() : a) :
+      (a, non_empty) tree =
     Leaf elt
 
-  let[@inline always] branch (type a) prefix_and_bit (t0 : a t) (t1 : a t) : a t
-      =
-    let Unit = is_value_of t0 in
+  let[@inline always] branch (type a) prefix_and_bit (t0 : (a, non_empty) tree)
+      (t1 : (a, non_empty) tree) : (a, non_empty) tree =
+    let Unit = is_value_of (Tree t0) in
     Branch (prefix_and_bit, t0, t1)
 
-  type 'a descr =
-    | Empty
-    | Leaf of key * 'a
-    | Branch of prefix_and_bit * 'a t * 'a t
+  type (_, _) tree_descr =
+    | Empty : ('a, empty) tree_descr
+    | Leaf : key * 'a -> ('a, non_empty) tree_descr
+    | Branch :
+        prefix_and_bit * ('a, non_empty) tree * ('a, non_empty) tree
+        -> ('a, non_empty) tree_descr
 
-  let descr (type a) : a t -> a descr = function
+  let tree_descr (type a b) : (a, b) tree -> (a, b) tree_descr = function
     | Empty -> Empty
     | Leaf elt -> Leaf (elt, ())
     | Branch (prefix_and_bit, t0, t1) -> Branch (prefix_and_bit, t0, t1)
+
+  type 'a descr =
+    | Empty
+    | Non_empty of ('a, non_empty) tree
+
+  let descr (type a) (Tree tree : a t) : a descr =
+    match tree with
+    | Empty -> Empty
+    | Leaf _ -> Non_empty tree
+    | Branch _ -> Non_empty tree
 
   module Binding = struct
     type _ t = key
@@ -286,10 +330,16 @@ end
 module _ : Tree = Set0
 
 module Map0 = struct
-  type 'a t =
-    | Empty
-    | Leaf of key * 'a
-    | Branch of prefix_and_bit * 'a t * 'a t
+  type (_, _) tree =
+    | Empty : ('a, empty) tree
+    | Leaf : key * 'a -> ('a, non_empty) tree
+    | Branch :
+        prefix_and_bit * ('a, non_empty) tree * ('a, non_empty) tree
+        -> ('a, non_empty) tree
+
+  type 'a t = Tree : ('a, _) tree -> 'a t [@@unboxed]
+
+  let tree tree = Tree tree
 
   type _ is_value = Any : 'a is_value
 
@@ -302,10 +352,16 @@ module Map0 = struct
   let[@inline always] branch prefix_and_bit t0 t1 =
     Branch (prefix_and_bit, t0, t1)
 
-  type 'a descr = 'a t =
-    | Empty
-    | Leaf of key * 'a
-    | Branch of prefix_and_bit * 'a t * 'a t
+  type ('a, 'b) tree_descr = ('a, 'b) tree =
+    | Empty : ('a, empty) tree_descr
+    | Leaf : key * 'a -> ('a, non_empty) tree_descr
+    | Branch :
+        prefix_and_bit * ('a, non_empty) tree * ('a, non_empty) tree
+        -> ('a, non_empty) tree_descr
+
+  let tree_descr = Fun.id
+
+  type 'a descr = 'a t = Tree : ('a, _) tree_descr -> 'a descr [@@unboxed]
 
   let descr = Fun.id
 
@@ -362,135 +418,128 @@ end
 
 module _ : Tree = Map0
 
-module Tree_operations (Tree : Tree) : sig
-  open! Tree
+module Tree_operations
+    (Tree : Tree)
+(* : sig open! Tree
 
-  val is_empty : 'a t -> bool
+   val is_empty : 'a t -> bool
 
-  val singleton : 'a is_value -> key -> 'a -> 'a t
+   val singleton : 'a is_value -> key -> 'a -> 'a t
 
-  val mem : key -> 'a t -> bool
+   val mem : key -> 'a t -> bool
 
-  val add : key -> 'a -> 'a t -> 'a t
+   val add : key -> 'a -> 'a t -> 'a t
 
-  val replace : key -> ('a -> 'a) -> 'a t -> 'a t
+   val replace : key -> ('a -> 'a) -> 'a t -> 'a t
 
-  val update : key -> ('a option -> 'a option) -> 'a t -> 'a t
+   val update : key -> ('a option -> 'a option) -> 'a t -> 'a t
 
-  val remove : key -> 'a t -> 'a t
+   val remove : key -> 'a t -> 'a t
 
-  val union : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
+   val union : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
 
-  val union_sharing : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
+   val union_sharing : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
 
-  val union_shared : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
+   val union_shared : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
 
-  val union_total : (key -> 'a -> 'a -> 'a) -> 'a t -> 'a t -> 'a t
+   val union_total : (key -> 'a -> 'a -> 'a) -> 'a t -> 'a t -> 'a t
 
-  val union_total_shared : (key -> 'a -> 'a -> 'a) -> 'a t -> 'a t -> 'a t
+   val union_total_shared : (key -> 'a -> 'a -> 'a) -> 'a t -> 'a t -> 'a t
 
-  val union_left_biased : 'a t -> 'a t -> 'a t
+   val union_left_biased : 'a t -> 'a t -> 'a t
 
-  val union_right_biased : 'a t -> 'a t -> 'a t
+   val union_right_biased : 'a t -> 'a t -> 'a t
 
-  val update_many :
-    (key -> 'a option -> 'b -> 'a option) -> 'a t -> 'b t -> 'a t
+   val update_many : (key -> 'a option -> 'b -> 'a option) -> 'a t -> 'b t -> 'a
+   t
 
-  val subset : 'a t -> 'a t -> bool
+   val subset : 'a t -> 'a t -> bool
 
-  val find : key -> 'a t -> 'a
+   val find : key -> 'a t -> 'a
 
-  val inter :
-    'c is_value -> ('a, 'b, 'c) Inter_callback.t -> 'a t -> 'b t -> 'c t
+   val inter : 'c is_value -> ('a, 'b, 'c) Inter_callback.t -> 'a t -> 'b t ->
+   'c t
 
-  val inter_domain_is_non_empty : 'a t -> 'b t -> bool
+   val inter_domain_is_non_empty : 'a t -> 'b t -> bool
 
-  val diff_domains : 'a t -> 'b t -> 'a t
+   val diff_domains : 'a t -> 'b t -> 'a t
 
-  val diff : ('a, 'b, 'a) Merge_callback.t -> 'a t -> 'b t -> 'a t
+   val diff : ('a, 'b, 'a) Merge_callback.t -> 'a t -> 'b t -> 'a t
 
-  val diff_sharing : ('a, 'b, 'a) Merge_callback.t -> 'a t -> 'b t -> 'a t
+   val diff_sharing : ('a, 'b, 'a) Merge_callback.t -> 'a t -> 'b t -> 'a t
 
-  val diff_shared : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
+   val diff_shared : ('a, 'a, 'a) Merge_callback.t -> 'a t -> 'a t -> 'a t
 
-  val cardinal : _ t -> int
+   val cardinal : _ t -> int
 
-  val iter : ('a, unit) Callback.t -> 'a t -> unit
+   val iter : ('a, unit) Callback.t -> 'a t -> unit
 
-  val fold : ('a, 'b -> 'b) Callback.t -> 'a t -> 'b -> 'b
+   val fold : ('a, 'b -> 'b) Callback.t -> 'a t -> 'b -> 'b
 
-  val for_all : ('a, bool) Callback.t -> 'a t -> bool
+   val for_all : ('a, bool) Callback.t -> 'a t -> bool
 
-  val exists : ('a, bool) Callback.t -> 'a t -> bool
+   val exists : ('a, bool) Callback.t -> 'a t -> bool
 
-  val filter : ('a, bool) Callback.t -> 'a t -> 'a t
+   val filter : ('a, bool) Callback.t -> 'a t -> 'a t
 
-  val partition : ('a, bool) Callback.t -> 'a t -> 'a t * 'a t
+   val partition : ('a, bool) Callback.t -> 'a t -> 'a t * 'a t
 
-  val choose : 'a t -> 'a Binding.t
+   val choose : 'a t -> 'a Binding.t
 
-  val choose_opt : 'a t -> 'a Binding.t option
+   val choose_opt : 'a t -> 'a Binding.t option
 
-  val min_binding : 'a t -> 'a Binding.t
+   val min_binding : 'a t -> 'a Binding.t
 
-  val min_binding_opt : 'a t -> 'a Binding.t option
+   val min_binding_opt : 'a t -> 'a Binding.t option
 
-  val max_binding : 'a t -> 'a Binding.t
+   val max_binding : 'a t -> 'a Binding.t
 
-  val max_binding_opt : 'a t -> 'a Binding.t option
+   val max_binding_opt : 'a t -> 'a Binding.t option
 
-  val equal : ('a, 'a) Equal_callback.t -> 'a t -> 'a t -> bool
+   val equal : ('a, 'a) Equal_callback.t -> 'a t -> 'a t -> bool
 
-  val compare : ('a, 'a) Compare_callback.t -> 'a t -> 'a t -> int
+   val compare : ('a, 'a) Compare_callback.t -> 'a t -> 'a t -> int
 
-  val split :
-    found:('a, 'b) Split_callback.t ->
-    not_found:'b ->
-    key ->
-    'a t ->
-    'a t * 'b * 'a t
+   val split : found:('a, 'b) Split_callback.t -> not_found:'b -> key -> 'a t ->
+   'a t * 'b * 'a t
 
-  val to_list : 'a t -> 'a Binding.t list
+   val to_list : 'a t -> 'a Binding.t list
 
-  val merge :
-    'c is_value ->
-    (key -> 'a option -> 'b option -> 'c option) ->
-    'a t ->
-    'b t ->
-    'c t
+   val merge : 'c is_value -> (key -> 'a option -> 'b option -> 'c option) -> 'a
+   t -> 'b t -> 'c t
 
-  val find_opt : key -> 'a t -> 'a option
+   val find_opt : key -> 'a t -> 'a option
 
-  val get_singleton : 'a t -> 'a Binding.t option
+   val get_singleton : 'a t -> 'a Binding.t option
 
-  val map : 'b is_value -> ('a -> 'b) -> 'a t -> 'b t
+   val map : 'b is_value -> ('a -> 'b) -> 'a t -> 'b t
 
-  val map_sharing : ('a -> 'a) -> 'a t -> 'a t
+   val map_sharing : ('a -> 'a) -> 'a t -> 'a t
 
-  val mapi : 'b is_value -> ('a, 'b) Callback.t -> 'a t -> 'b t
+   val mapi : 'b is_value -> ('a, 'b) Callback.t -> 'a t -> 'b t
 
-  val filter_map : 'b is_value -> (key -> 'a -> 'b option) -> 'a t -> 'b t
+   val filter_map : 'b is_value -> (key -> 'a -> 'b option) -> 'a t -> 'b t
 
-  val filter_map_sharing : (key -> 'a -> 'a option) -> 'a t -> 'a t
+   val filter_map_sharing : (key -> 'a -> 'a option) -> 'a t -> 'a t
 
-  type 'a iterator
+   type 'a iterator
 
-  val iterator : 'a t -> 'a iterator
+   val iterator : 'a t -> 'a iterator
 
-  val current : 'a iterator -> 'a Binding.t option
+   val current : 'a iterator -> 'a Binding.t option
 
-  val advance : 'a iterator -> 'a iterator
+   val advance : 'a iterator -> 'a iterator
 
-  val seek : 'a iterator -> key -> 'a iterator
+   val seek : 'a iterator -> key -> 'a iterator
 
-  val to_seq : 'a t -> 'a Binding.t Seq.t
+   val to_seq : 'a t -> 'a Binding.t Seq.t
 
-  val of_list : 'a is_value -> 'a Binding.t list -> 'a t
+   val of_list : 'a is_value -> 'a Binding.t list -> 'a t
 
-  val map_keys : (key -> key) -> 'a t -> 'a t
+   val map_keys : (key -> key) -> 'a t -> 'a t
 
-  val valid : 'a t -> bool
-end = struct
+   val valid : 'a t -> bool end *) =
+struct
   include Tree
 
   (* A relaxed version of [Tree.branch], allowing [t0] and/or [t1] to be empty.
@@ -500,30 +549,30 @@ end = struct
     match (descr [@inlined hint]) t0, (descr [@inlined hint]) t1 with
     | Empty, _ -> t1
     | _, Empty -> t0
-    | (Leaf _ | Branch _), (Leaf _ | Branch _) ->
-      Tree.branch prefix_and_bit t0 t1
+    | Non_empty t0, Non_empty t1 -> tree (Tree.branch prefix_and_bit t0 t1)
   [@@inline always]
 
   let branch_non_empty prefix_and_bit t0 t1 =
     (Tree.branch [@inlined hint]) prefix_and_bit t0 t1
   [@@inline always]
 
-  let is_empty t =
-    match descr t with Empty -> true | Leaf _ -> false | Branch _ -> false
+  let is_empty t = match descr t with Empty -> true | Non_empty _ -> false
 
-  let singleton iv i d = leaf iv i d
+  let singleton iv i d = tree (leaf iv i d)
 
-  let rec mem i t =
-    match descr t with
-    | Empty -> false
+  let rec mem_non_empty i t =
+    match tree_descr t with
     | Leaf (j, _) -> j = i
     | Branch (prefix_and_bit, t0, t1) ->
       let prefix, bit = unpack prefix_and_bit in
       if not (match_prefix i prefix bit)
       then false
       else if zero_bit i bit
-      then mem i t0
-      else mem i t1
+      then mem_non_empty i t0
+      else mem_non_empty i t1
+
+  let mem i t =
+    match descr t with Empty -> false | Non_empty t -> mem_non_empty i t
 
   (* Join two subtrees whose prefixes are disjoint (neither includes the other)
      but otherwise arbitrary. Assumes that [t0] has prefix [prefix0] and [t1]
@@ -536,80 +585,105 @@ end = struct
     then branch (pack (mask prefix0 bit) bit) t0 t1
     else branch (pack (mask prefix0 bit) bit) t1 t0
 
+  let join_non_empty prefix0 t0 prefix1 t1 =
+    let bit = branching_bit prefix0 prefix1 in
+    if zero_bit prefix0 bit
+    then branch_non_empty (pack (mask prefix0 bit) bit) t0 t1
+    else branch_non_empty (pack (mask prefix0 bit) bit) t1 t0
+
   (* CR mshinwell: This is now [add_or_replace], like [Map] *)
-  let rec add i d t =
-    let iv = is_value_of t in
-    match descr t with
-    | Empty -> leaf iv i d
-    | Leaf (j, _) -> if i = j then leaf iv i d else join i (leaf iv i d) j t
+  let rec add_non_empty i d t =
+    let iv = is_value_of (tree t) in
+    match tree_descr t with
+    | Leaf (j, _) ->
+      if i = j then leaf iv i d else join_non_empty i (leaf iv i d) j t
     | Branch (prefix_and_bit, t0, t1) ->
       let prefix, bit = unpack prefix_and_bit in
       if match_prefix i prefix bit
       then
         if zero_bit i bit
-        then branch_non_empty prefix_and_bit (add i d t0) t1
-        else branch_non_empty prefix_and_bit t0 (add i d t1)
-      else join i (leaf iv i d) prefix t
+        then branch_non_empty prefix_and_bit (add_non_empty i d t0) t1
+        else branch_non_empty prefix_and_bit t0 (add_non_empty i d t1)
+      else join_non_empty i (leaf iv i d) prefix t
 
-  let rec replace key f t =
-    let iv = is_value_of t in
+  let add i d t =
     match descr t with
-    | Empty -> empty iv
+    | Empty -> singleton (is_value_of t) i d
+    | Non_empty t -> tree (add_non_empty i d t)
+
+  let rec replace_non_empty key f t =
+    match tree_descr t with
     | Leaf (key', datum) ->
       if key = key'
       then
         let datum = f datum in
-        leaf iv key datum
+        leaf (is_value_of (tree t)) key datum
       else t
     | Branch (prefix_and_bit, t0, t1) ->
       let prefix, bit = unpack prefix_and_bit in
       if match_prefix key prefix bit
       then
         if zero_bit key bit
-        then branch_non_empty prefix_and_bit (replace key f t0) t1
-        else branch_non_empty prefix_and_bit t0 (replace key f t1)
+        then branch_non_empty prefix_and_bit (replace_non_empty key f t0) t1
+        else branch_non_empty prefix_and_bit t0 (replace_non_empty key f t1)
       else t
 
-  let rec update key f t =
-    let iv = is_value_of t in
+  let replace key f t =
     match descr t with
-    | Empty -> (
-      match f None with None -> empty iv | Some datum -> leaf iv key datum)
+    | Empty -> tree (empty (is_value_of t))
+    | Non_empty t -> tree (replace_non_empty key f t)
+
+  let rec update_non_empty key f t =
+    let iv = is_value_of (tree t) in
+    match tree_descr t with
     | Leaf (key', datum) -> (
       if key = key'
       then
         match f (Some datum) with
-        | None -> empty iv
-        | Some datum -> leaf iv key datum
+        | None -> tree (empty iv)
+        | Some datum -> tree (leaf iv key datum)
       else
         match f None with
-        | None -> t
-        | Some datum -> join key (leaf iv key datum) key' t)
+        | None -> tree t
+        | Some datum -> tree (join_non_empty key (leaf iv key datum) key' t))
     | Branch (prefix_and_bit, t0, t1) -> (
       let prefix, bit = unpack prefix_and_bit in
       if match_prefix key prefix bit
       then
         if zero_bit key bit
-        then branch prefix_and_bit (update key f t0) t1
-        else branch prefix_and_bit t0 (update key f t1)
+        then branch prefix_and_bit (update_non_empty key f t0) (tree t1)
+        else branch prefix_and_bit (tree t0) (update_non_empty key f t1)
       else
         match f None with
-        | None -> t
-        | Some datum -> join key (leaf iv key datum) prefix t)
+        | None -> tree t
+        | Some datum -> tree (join_non_empty key (leaf iv key datum) prefix t))
 
-  let rec remove i t =
+  let update key f t =
     let iv = is_value_of t in
     match descr t with
-    | Empty -> empty iv
-    | Leaf (j, _) -> if i = j then empty iv else t
+    | Empty -> (
+      match f None with
+      | None -> tree (empty iv)
+      | Some datum -> singleton iv key datum)
+    | Non_empty t -> update_non_empty key f t
+
+  let rec remove_non_empty i t =
+    match tree_descr t with
+    | Leaf (j, _) ->
+      if i = j then tree (empty (is_value_of (tree t))) else tree t
     | Branch (prefix_and_bit, t0, t1) ->
       let prefix, bit = unpack prefix_and_bit in
       if match_prefix i prefix bit
       then
         if zero_bit i bit
-        then branch prefix_and_bit (remove i t0) t1
-        else branch prefix_and_bit t0 (remove i t1)
-      else t
+        then branch prefix_and_bit (remove_non_empty i t0) (tree t1)
+        else branch prefix_and_bit (tree t0) (remove_non_empty i t1)
+      else tree t
+
+  let remove i t =
+    match descr t with
+    | Empty -> tree (empty (is_value_of t))
+    | Non_empty t -> remove_non_empty i t
 
   (* [pattern_match_pair t0 t1 ~join ~leaf ~branch] deconstructs two trees
      simultaneously.
@@ -633,19 +707,19 @@ end = struct
   (* CR-someday bclement (and lmaurer): We could turn this into a functor over
      three [Tree] instances and get arbitrary combinations of taking and
      returning sets and maps. *)
+  type 'a non_empty_tree = ('a, non_empty) tree
+
   let[@inline always] pattern_match_pair t0 t1 ~join ~leaf
       ~(branch :
-         ?t00:_ t -> ?t01:_ t -> ?t10:_ t -> ?t11:_ t -> prefix_and_bit -> _) =
-    let descr0 = (descr [@inlined hint]) t0 in
-    let descr1 = (descr [@inlined hint]) t1 in
+         ?t00:_ non_empty_tree ->
+         ?t01:_ non_empty_tree ->
+         ?t10:_ non_empty_tree ->
+         ?t11:_ non_empty_tree ->
+         prefix_and_bit ->
+         _) =
+    let descr0 = (tree_descr [@inlined hint]) t0 in
+    let descr1 = (tree_descr [@inlined hint]) t1 in
     match descr0, descr1 with
-    (* Empty cases
-
-       Fold the [Empty, Empty] case into the [Empty, _] case in order to benefit
-       from slightly better code generation, as we don't need to look at
-       [descr1] at all in this case. *)
-    | Empty, _ -> (join [@inlined hint]) Empty descr1
-    | _, Empty -> (join [@inlined hint]) descr0 Empty
     (* Leaf/Leaf cases *)
     | Leaf (i0, d0), Leaf (i1, d1) ->
       if i0 = i1
@@ -698,7 +772,7 @@ end = struct
   let phys_eq_shortcut_union _iv t0 t1 = if t0 == t1 then Some t0 else None
 
   let phys_eq_shortcut_diff iv t0 t1 =
-    if t0 == t1 then Some (empty iv) else None
+    if t0 == t1 then Some (tree (empty iv)) else None
 
   let no_phys_eq_check_branch ~orig_t:_ ~orig_t0:_ ~orig_t1:_ _t0 _t1 = None
 
@@ -736,14 +810,14 @@ end = struct
      as they are expected to be inline anonymous functions, but the [combine]
      argument is not, as it is expected to be passed directly from the user in
      most cases. *)
-  let[@inline always] pattern_match_pair_merge
+  let[@inline always] pattern_match_pair_merge_non_empty
       ?(phys_eq_shortcut = no_phys_eq_shortcut)
       ?(phys_eq_check_branch_left = no_phys_eq_check_branch)
       ?(phys_eq_check_branch_right = no_phys_eq_check_branch)
       ?(phys_eq_check_leaf_left = no_phys_eq_check_leaf)
       ?(phys_eq_check_leaf_right = no_phys_eq_check_leaf) ~only_left ~only_right
       ~both_sides iv combine t0 t1 =
-    match (phys_eq_shortcut [@inlined hint]) iv t0 t1 with
+    match (phys_eq_shortcut [@inlined hint]) iv (tree t0) (tree t1) with
     | Some t' -> t'
     | None ->
       pattern_match_pair t0 t1
@@ -752,30 +826,25 @@ end = struct
              it is expected that this is the merge function passed from the user
              (e.g. argument of [merge] or [union]). *)
           match combine i d0 d1 with
-          | None -> empty iv
+          | None -> tree (empty iv)
           | Some d -> (
             match
-              (phys_eq_check_leaf_left [@inlined hint]) ~orig_t:t0 ~orig_d:d0 d
+              (phys_eq_check_leaf_left [@inlined hint]) ~orig_t:(tree t0)
+                ~orig_d:d0 d
             with
             | Some t' -> t'
             | None -> (
               match
-                (phys_eq_check_leaf_right [@inlined hint]) ~orig_t:t1 ~orig_d:d1
-                  d
+                (phys_eq_check_leaf_right [@inlined hint]) ~orig_t:(tree t1)
+                  ~orig_d:d1 d
               with
               | Some t' -> t'
-              | None -> leaf iv i d)))
+              | None -> tree (leaf iv i d))))
         ~join:(fun descr0 descr1 ->
           match descr0, descr1 with
-          (* Calling [only_right] even when both sides are empty is semantically
-             correct and leads to slighly better code generation, see the note
-             in [pattern_match_pair].
-
-             We know that the subtrees are disjoint, so it is OK to treat the
-             [prefix_and_bit] from the [Branch] nodes are [prefix]: there must
-             be a differing bit in the shortest [prefix] part. *)
-          | Empty, _ -> (only_right [@inlined hint]) t1
-          | _, Empty -> (only_left [@inlined hint]) t0
+          (* We know that the subtrees are disjoint, so it is OK to treat the
+             [prefix_and_bit] from the [Branch] nodes as [prefix]: there must be
+             a differing bit in the shortest [prefix] part. *)
           | ( (Leaf (prefix0, _) | Branch (prefix0, _, _)),
               (Leaf (prefix1, _) | Branch (prefix1, _, _)) ) ->
             join prefix0
@@ -788,7 +857,7 @@ end = struct
              to a single path depending on context. *)
           let both_sides' t0 t1 =
             match t0, t1 with
-            | None, None -> empty iv
+            | None, None -> tree (empty iv)
             | Some t0, None -> (only_left [@inlined hint]) t0
             | None, Some t1 -> (only_right [@inlined hint]) t1
             | Some t0, Some t1 -> (both_sides [@inlined hint]) t0 t1
@@ -801,8 +870,8 @@ end = struct
             | None, _ | _, None -> branch prefix_and_bit t0' t1'
             | Some t10, Some t11 -> (
               match
-                (phys_eq_check_branch_right [@inlined hint]) ~orig_t:t1
-                  ~orig_t0:t10 ~orig_t1:t11 t0' t1'
+                (phys_eq_check_branch_right [@inlined hint]) ~orig_t:(tree t1)
+                  ~orig_t0:(tree t10) ~orig_t1:(tree t11) t0' t1'
               with
               | Some t' -> t'
               | None -> branch prefix_and_bit t0' t1')
@@ -812,23 +881,43 @@ end = struct
             | None, _ | _, None -> branch1 ()
             | Some t00, Some t01 -> (
               match
-                (phys_eq_check_branch_left [@inlined hint]) ~orig_t:t0
-                  ~orig_t0:t00 ~orig_t1:t01 t0' t1'
+                (phys_eq_check_branch_left [@inlined hint]) ~orig_t:(tree t0)
+                  ~orig_t0:(tree t00) ~orig_t1:(tree t01) t0' t1'
               with
               | Some t' -> t'
               | None -> branch1 ())
           in
           branch0 ())
 
-  let rec union f t0 t1 =
-    let iv = is_value_of t0 in
-    pattern_match_pair_merge
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
-      ~both_sides:(fun t0 t1 -> union f t0 t1)
+  let[@inline always] pattern_match_pair_merge ?phys_eq_shortcut
+      ?phys_eq_check_branch_left ?phys_eq_check_branch_right
+      ?phys_eq_check_leaf_left ?phys_eq_check_leaf_right ~only_left ~only_right
+      ~both_sides iv combine t0 t1 =
+    match descr t0, descr t1 with
+    | Empty, Empty -> tree (empty iv)
+    | Empty, Non_empty t1 -> (only_right [@inlined hint]) t1
+    | Non_empty t0, Empty -> (only_left [@inlined hint]) t0
+    | Non_empty t0, Non_empty t1 ->
+      pattern_match_pair_merge_non_empty ?phys_eq_shortcut
+        ?phys_eq_check_branch_left ?phys_eq_check_branch_right
+        ?phys_eq_check_leaf_left ?phys_eq_check_leaf_right ~only_left
+        ~only_right ~both_sides iv combine t0 t1
+
+  let rec union_non_empty f t0 t1 =
+    let iv = is_value_of (tree t0) in
+    pattern_match_pair_merge_non_empty
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
+      ~both_sides:(fun t0 t1 -> union_non_empty f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_union f k t t')
       t0 t1
+
+  let union f t0 t1 =
+    match descr t0, descr t1 with
+    | Empty, _ -> t1
+    | _, Empty -> t0
+    | Non_empty t0, Non_empty t1 -> union_non_empty f t0 t1
 
   (* [_sharing] functions are guaranteed to share with their first argument
      only.
@@ -836,104 +925,111 @@ end = struct
      Some [_sharing] functions also share with their second argument as an
      optimisation, when possible. *)
   let pattern_match_pair_merge_sharing =
-    pattern_match_pair_merge ~phys_eq_check_branch_left:phys_eq_check_branch
+    pattern_match_pair_merge_non_empty
+      ~phys_eq_check_branch_left:phys_eq_check_branch
       ~phys_eq_check_leaf_left:phys_eq_check_leaf
 
   let rec union_sharing f t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing
       ~phys_eq_check_branch_right:phys_eq_check_branch
       ~phys_eq_check_leaf_right:phys_eq_check_leaf
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_sharing f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_union f k t t')
       t0 t1
 
+  let union_sharing f t0 t1 =
+    match descr t0, descr t1 with
+    | Empty, _ -> t1
+    | _, Empty -> t0
+    | Non_empty t0, Non_empty t1 -> union_sharing f t0 t1
+
   let rec union_shared f t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_union
       ~phys_eq_check_branch_right:phys_eq_check_branch
       ~phys_eq_check_leaf_right:phys_eq_check_leaf
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_shared f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_union f k t t')
       t0 t1
 
   let rec union_total f t0 t1 =
-    let iv = is_value_of t0 in
-    pattern_match_pair_merge
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+    let iv = is_value_of (tree t0) in
+    pattern_match_pair_merge_non_empty
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_total f t0 t1)
       iv
       (fun[@inline] k t t' -> Some (f k t t'))
       t0 t1
 
   let rec union_total_shared f t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_union
       ~phys_eq_check_branch_right:phys_eq_check_branch
       ~phys_eq_check_leaf_right:phys_eq_check_leaf
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_total_shared f t0 t1)
       iv
       (fun[@inline] k t t' -> Some (f k t t'))
       t0 t1
 
   let rec union_left_biased t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_union
       ~phys_eq_check_branch_right:phys_eq_check_branch
       ~phys_eq_check_leaf_right:phys_eq_check_leaf
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_left_biased t0 t1)
       iv
       (fun[@inline] _k t _t' -> Some t)
       t0 t1
 
   let rec union_right_biased t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_union
       ~phys_eq_check_branch_right:phys_eq_check_branch
       ~phys_eq_check_leaf_right:phys_eq_check_leaf
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun t1 -> t1)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun t1 -> tree t1)
       ~both_sides:(fun t0 t1 -> union_right_biased t0 t1)
       iv
       (fun[@inline] _k _t t' -> Some t')
       t0 t1
 
   let rec diff f t0 t1 =
-    let iv = is_value_of t0 in
-    pattern_match_pair_merge
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun _ -> empty iv)
+    let iv = is_value_of (tree t0) in
+    pattern_match_pair_merge_non_empty
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun _ -> tree (empty iv))
       ~both_sides:(fun t0 t1 -> diff f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_diff f k t t')
       t0 t1
 
   let rec diff_sharing f t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun _ -> empty iv)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun _ -> tree (empty iv))
       ~both_sides:(fun t0 t1 -> diff_sharing f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_diff f k t t')
       t0 t1
 
   let rec diff_shared f t0 t1 =
-    let iv = is_value_of t0 in
+    let iv = is_value_of (tree t0) in
     pattern_match_pair_merge_sharing ~phys_eq_shortcut:phys_eq_shortcut_diff
-      ~only_left:(fun t0 -> t0)
-      ~only_right:(fun _ -> empty iv)
+      ~only_left:(fun t0 -> tree t0)
+      ~only_right:(fun _ -> tree (empty iv))
       ~both_sides:(fun t0 t1 -> diff_shared f t0 t1)
       iv
       (fun[@inline] k t t' -> Merge_callback.call_diff f k t t')
@@ -1282,38 +1378,53 @@ end = struct
 
   let to_list t =
     let rec loop acc t =
-      match descr t with
-      | Empty -> acc
+      match tree_descr t with
       | Leaf (i, d) -> Binding.create i d :: acc
       | Branch (_, t0, t1) -> loop (loop acc t1) t0
     in
     match descr t with
     | Empty -> []
-    | Leaf (i, d) -> [Binding.create i d]
-    | Branch (prefix_and_bit, t0, t1) ->
-      let t0, t1 = order_branches prefix_and_bit t0 t1 in
-      loop (loop [] t1) t0
+    | Non_empty t -> (
+      match tree_descr t with
+      | Leaf (i, d) -> [Binding.create i d]
+      | Branch (prefix_and_bit, t0, t1) ->
+        let t0, t1 = order_branches prefix_and_bit t0 t1 in
+        loop (loop [] t1) t0)
 
   (* [merge_left] and [merge_right] are just [filter_map] under another name,
      but they are written this way to avoid allocating extra closures. We can
      replace them with [filter_map] once we have function specialization. *)
 
   let[@inline always] leaf_or_empty iv i datum_opt =
-    match datum_opt with None -> empty iv | Some datum -> leaf iv i datum
+    match datum_opt with
+    | None -> tree (empty iv)
+    | Some datum -> tree (leaf iv i datum)
 
-  let rec merge_left iv f t0 =
-    match (descr [@inlined hint]) t0 with
-    | Empty -> empty iv
+  let rec merge_left_non_empty iv f t0 =
+    match (tree_descr [@inlined hint]) t0 with
     | Leaf (i, d) -> leaf_or_empty iv i (f i (Some d) None)
     | Branch (prefix_and_bit, t00, t01) ->
-      branch prefix_and_bit (merge_left iv f t00) (merge_left iv f t01)
+      branch prefix_and_bit
+        (merge_left_non_empty iv f t00)
+        (merge_left_non_empty iv f t01)
 
-  let rec merge_right iv f t1 =
-    match (descr [@inlined hint]) t1 with
-    | Empty -> empty iv
+  let merge_left iv f t0 =
+    match descr t0 with
+    | Empty -> tree (empty iv)
+    | Non_empty t0 -> merge_left_non_empty iv f t0
+
+  let rec merge_right_non_empty iv f t1 =
+    match (tree_descr [@inlined hint]) t1 with
     | Leaf (i, d) -> leaf_or_empty iv i (f i None (Some d))
     | Branch (prefix_and_bit, t10, t11) ->
-      branch prefix_and_bit (merge_right iv f t10) (merge_right iv f t11)
+      branch prefix_and_bit
+        (merge_right_non_empty iv f t10)
+        (merge_right_non_empty iv f t11)
+
+  let merge_right iv f t0 =
+    match descr t0 with
+    | Empty -> tree (empty iv)
+    | Non_empty t0 -> merge_right_non_empty iv f t0
 
   let rec merge' iv f t0 t1 =
     pattern_match_pair_merge
@@ -1329,44 +1440,66 @@ end = struct
 
   let get_singleton t =
     match descr t with
-    | Empty | Branch _ -> None
-    | Leaf (key, datum) -> Some (Binding.create key datum)
+    | Empty -> None
+    | Non_empty t -> (
+      match tree_descr t with
+      | Branch _ -> None
+      | Leaf (key, datum) -> Some (Binding.create key datum))
 
-  let rec map iv f t =
-    match descr t with
-    | Empty -> empty iv
+  let rec map_non_empty iv f t =
+    match tree_descr t with
     | Leaf (k, datum) -> leaf iv k (f datum)
     | Branch (prefix_and_bit, t0, t1) ->
-      branch_non_empty prefix_and_bit (map iv f t0) (map iv f t1)
+      branch_non_empty prefix_and_bit (map_non_empty iv f t0)
+        (map_non_empty iv f t1)
 
-  let rec map_sharing f t =
-    let iv = is_value_of t in
+  let map iv f t =
     match descr t with
-    | Empty -> t
+    | Empty -> tree (empty iv)
+    | Non_empty t -> tree (map_non_empty iv f t)
+
+  let rec map_sharing_non_empty f t =
+    let iv = is_value_of (tree t) in
+    match tree_descr t with
     | Leaf (k, v) ->
       let v' = f v in
       if v == v' then t else leaf iv k v'
     | Branch (prefix_and_bit, t0, t1) ->
-      let t0' = map_sharing f t0 in
-      let t1' = map_sharing f t1 in
+      let t0' = map_sharing_non_empty f t0 in
+      let t1' = map_sharing_non_empty f t1 in
       if t0' == t0 && t1' == t1
       then t
       else branch_non_empty prefix_and_bit t0' t1'
 
-  let rec mapi iv f t =
+  let map_sharing f t =
     match descr t with
-    | Empty -> empty iv
+    | Empty -> t
+    | Non_empty t -> tree (map_sharing_non_empty f t)
+
+  let rec mapi_non_empty iv f t =
+    match tree_descr t with
     | Leaf (key, datum) -> leaf iv key (Callback.call f key datum)
     | Branch (prefix_and_bit, t0, t1) ->
-      branch_non_empty prefix_and_bit (mapi iv f t0) (mapi iv f t1)
+      branch_non_empty prefix_and_bit (mapi_non_empty iv f t0)
+        (mapi_non_empty iv f t1)
 
-  let rec filter_map iv f t =
+  let mapi iv f t =
     match descr t with
-    | Empty -> empty iv
-    | Leaf (k, d) -> (
-      match f k d with None -> empty iv | Some d' -> leaf iv k d')
+    | Empty -> tree (empty iv)
+    | Non_empty t -> tree (mapi_non_empty iv f t)
+
+  let rec filter_map_non_empty iv f t =
+    match tree_descr t with
+    | Leaf (k, d) -> leaf_or_empty iv k (f k d)
     | Branch (prefix_and_bit, t0, t1) ->
-      branch prefix_and_bit (filter_map iv f t0) (filter_map iv f t1)
+      branch prefix_and_bit
+        (filter_map_non_empty iv f t0)
+        (filter_map_non_empty iv f t1)
+
+  let filter_map iv f t =
+    match descr t with
+    | Empty -> tree (empty iv)
+    | Non_empty t -> filter_map_non_empty iv f t
 
   (* See comment about [merge_right]; this is just a specialized version of
      [filter_map] *)
@@ -1522,7 +1655,7 @@ module Set = struct
 
   type t = unit t0
 
-  and 'a t0 = 'a Set0.t =
+  and 'a t0 = 'a Set0.tree =
     | Empty : unit t0
     | Leaf : elt -> unit t0
     | Branch : prefix_and_bit * unit t0 * unit t0 -> unit t0
