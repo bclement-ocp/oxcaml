@@ -24,6 +24,13 @@
    once [Inlining_impossible] handling is implemented for the
    non-fallback-inlining cases. *)
 
+type speculative_inlining_report =
+  { cost_metrics : Cost_metrics.t;
+    evaluated_to : float;
+    threshold : float;
+    original_code_size : Code_size.t
+  }
+
 type t =
   | Missing_code
   | Definition_says_not_to_inline
@@ -34,21 +41,13 @@ type t =
   | Max_inlining_depth_exceeded
   | Recursion_depth_exceeded
   | Never_inlined_attribute
-  | Speculatively_not_inline of
-      { cost_metrics : Cost_metrics.t;
-        evaluated_to : float;
-        threshold : float
-      }
+  | Speculatively_not_inline of speculative_inlining_report
   | Attribute_always
   | Replay_history_says_must_inline
   | Begin_unrolling of int
   | Continue_unrolling
   | Definition_says_inline of { was_inline_always : bool }
-  | Speculatively_inline of
-      { cost_metrics : Cost_metrics.t;
-        evaluated_to : float;
-        threshold : float
-      }
+  | Speculatively_inline of speculative_inlining_report
   | Jsir_inlining_disabled
 
 let [@ocamlformat "disable"] print ppf t =
@@ -87,7 +86,7 @@ let [@ocamlformat "disable"] print ppf t =
       unroll_to
   | Continue_unrolling ->
     Format.fprintf ppf "Continue_unrolling"
-  | Speculatively_not_inline { cost_metrics; threshold; evaluated_to; } ->
+  | Speculatively_not_inline { cost_metrics; threshold; evaluated_to; _ } ->
     Format.fprintf ppf
       "@[<hov 1>(Speculatively_not_inline@ \
         @[<hov 1>(cost_metrics@ %a)@]@ \
@@ -97,7 +96,7 @@ let [@ocamlformat "disable"] print ppf t =
       Cost_metrics.print cost_metrics
       evaluated_to
       threshold
-  | Speculatively_inline { cost_metrics; threshold; evaluated_to; } ->
+  | Speculatively_inline { cost_metrics; threshold; evaluated_to; _ } ->
     Format.fprintf ppf
       "@[<hov 1>(Speculatively_inline@ \
         @[<hov 1>(cost_metrics@ %a)@]@ \
@@ -198,16 +197,22 @@ let report_reason fmt t =
       "this@ function@ was@ decided@ to@ be@ always@ inlined@ at@ its@ \
        definition@ site (annotated@ by@ [@inlined always]@ or@ determined@ to@ \
        be@ small@ enough)"
-  | Speculatively_not_inline { cost_metrics; evaluated_to; threshold } ->
+  | Speculatively_not_inline
+      { cost_metrics; evaluated_to; threshold; original_code_size } ->
     Format.fprintf fmt
       "the@ function@ was@ not@ inlined@ after@ speculation@ as@ its@ cost@ \
-       metrics were=%a,@ which@ was@ evaluated@ to@ %f > threshold %f"
-      Cost_metrics.print cost_metrics evaluated_to threshold
-  | Speculatively_inline { cost_metrics; evaluated_to; threshold } ->
+       metrics were=%a,@ which@ was@ evaluated@ to@ %f > threshold %f@ the@ \
+       original@ code@ size@ before@ inlining@ was=%a"
+      Cost_metrics.print cost_metrics evaluated_to threshold Code_size.print
+      original_code_size
+  | Speculatively_inline
+      { cost_metrics; evaluated_to; threshold; original_code_size } ->
     Format.fprintf fmt
       "the@ function@ was@ inlined@ after@ speculation@ as@ its@ cost@ metrics \
-       were=%a,@ which@ was@ evaluated@ to@ %f <= threshold %f"
-      Cost_metrics.print cost_metrics evaluated_to threshold
+       were=%a,@ which@ was@ evaluated@ to@ %f <= threshold %f@ the@ original@ \
+       code@ size@ before@ inlining@ was=%a"
+      Cost_metrics.print cost_metrics evaluated_to threshold Code_size.print
+      original_code_size
   | Jsir_inlining_disabled ->
     Format.fprintf fmt
       "function@ inlining@ is@ disabled@ for@ Js_of_ocaml@ translation"

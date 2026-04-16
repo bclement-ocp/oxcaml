@@ -14,6 +14,13 @@
 (*                                                                        *)
 (**************************************************************************)
 
+type speculative_inlining_report =
+  { cost_metrics : Cost_metrics.t;
+    evaluated_to : float;
+    threshold : float;
+    original_code_size : Code_size.t
+  }
+
 (* CR-someday mshinwell: Maybe have two types, one giving the reasons why
    something can be inlined, and one giving the reasons why something cannot be
    inlined. *)
@@ -27,21 +34,13 @@ type t =
   | Max_inlining_depth_exceeded
   | Recursion_depth_exceeded
   | Never_inlined_attribute
-  | Speculatively_not_inline of
-      { cost_metrics : Cost_metrics.t;
-        evaluated_to : float;
-        threshold : float
-      }
+  | Speculatively_not_inline of speculative_inlining_report
   | Attribute_always
   | Replay_history_says_must_inline
   | Begin_unrolling of int
   | Continue_unrolling
   | Definition_says_inline of { was_inline_always : bool }
-  | Speculatively_inline of
-      { cost_metrics : Cost_metrics.t;
-        evaluated_to : float;
-        threshold : float
-      }
+  | Speculatively_inline of speculative_inlining_report
   | Jsir_inlining_disabled
 
 val print : Format.formatter -> t -> unit

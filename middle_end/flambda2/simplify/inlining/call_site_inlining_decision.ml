@@ -211,6 +211,10 @@ let might_inline dacc ~apply ~code_or_metadata ~function_type ~simplify_expr
         if not (argument_types_useful dacc apply)
         then Argument_types_not_useful
         else
+          let original_code_size =
+            code_or_metadata |> Code_or_metadata.code_metadata
+            |> Code_metadata.cost_metrics |> Cost_metrics.size
+          in
           let cost_metrics =
             speculative_inlining ~apply dacc ~simplify_expr ~return_arity
               ~function_type
@@ -226,10 +230,13 @@ let might_inline dacc ~apply ~code_or_metadata ~function_type ~simplify_expr
           let is_under_inline_threshold =
             Float.compare evaluated_to threshold <= 0
           in
+          let speculative_inlining_report :
+              Call_site_inlining_decision_type.speculative_inlining_report =
+            { cost_metrics; evaluated_to; threshold; original_code_size }
+          in
           if is_under_inline_threshold
-          then Speculatively_inline { cost_metrics; evaluated_to; threshold }
-          else
-            Speculatively_not_inline { cost_metrics; evaluated_to; threshold })
+          then Speculatively_inline speculative_inlining_report
+          else Speculatively_not_inline speculative_inlining_report)
 
 let get_rec_info dacc ~function_type =
   let rec_info = FT.rec_info function_type in
