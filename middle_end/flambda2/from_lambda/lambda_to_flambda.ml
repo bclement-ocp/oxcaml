@@ -1746,11 +1746,11 @@ and cps_switch acc env ccenv (switch : L.lambda_switch) ~condition_dbg
            impossible. *)
         if
           switch.sw_numblocks = 0
-          || (Option.is_none failaction && List.is_empty blocks)
+          || (Option.is_none failaction && Misc.Stdlib.List.is_empty blocks)
         then const_switch, wrappers
         else if
           switch.sw_numconsts = 0
-          || (Option.is_none failaction && List.is_empty consts)
+          || (Option.is_none failaction && Misc.Stdlib.List.is_empty consts)
         then block_switch, wrappers
         else
           let const_cont = Continuation.create () in
