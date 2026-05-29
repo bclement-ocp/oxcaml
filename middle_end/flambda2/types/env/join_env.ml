@@ -826,6 +826,8 @@ module Bindings_in_target_env : sig
   val new_bindings :
     t -> since:t -> definition_in_joined_envs Name_in_target_env.Map.t
 
+  val only_created_variables : t -> since:t -> t
+
   val fold_created_variables :
     (Variable_in_target_env.t -> K.t -> 'a -> 'a) -> t -> 'a -> 'a
 
@@ -944,6 +946,9 @@ end = struct
     Name_in_target_env.Map.diff_shared
       (fun _ new_definition _old_definition -> Some new_definition)
       t.definitions_in_joined_envs since.definitions_in_joined_envs
+
+  let only_created_variables t ~since =
+    { since with created_variables = t.created_variables }
 
   let source_env { source_env; _ } = source_env
 
@@ -2159,9 +2164,13 @@ let n_way_join_env_extension ~n_way_join_type ~meet_expanded_head t extensions :
          join of env extensions, we might need additional rounds for
          completeness (see comment in [n_way_join_simples]) -- in practice one
          round should be plenty. *)
-      let equations, { bindings; _ } =
+      let equations, { bindings = bindings_after_extension; _ } =
         n_way_join_round ~n_way_join_type { joined_envs; bindings }
           concrete_types_to_join alias_types_in_target_env
+      in
+      let bindings =
+        Bindings_in_target_env.only_created_variables bindings_after_extension
+          ~since:bindings
       in
       Ok
         ( TEE.from_map
