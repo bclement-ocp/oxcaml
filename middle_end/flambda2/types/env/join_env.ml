@@ -13,6 +13,9 @@
 (*                                                                        *)
 (**************************************************************************)
 
+let no_join_of_zero_types =
+  Oxcaml_args.Extra_options.bool __LOC__ "no-join-of-zero-types"
+
 (* Implement the join of typing envs, or more precisely of typing env levels.
 
    Most of the code here is actually concerned with the join of *aliases*
@@ -1951,30 +1954,55 @@ let prepare_nested_join ~meet_expanded_head ~joined_envs ~bindings extensions =
         assert (not (TE.is_bottom parent_env));
         let cut_after = TE.current_scope parent_env in
         let typing_env = TE.increment_scope parent_env in
-        match
-          ME.add_env_extension_strict ~meet_expanded_head (ME.create typing_env)
-            extension
-        with
-        | Bottom ->
-          (* We can reach bottom here if the extension was created in a more
-             generic context, but is added in a context where it is no longer
-             reachable. *)
-          joined_envs_and_extensions
-        | Ok env ->
-          let level = ME.cut env ~cut_after in
-          let extension = TEL.as_extension_without_bindings level in
-          Index.Map.add index
-            (ME.typing_env env, extension)
-            joined_envs_and_extensions)
+        if no_join_of_zero_types ()
+        then
+          let exception Bottom_extension in
+          match
+            TEE.fold extension
+              ([], ME.create typing_env)
+              ~equation:(fun name ty (concrete_types, meet_env) ->
+                match TG.get_alias_opt ty with
+                | None ->
+                  (name, ET.of_non_alias_type ty) :: concrete_types, meet_env
+                | Some alias -> (
+                  match
+                    ME.add_alias meet_env (Simple.name name) alias
+                      ~meet_expanded_head
+                  with
+                  | Ok meet_env -> concrete_types, meet_env
+                  | Bottom -> raise Bottom_extension))
+          with
+          | exception Bottom_extension ->
+            (* We can reach bottom here if the extension was created in a more
+               generic context, but is added in a context where it is no longer
+               reachable. *)
+            joined_envs_and_extensions
+          | _concrete_types, meet_env ->
+            let typing_env = ME.typing_env meet_env in
+            let level = TE.cut ~cut_after typing_env in
+            Index.Map.add index (typing_env, level) joined_envs_and_extensions
+        else
+          match
+            ME.add_env_extension_strict ~meet_expanded_head
+              (ME.create typing_env) extension
+          with
+          | Bottom ->
+            (* We can reach bottom here if the extension was created in a more
+               generic context, but is added in a context where it is no longer
+               reachable. *)
+            joined_envs_and_extensions
+          | Ok env ->
+            let level = ME.cut env ~cut_after in
+            Index.Map.add index (typing_env, level) joined_envs_and_extensions)
       Index.Map.empty extensions
   in
   Index.Map.mapi
-    (fun index (env, diff_ext) ->
+    (fun index (env, diff_level) ->
       let previous_equations =
         Joined_envs.equations_in_nth_joined_env joined_envs index
       in
       let diff_equations =
-        Type_in_one_joined_env.create_equations (TEE.to_map diff_ext)
+        Type_in_one_joined_env.create_equations (TEL.equations diff_level)
       in
       (* The call below to [replay_definition_of_aliases_in_target_env] is only
          relevant when doing a nested join (join of env extensions); for a
@@ -2160,6 +2188,11 @@ let n_way_join_env_extension ~n_way_join_type ~meet_expanded_head t extensions :
         join_aliases_in_env_extension ~joined_envs ~bindings:t.bindings
           joined_equations
       in
+      let concrete_types_to_join =
+        if no_join_of_zero_types ()
+        then Name_in_target_env.Map.empty
+        else concrete_types_to_join
+      in
       (* CR-someday bclement: if we create new existential variables during the
          join of env extensions, we might need additional rounds for
          completeness (see comment in [n_way_join_simples]) -- in practice one
@@ -2169,8 +2202,11 @@ let n_way_join_env_extension ~n_way_join_type ~meet_expanded_head t extensions :
           concrete_types_to_join alias_types_in_target_env
       in
       let bindings =
-        Bindings_in_target_env.only_created_variables bindings_after_extension
-          ~since:bindings
+        if no_join_of_zero_types ()
+        then
+          Bindings_in_target_env.only_created_variables bindings_after_extension
+            ~since:bindings
+        else bindings_after_extension
       in
       Ok
         ( TEE.from_map
