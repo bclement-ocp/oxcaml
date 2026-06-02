@@ -7,6 +7,8 @@ open Flambda2_term_basics
 module K = Flambda_kind
 module T = Flambda2_types
 module TE = T.Typing_env
+module TEE = T.Typing_env_extension
+module TI = Target_ocaml_int
 
 let create_env () =
   let resolver _ = None in
@@ -433,30 +435,49 @@ let test_meet_bottom_after_alias () =
   Format.eprintf "@[<hov 2>after meet:@ %a@]@." T.print meet_ty;
   assert (T.is_bottom env meet_ty)
 
+let define ?(kind = K.value) env v =
+  let v' = Bound_var.create v Flambda_debug_uid.none Name_mode.normal in
+  TE.add_definition env (Bound_name.create_var v') kind
+
+let define_list env vs =
+  List.fold_left
+    (fun env v ->
+      let v' = Bound_var.create v Flambda_debug_uid.none Name_mode.normal in
+      TE.add_definition env (Bound_name.create_var v') (Variable.kind v))
+    env vs
+
+let n_way_join_env_extension env extensions =
+  let scope = TE.current_scope env in
+  let scoped_env = TE.increment_scope env in
+  let envs =
+    List.map
+      (fun extension -> TE.add_env_extension scoped_env extension)
+      extensions
+  in
+  let env, _ =
+    T.cut_and_n_way_join scoped_env
+      (List.map
+         (fun env ->
+           env, Apply_cont_rewrite_id.create (), Continuation_use_kind.Inlinable)
+         envs)
+      ~params:Bound_parameters.empty ~cut_after:scope
+      ~extra_allowed_names:Name_occurrences.empty
+      ~extra_lifted_consts_in_use_envs:Symbol.Set.empty
+  in
+  env
+
+let join env ty1 ty2 =
+  let kind = T.kind ty1 in
+  let x = Variable.create "x" kind in
+  let env = define ~kind env x in
+  let env =
+    n_way_join_env_extension env
+      [TEE.one_equation (Name.var x) ty1; TEE.one_equation (Name.var x) ty2]
+  in
+  TE.find env (Name.var x) (Some kind)
+
 let test_meet_array_element_kinds () =
   let env = create_env () in
-  let define ?(kind = K.value) env v =
-    let v' = Bound_var.create v Flambda_debug_uid.none Name_mode.normal in
-    TE.add_definition env (Bound_name.create_var v') kind
-  in
-  let join ty1 ty2 =
-    let kind = T.kind ty1 in
-    let x = Variable.create "x" kind in
-    let env = define ~kind env x in
-    let scope = TE.current_scope env in
-    let scoped_env = TE.increment_scope env in
-    let env1 = TE.add_equation scoped_env (Name.var x) ty1 in
-    let env2 = TE.add_equation scoped_env (Name.var x) ty2 in
-    let env, _ =
-      T.cut_and_n_way_join scoped_env
-        [ env1, Apply_cont_rewrite_id.create (), Inlinable;
-          env2, Apply_cont_rewrite_id.create (), Inlinable ]
-        ~params:Bound_parameters.empty ~cut_after:scope
-        ~extra_allowed_names:Name_occurrences.empty
-        ~extra_lifted_consts_in_use_envs:Symbol.Set.empty
-    in
-    TE.find env (Name.var x) (Some kind)
-  in
   let machine_width = TE.machine_width env in
   let immutable_array ?(alloc_mode = Alloc_mode.For_types.heap) kind =
     T.immutable_array ~element_kind:(Ok kind)
@@ -468,7 +489,7 @@ let test_meet_array_element_kinds () =
       alloc_mode
   in
   let unknown_array ?alloc_mode kind =
-    join (mutable_array ?alloc_mode kind) (immutable_array ?alloc_mode kind)
+    join env (mutable_array ?alloc_mode kind) (immutable_array ?alloc_mode kind)
   in
   let left_ty = unknown_array K.With_subkind.any_value in
   let right_ty =
@@ -484,6 +505,26 @@ let test_meet_array_element_kinds () =
   match T.meet env left_ty right_ty with
   | Bottom -> Format.eprintf "@.Bottom@."
   | Ok (meet_ty, _env) -> Format.eprintf "@[<v>@;<1 2>%a@]@.@." T.print meet_ty
+
+let test_another_meet () =
+  let env = create_env () in
+  let machine_width = TE.machine_width env in
+  let x = Variable.create "x" K.value in
+  let tag = Variable.create "x" K.naked_immediate in
+  let env = define_list env [x; tag] in
+  let env =
+    TE.add_equation env (Name.var tag)
+      (T.these_naked_immediates
+         (TI.Set.of_list [TI.zero machine_width; TI.one machine_width]))
+  in
+  let env =
+    n_way_join_env_extension env
+      [ TEE.one_equation (Name.var x) T.any_tagged_immediate;
+        TEE.add_get_tag_relation
+          (TEE.one_equation (Name.var x) T.any_block)
+          (Name.var tag) ~scrutinee:(Simple.var x) ]
+  in
+  Format.eprintf "%a@." TE.print env
 
 let () =
   let comp_unit = "Meet_test" |> Compilation_unit.of_string in
@@ -506,4 +547,6 @@ let () =
   Format.eprintf "@.JOIN WITH COMPLEX EXTENSIONS@\n@.";
   test_join_with_complex_extensions ();
   Format.eprintf "@.MEET ARRAY ELEMENT KINDS@\n@.";
-  test_meet_array_element_kinds ()
+  test_meet_array_element_kinds ();
+  Format.eprintf "@.ANOTHER MEET@\n@.";
+  test_another_meet ()
