@@ -313,7 +313,7 @@ let equal_head_of_kind_value ~equal_type env (t1 : TG.head_of_kind_value)
       (equal_head_of_kind_value_non_null ~equal_type env)
       t1.non_null t2.non_null
 
-let equal_head_of_kind_naked_immediate ~equal_type:_ _env
+let equal_head_of_kind_naked_immediate ~equal_type env
     (t1 : TG.head_of_kind_naked_immediate)
     (t2 : TG.head_of_kind_naked_immediate) =
   match
@@ -323,7 +323,9 @@ let equal_head_of_kind_naked_immediate ~equal_type:_ _env
   | ( { naked_immediates = is1; inverse_relations = rs1 },
       { naked_immediates = is2; inverse_relations = rs2 } ) ->
     (* CR bclement: reduce names to their canonicals *)
-    Or_unknown.equal Target_ocaml_int.Set.equal is1 is2
+    Or_unknown.equal
+      (Target_ocaml_int.Map.equal (equal_env_extension ~equal_type env))
+      is1 is2
     && TG.Relation.Map.equal Name.Set.equal rs1 rs2
 
 let equal_head_of_kind_naked_float32 (t1 : TG.head_of_kind_naked_float32)

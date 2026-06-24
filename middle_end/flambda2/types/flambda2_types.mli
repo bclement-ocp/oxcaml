@@ -638,6 +638,20 @@ val immutable_array :
   machine_width:Target_system.Machine_width.t ->
   flambda_type
 
+val type_for_phys_equals :
+  machine_width:Target_system.Machine_width.t ->
+  Flambda_kind.t ->
+  Simple.t ->
+  Simple.t ->
+  flambda_type
+
+val type_for_not_phys_equals :
+  machine_width:Target_system.Machine_width.t ->
+  Flambda_kind.t ->
+  Simple.t ->
+  Simple.t ->
+  flambda_type
+
 (** Construct a type equal to the type of the given name. (The name must be
     present in the given environment when calling e.g. [join].) *)
 val alias_type_of : Flambda_kind.t -> Simple.t -> t

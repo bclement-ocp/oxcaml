@@ -216,3 +216,17 @@ val unknown_types_from_arity :
   machine_width:Target_system.Machine_width.t ->
   [`Unarized] Flambda_arity.t ->
   Type_grammar.t list
+
+val type_for_phys_equals :
+  machine_width:Target_system.Machine_width.t ->
+  Flambda_kind.t ->
+  Simple.t ->
+  Simple.t ->
+  Type_grammar.t
+
+val type_for_not_phys_equals :
+  machine_width:Target_system.Machine_width.t ->
+  Flambda_kind.t ->
+  Simple.t ->
+  Simple.t ->
+  Type_grammar.t

@@ -250,7 +250,7 @@ let prove_naked_immediates_generic env t : Target_ocaml_int.Set.t generic_proof
     in
     let proof : _ generic_proof =
       match naked_immediates with
-      | Known imms -> these_immediates imms
+      | Known imms -> these_immediates (Target_ocaml_int.Map.keys imms)
       | Unknown -> Unknown
     in
     TG.Relation.Map.fold

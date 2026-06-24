@@ -192,6 +192,92 @@ end
 module Function_slot_map_meet = Map_meet (Function_slot.Map)
 module Value_slot_map_meet = Map_meet (Value_slot.Map)
 
+let meet_env_extension ~meet_expanded_head ~cut_after env ext1 ext2 :
+    _ meet_result =
+  if TEE.is_empty ext1 && TEE.is_empty ext2
+  then Ok (Both_inputs, env)
+  else
+    let[@local] bottom_case () = Bottom (New_result ()) in
+    match ME.add_env_extension_strict env ext1 ~meet_expanded_head with
+    | Bottom -> bottom_case ()
+    | Ok env -> (
+      match ME.add_env_extension_strict env ext2 ~meet_expanded_head with
+      | Bottom -> bottom_case ()
+      | Ok env ->
+        let extension = ME.cut_as_extension env ~cut_after in
+        if ext1 == ext2
+        then Ok (Both_inputs, env)
+        else if TEE.is_empty ext1
+        then Ok (Right_input, env)
+        else if TEE.is_empty ext2
+        then Ok (Left_input, env)
+        else Ok (New_result extension, env))
+
+module Meet_map_disjunction (T : Container_types.S) = struct
+  let meet ~meet_expanded_head base_env left right : _ meet_result =
+    let scope = ME.current_scope base_env in
+    let env = ME.increment_scope base_env in
+    let result_is_t1 = ref true in
+    let result_is_t2 = ref true in
+    let update_refs = function
+      | Both_inputs -> ()
+      | Left_input -> result_is_t2 := false
+      | Right_input -> result_is_t1 := false
+      | New_result _ ->
+        result_is_t1 := false;
+        result_is_t2 := false
+    in
+    let result =
+      T.Map.inter
+        (fun _key left right : _ Or_bottom.t ->
+          match
+            meet_env_extension ~meet_expanded_head env left right
+              ~cut_after:scope
+          with
+          | Bottom r ->
+            update_refs r;
+            Bottom
+          | Ok (return_value, _) ->
+            update_refs return_value;
+            Ok (extract_value return_value left right))
+        left right
+    in
+    let result, empty =
+      T.Map.fold
+        (fun key value (result, empty) ->
+          match (value : _ Or_bottom.t) with
+          | Bottom -> result, T.Set.add key empty
+          | Ok value -> T.Map.add key value result, empty)
+        result (T.Map.empty, T.Set.empty)
+    in
+    if T.Map.is_empty result
+    then Bottom (New_result ())
+    else (
+      if not (T.Set.is_empty empty) then result_is_t1 := false;
+      if not (T.Set.is_empty empty) then result_is_t2 := false;
+      let only_left = T.Map.diff_domains left result in
+      let only_right = T.Map.diff_domains right result in
+      if not (T.Map.is_empty only_left) then result_is_t1 := false;
+      if not (T.Map.is_empty only_right) then result_is_t2 := false;
+      match !result_is_t1, !result_is_t2 with
+      | true, true -> Ok (Both_inputs, base_env)
+      | true, false -> Ok (Left_input, base_env)
+      | false, true -> Ok (Right_input, base_env)
+      | false, false -> (
+        assert (not (T.Map.is_empty result));
+        match T.Map.get_singleton result with
+        | None -> Ok (New_result result, base_env)
+        | Some (key, extension) -> (
+          match
+            ME.add_env_extension_strict ~meet_expanded_head base_env extension
+          with
+          | Ok env -> Ok (New_result (T.Map.singleton key TEE.empty), env)
+          | Bottom -> Bottom (New_result ()))))
+end
+
+module Target_ocaml_int_disjunction_meet =
+  Meet_map_disjunction (Target_ocaml_int)
+
 module Combine_results_meet_ops = struct
   type _ t =
     | [] : unit t
@@ -489,20 +575,23 @@ let reduce_head_of_kind_naked_immediate env head : _ Or_bottom.t =
                        is a block. *)
                     changed := true;
                     imms, names
-                  | Ok imm -> (
-                    let imms' = Target_ocaml_int.Set.singleton imm in
+                  | Ok imm' -> (
                     match (imms : _ Or_unknown.t) with
-                    | Known imms ->
-                      if Target_ocaml_int.Set.equal imms' imms
-                      then Known imms, names
-                      else (
-                        if not (Target_ocaml_int.Set.mem imm imms)
-                        then raise Bottom_result;
-                        changed := true;
-                        Known imms', names)
+                    | Known imms -> (
+                      match Target_ocaml_int.Map.get_singleton imms with
+                      | Some (imm, _) when Target_ocaml_int.equal imm imm' ->
+                        Known imms, names
+                      | Some _ | None -> (
+                        match Target_ocaml_int.Map.find_opt imm' imms with
+                        | None -> raise Bottom_result
+                        | Some extension ->
+                          changed := true;
+                          ( Known (Target_ocaml_int.Map.singleton imm' extension),
+                            names )))
                     | Unknown ->
                       changed := true;
-                      Known imms', names))
+                      ( Known (Target_ocaml_int.Map.singleton imm' TEE.empty),
+                        names )))
                 ~name:(fun name' ~coercion:_ ->
                   if name' != name then changed := true;
                   imms, Name.Set.add name' names))
@@ -1035,21 +1124,21 @@ and reduce_inverse_relations env naked_immediates inverse_relations :
               in
               match TG.Relation.descr relation with
               | Is_null -> (
-                match I.Set.mem I.zero imms, I.Set.mem I.one imms with
+                match I.Map.mem I.zero imms, I.Map.mem I.one imms with
                 | false, false -> raise Bottom_result
                 | true, true -> env
                 | true, false -> add_equation TG.any_non_null_value
                 | false, true -> add_equation TG.null)
               | Is_int -> (
-                match I.Set.mem I.zero imms, I.Set.mem I.one imms with
+                match I.Map.mem I.zero imms, I.Map.mem I.one imms with
                 | false, false -> raise Bottom_result
                 | true, true -> env
                 | true, false -> add_equation MTC.any_block
                 | false, true -> add_equation MTC.any_tagged_immediate)
               | Get_tag -> (
                 let tags =
-                  I.Set.fold
-                    (fun tag tags ->
+                  I.Map.fold
+                    (fun tag _extension tags ->
                       match Tag.create_from_targetint I.machine_width tag with
                       | Some tag -> Tag.Set.add tag tags
                       | None -> tags (* No blocks exist with this tag *))
@@ -1083,8 +1172,8 @@ and meet_head_of_kind_naked_immediate env (t1 : TG.head_of_kind_naked_immediate)
     let descr2 = TG.Head_of_kind_naked_immediate.descr t2 in
     let naked_immediates =
       meet_unknown
-        (set_meet (module I.Set) ~of_set:Fun.id)
-        ~contents_is_bottom:I.Set.is_empty env descr1.naked_immediates
+        (Target_ocaml_int_disjunction_meet.meet ~meet_expanded_head)
+        ~contents_is_bottom:I.Map.is_empty env descr1.naked_immediates
         descr2.naked_immediates
     in
     match naked_immediates with
@@ -2055,7 +2144,11 @@ and join_head_of_kind_naked_immediate env
     let descr2 = TG.Head_of_kind_naked_immediate.descr head2 in
     let naked_immediates =
       join_unknown
-        (fun _ is1 is2 : _ Or_unknown.t -> Known (I.Set.union is1 is2))
+        (fun _ is1 is2 : _ Or_unknown.t ->
+          Known
+            (I.Map.union_total
+               (fun _ ext1 ext2 -> join_env_extension env ext1 ext2)
+               is1 is2))
         env descr1.naked_immediates descr2.naked_immediates
     in
     let inverse_relations =

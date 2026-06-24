@@ -610,3 +610,73 @@ let unknown_types_from_arity ~machine_width arity =
   List.map
     (unknown_with_subkind ?alloc_mode:None ~machine_width)
     (Flambda_arity.unarized_components arity)
+
+type boolean_env_extensions =
+  | Always_false
+  | Always_true
+  | Ext of
+      { when_true : TG.t Name.Map.t;
+        when_false : TG.t Name.Map.t
+      }
+
+let boolean_not_boolean_env_extensions = function
+  | Always_false -> Always_true
+  | Always_true -> Always_false
+  | Ext { when_true; when_false } ->
+    Ext { when_true = when_false; when_false = when_true }
+
+let boolean_env_extensions_to_type ~machine_width = function
+  | Always_false ->
+    TG.this_naked_immediate (Target_ocaml_int.bool_false machine_width)
+  | Always_true ->
+    TG.this_naked_immediate (Target_ocaml_int.bool_true machine_width)
+  | Ext { when_true; when_false } ->
+    TG.create_from_head_naked_immediate
+      (TG.Head_of_kind_naked_immediate.create_naked_immediates_non_empty
+         (Target_ocaml_int.Map.of_list
+            [ ( Target_ocaml_int.bool_false machine_width,
+                TG.Env_extension.create ~equations:when_false );
+              ( Target_ocaml_int.bool_true machine_width,
+                TG.Env_extension.create ~equations:when_true ) ]))
+
+let env_extensions_for_phys_equals kind simple1 simple2 =
+  Simple.pattern_match simple1
+    ~const:(fun const1 ->
+      Simple.pattern_match simple2
+        ~const:(fun const2 ->
+          if Reg_width_const.equal const1 const2
+          then Always_true
+          else Always_false)
+        ~name:(fun name2 ~coercion:_ ->
+          Ext
+            { when_false = Name.Map.empty;
+              when_true =
+                Name.Map.singleton name2
+                  (TG.alias_type_of kind (Simple.const const1))
+            }))
+    ~name:(fun name1 ~coercion:_ ->
+      Simple.pattern_match simple2
+        ~const:(fun const2 ->
+          Ext
+            { when_false = Name.Map.empty;
+              when_true =
+                Name.Map.singleton name1
+                  (TG.alias_type_of kind (Simple.const const2))
+            })
+        ~name:(fun name2 ~coercion:_ ->
+          if Name.equal name1 name2
+          then Always_true
+          else
+            (* We do not store env extensions with aliases between arbitrary
+               names here, in order to keep env extensions simple. This could be
+               revisited in the future. *)
+            Ext { when_true = Name.Map.empty; when_false = Name.Map.empty }))
+
+let type_for_phys_equals ~machine_width kind simple1 simple2 =
+  env_extensions_for_phys_equals kind simple1 simple2
+  |> boolean_env_extensions_to_type ~machine_width
+
+let type_for_not_phys_equals ~machine_width kind simple1 simple2 =
+  env_extensions_for_phys_equals kind simple1 simple2
+  |> boolean_not_boolean_env_extensions
+  |> boolean_env_extensions_to_type ~machine_width

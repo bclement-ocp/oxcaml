@@ -17,6 +17,10 @@
 open! Simplify_import
 module A = Number_adjuncts
 
+let extensions_on_naked_immediates =
+  Oxcaml_args.Extra_options.bool __LOC__
+    "flambda2-expert-env-extension-on-naked-immediates"
+
 type 'a binary_arith_outcome_for_one_side_only =
   | Exactly of 'a
   | The_other_side
@@ -601,7 +605,7 @@ end = struct
 
   let unknown ~machine_width (op : op) =
     match op with
-    | Yielding_bool _ ->
+    | Yielding_bool (Eq | Neq | Lt _ | Gt _ | Le _ | Ge _) ->
       T.these_naked_immediates (Target_ocaml_int.all_bools machine_width)
     | Yielding_int_like_compare_functions _signedness ->
       T.these_naked_immediates
@@ -970,7 +974,7 @@ module Binary_float32_comp = Binary_arith_like (Float32_ops_for_binary_comp)
    as referential equality on all values, including immediates and immutable
    blocks. *)
 let simplify_phys_equal (op : P.equality_comparison) dacc ~original_term _dbg
-    ~arg1:_ ~arg1_ty ~arg2:_ ~arg2_ty ~result_var =
+    ~arg1 ~arg1_ty ~arg2 ~arg2_ty ~result_var =
   (* This primitive is only used for arguments of kind [Value]. *)
   let typing_env = DA.typing_env dacc in
   (* Note: We don't compare the arguments themselves for equality. Instead, we
@@ -988,10 +992,16 @@ let simplify_phys_equal (op : P.equality_comparison) dacc ~original_term _dbg
       (Named.create_simple (Simple.untagged_const_bool machine_width result))
       ~try_reify:false dacc
   | Unknown ->
-    let dacc =
-      DA.add_variable dacc result_var
-        (T.these_naked_immediates (Target_ocaml_int.all_bools machine_width))
+    let ty =
+      if extensions_on_naked_immediates ()
+      then
+        match op with
+        | Eq -> T.type_for_phys_equals ~machine_width (T.kind arg1_ty) arg1 arg2
+        | Neq ->
+          T.type_for_not_phys_equals ~machine_width (T.kind arg1_ty) arg1 arg2
+      else T.these_naked_immediates (Target_ocaml_int.all_bools machine_width)
     in
+    let dacc = DA.add_variable dacc result_var ty in
     SPR.create original_term ~try_reify:false dacc
 
 let simplify_array_load (array_kind : P.Array_kind.t)
@@ -1133,7 +1143,17 @@ let simplify_binary_primitive0 dacc original_prim (prim : P.binary_primitive)
       | Naked_int32 -> Binary_int_shift_int32.simplify op
       | Naked_int64 -> Binary_int_shift_int64.simplify op
       | Naked_nativeint -> Binary_int_shift_nativeint.simplify op)
-    | Int_comp (kind, op) -> (
+    | Int_comp ((_ : K.Standard_int.t), Yielding_bool Eq)
+      when extensions_on_naked_immediates () ->
+      simplify_phys_equal Eq
+    | Int_comp ((_ : K.Standard_int.t), Yielding_bool Neq)
+      when extensions_on_naked_immediates () ->
+      simplify_phys_equal Neq
+    | Int_comp
+        ( kind,
+          (( Yielding_int_like_compare_functions _
+           | Yielding_bool (Eq | Neq | Lt _ | Gt _ | Le _ | Ge _) ) as op) )
+      -> (
       match kind with
       | Tagged_immediate -> Binary_int_comp_tagged_immediate.simplify op
       | Naked_immediate -> Binary_int_comp_naked_immediate.simplify op

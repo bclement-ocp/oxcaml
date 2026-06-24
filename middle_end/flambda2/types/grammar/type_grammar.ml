@@ -223,10 +223,10 @@ and head_of_kind_value_non_null =
    if we don't actually use the extensions, while the second version would be
    particularly useful if we switch several times on the same scrutinee. *)
 and head_of_kind_naked_immediate =
-  | Naked_immediates of Target_ocaml_int.Set.t
+  | Naked_immediates of env_extension Target_ocaml_int.Map.t
   | Inverse_relations of Name.Set.t Relation.Map.t
   | Naked_immediates_and_inverse_relations of
-      { naked_immediates : Target_ocaml_int.Set.t;
+      { naked_immediates : env_extension Target_ocaml_int.Map.t;
         inverse_relations : Name.Set.t Relation.Map.t
       }
 
@@ -404,8 +404,8 @@ let or_unknown_is_bottom is_bottom (or_unknown : _ Or_unknown.t) =
   match or_unknown with Known x -> is_bottom x | Unknown -> false
 
 let naked_immediates :
-    head_of_kind_naked_immediate -> Target_ocaml_int.Set.t Or_unknown.t =
-  function
+    head_of_kind_naked_immediate ->
+    env_extension Target_ocaml_int.Map.t Or_unknown.t = function
   | Naked_immediates naked_immediates
   | Naked_immediates_and_inverse_relations { naked_immediates; _ } ->
     Known naked_immediates
@@ -1371,7 +1371,9 @@ and print_head_of_kind_value_non_null ppf head =
       (Array.to_list fields)
 
 and print_head_of_kind_naked_immediate ppf head =
-  Or_unknown.print Target_ocaml_int.Set.print ppf (naked_immediates head);
+  Or_unknown.print
+    (Target_ocaml_int.Map.print print_env_extension)
+    ppf (naked_immediates head);
   Relation.Map.iter
     (fun relation names ->
       Name.Set.iter
@@ -4031,7 +4033,9 @@ let these_naked_immediates is =
   | _ ->
     if Target_ocaml_int.Set.is_empty is
     then bottom_naked_immediate
-    else Naked_immediate (TD.create (Naked_immediates is))
+    else
+      let is = Target_ocaml_int.Map.of_set (fun _ -> empty_env_extension) is in
+      Naked_immediate (TD.create (Naked_immediates is))
 
 let these_naked_float32s fs =
   match Float32.Set.get_singleton fs with
@@ -4292,7 +4296,11 @@ let is_int_for_scrutinee ~machine_width ~scrutinee : t =
       ~name:(fun name ~coercion:_ ->
         let head =
           create_head_of_kind_naked_immediate
-            ~naked_immediates:(Known (Target_ocaml_int.all_bools machine_width))
+            ~naked_immediates:
+              (Known
+                 (Target_ocaml_int.Map.of_set
+                    (fun _ -> empty_env_extension)
+                    (Target_ocaml_int.all_bools machine_width)))
             ~inverse_relations:
               (Relation.Map.singleton Relation.is_int (Name.Set.singleton name))
         in
@@ -4327,7 +4335,11 @@ let is_null ~machine_width ~scrutinee : t =
       ~name:(fun name ~coercion:_ ->
         let head =
           create_head_of_kind_naked_immediate
-            ~naked_immediates:(Known (Target_ocaml_int.all_bools machine_width))
+            ~naked_immediates:
+              (Known
+                 (Target_ocaml_int.Map.of_set
+                    (fun _ -> empty_env_extension)
+                    (Target_ocaml_int.all_bools machine_width)))
             ~inverse_relations:
               (Relation.Map.singleton Relation.is_null (Name.Set.singleton name))
         in
@@ -4606,7 +4618,7 @@ module Head_of_kind_naked_immediate = struct
   type t = head_of_kind_naked_immediate
 
   type descr =
-    { naked_immediates : Target_ocaml_int.Set.t Or_unknown.t;
+    { naked_immediates : env_extension Target_ocaml_int.Map.t Or_unknown.t;
       inverse_relations : Name.Set.t Relation.Map.t
     }
 
@@ -4617,7 +4629,7 @@ module Head_of_kind_naked_immediate = struct
 
   let from_descr { naked_immediates; inverse_relations } : _ Or_bottom.t =
     match naked_immediates with
-    | Known imms when Target_ocaml_int.Set.is_empty imms -> Bottom
+    | Known imms when Target_ocaml_int.Map.is_empty imms -> Bottom
     | Known _ | Unknown ->
       Ok
         (create_head_of_kind_naked_immediate ~naked_immediates
@@ -4625,21 +4637,21 @@ module Head_of_kind_naked_immediate = struct
 
   let from_descr_non_empty { naked_immediates; inverse_relations } =
     match naked_immediates with
-    | Known imms when Target_ocaml_int.Set.is_empty imms ->
+    | Known imms when Target_ocaml_int.Map.is_empty imms ->
       Misc.fatal_error "Head_of_kind_naked_immediates.from_descr_non_empty"
     | Known _ | Unknown ->
       create_head_of_kind_naked_immediate ~naked_immediates ~inverse_relations
 
   let create_naked_immediate imm =
-    Naked_immediates (Target_ocaml_int.Set.singleton imm)
+    Naked_immediates (Target_ocaml_int.Map.singleton imm empty_env_extension)
 
   let create_naked_immediates imms : _ Or_bottom.t =
-    if Target_ocaml_int.Set.is_empty imms
+    if Target_ocaml_int.Map.is_empty imms
     then Bottom
     else Ok (Naked_immediates imms)
 
   let create_naked_immediates_non_empty imms =
-    if Target_ocaml_int.Set.is_empty imms
+    if Target_ocaml_int.Map.is_empty imms
     then
       Misc.fatal_error
         "Head_of_kind_naked_immediates.create_naked_immediates_non_empty";
@@ -4763,8 +4775,8 @@ let rec must_be_singleton t : RWC.t option =
       match naked_immediates head with
       | Unknown -> None
       | Known is -> (
-        match Target_ocaml_int.Set.get_singleton is with
-        | Some i -> Some (RWC.naked_immediate i)
+        match Target_ocaml_int.Map.get_singleton is with
+        | Some (i, _ext) -> Some (RWC.naked_immediate i)
         | None -> None)))
   | Naked_float32 ty -> (
     match TD.descr ty with

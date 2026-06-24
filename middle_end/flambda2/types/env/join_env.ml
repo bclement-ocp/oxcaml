@@ -2114,13 +2114,20 @@ let cut_and_n_way_join_with_analysis ~n_way_join_type ~meet_expanded_head
              joined_envs,
              equations_to_join,
              symbol_projections_to_join ) ->
-        let equations, symbol_projections =
-          cut_for_join typing_env ~cut_after
-        in
-        ( Index.Map.add index external_id external_ids,
-          Index.Map.add index typing_env joined_envs,
-          Index.Map.add index (typing_env, equations) equations_to_join,
-          Index.Map.add index symbol_projections symbol_projections_to_join ))
+        if TE.is_bottom typing_env
+        then
+          ( external_ids,
+            joined_envs,
+            equations_to_join,
+            symbol_projections_to_join )
+        else
+          let equations, symbol_projections =
+            cut_for_join typing_env ~cut_after
+          in
+          ( Index.Map.add index external_id external_ids,
+            Index.Map.add index typing_env joined_envs,
+            Index.Map.add index (typing_env, equations) equations_to_join,
+            Index.Map.add index symbol_projections symbol_projections_to_join ))
       joined_envs
       (Index.Map.empty, Index.Map.empty, Index.Map.empty, Index.Map.empty)
   in

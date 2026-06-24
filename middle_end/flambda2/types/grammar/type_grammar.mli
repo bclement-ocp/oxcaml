@@ -898,7 +898,7 @@ module Head_of_kind_naked_immediate : sig
   type t = head_of_kind_naked_immediate
 
   type descr =
-    { naked_immediates : Target_ocaml_int.Set.t Or_unknown.t;
+    { naked_immediates : env_extension Target_ocaml_int.Map.t Or_unknown.t;
       inverse_relations : Name.Set.t Relation.Map.t
     }
 
@@ -910,9 +910,11 @@ module Head_of_kind_naked_immediate : sig
 
   val create_naked_immediate : Target_ocaml_int.t -> t
 
-  val create_naked_immediates : Target_ocaml_int.Set.t -> t Or_bottom.t
+  val create_naked_immediates :
+    env_extension Target_ocaml_int.Map.t -> t Or_bottom.t
 
-  val create_naked_immediates_non_empty : Target_ocaml_int.Set.t -> t
+  val create_naked_immediates_non_empty :
+    env_extension Target_ocaml_int.Map.t -> t
 
   val create_inverse_relations : Name.Set.t Relation.Map.t -> t
 end
