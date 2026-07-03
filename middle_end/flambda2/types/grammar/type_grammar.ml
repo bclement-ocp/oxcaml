@@ -393,6 +393,8 @@ let empty_env_extension = { equations = Name.Map.empty }
 
 let is_empty_env_extension { equations } = Name.Map.is_empty equations
 
+let dup_relation = Oxcaml_args.Extra_options.bool __LOC__ "dup-relation"
+
 let row_like_is_bottom ~known ~(other : _ Or_bottom.t) ~is_empty_map_known =
   is_empty_map_known known && match other with Bottom -> true | Ok _ -> false
 
@@ -494,7 +496,13 @@ and free_names_head_of_kind_value0 ~follow_value_slots { non_null; is_null } =
 and free_names_relation ~follow_value_slots:_ relation =
   match relation with
   | None -> Name_occurrences.empty
-  | Some var -> Name_occurrences.singleton_variable var Name_mode.in_types
+  | Some var ->
+    let free_names =
+      Name_occurrences.singleton_variable var Name_mode.in_types
+    in
+    if dup_relation ()
+    then Name_occurrences.add_variable free_names var Name_mode.in_types
+    else free_names
 
 and free_names_head_of_kind_value_non_null ~follow_value_slots head =
   match head with

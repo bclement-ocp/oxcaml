@@ -1854,43 +1854,52 @@ and meet_function_type (env : ME.t)
       ~right_a:code_id2 ~meet_b:meet ~left_b:rec_info1 ~right_b:rec_info2
 
 and n_way_join env (ts : _ Join_env.join_arg list) : TG.t n_way_join_result =
-  let kind =
-    match ts with
-    | [] -> Misc.fatal_error "N-way join of zero types"
-    | (_, t1) :: ts ->
-      let kind = TG.kind t1 in
-      if not (List.for_all (fun (_, t) -> K.equal kind (TG.kind t)) ts)
+  let rec loop t1 all_phys_equal kind = function
+    | [] -> all_phys_equal
+    | (_, t2) :: ts ->
+      if not (K.equal kind (TG.kind t2))
       then
         Misc.fatal_errorf "Kind mismatch upon join:@ %a@ versus@ %a" TG.print t1
           (Format.pp_print_list
              ~pp_sep:(fun ppf () -> Format.fprintf ppf "@ versus@ ")
              TG.print)
           (List.map snd ts);
-      kind
+      loop t1 (all_phys_equal && t2 == t1) kind ts
   in
-  let ts = List.filter (fun (_, ty) -> not (TG.is_obviously_bottom ty)) ts in
-  match
-    List.map
-      (fun (id, ty) ->
-        ( id,
-          TE.get_alias_then_canonical_simple_exn
-            ~min_name_mode:Name_mode.in_types
-            (Join_env.joined_env env id)
-            ty ))
-      ts
-  with
-  | canonical_simples -> (
-    match Join_env.n_way_join_simples env kind canonical_simples with
-    | Bottom, join_env -> Known (MTC.bottom kind), join_env
-    | Ok simple, join_env -> Known (TG.alias_type_of kind simple), join_env)
-  | exception Not_found ->
-    (* CR vlaviron: Fix this to return Unknown when Product can handle it *)
-    map_join_result ~f:ET.to_type
-      (n_way_join_expanded_head env kind
-         (List.map
-            (fun (id, ty) ->
-              id, Expand_head.expand_head (Join_env.joined_env env id) ty)
-            ts))
+  let all_phys_equal, t1, kind =
+    match ts with
+    | [] -> Misc.fatal_error "N-way join of zero types"
+    | (_, t1) :: ts ->
+      let kind = TG.kind t1 in
+      let all_phys_equal = loop t1 true kind ts in
+      all_phys_equal, t1, kind
+  in
+  if all_phys_equal && false
+  then Known t1, Join_env.import_type env (List.map fst ts) t1
+  else
+    let ts = List.filter (fun (_, ty) -> not (TG.is_obviously_bottom ty)) ts in
+    match
+      List.map
+        (fun (id, ty) ->
+          ( id,
+            TE.get_alias_then_canonical_simple_exn
+              ~min_name_mode:Name_mode.in_types
+              (Join_env.joined_env env id)
+              ty ))
+        ts
+    with
+    | canonical_simples -> (
+      match Join_env.n_way_join_simples env kind canonical_simples with
+      | Bottom, join_env -> Known (MTC.bottom kind), join_env
+      | Ok simple, join_env -> Known (TG.alias_type_of kind simple), join_env)
+    | exception Not_found ->
+      (* CR vlaviron: Fix this to return Unknown when Product can handle it *)
+      map_join_result ~f:ET.to_type
+        (n_way_join_expanded_head env kind
+           (List.map
+              (fun (id, ty) ->
+                id, Expand_head.expand_head (Join_env.joined_env env id) ty)
+              ts))
 
 and n_way_join_expanded_head env kind (expandeds : ET.t Join_env.join_arg list)
     : ET.t n_way_join_result =
@@ -2984,35 +2993,73 @@ and n_way_join_value_slot_indexed_product env
 and n_way_join_int_indexed_product env shape
     (fields : TG.Product.Int_indexed.t Join_env.join_arg list) :
     TG.Product.Int_indexed.t * Join_env.t =
-  let length =
-    match fields with
-    | [] -> Misc.fatal_error "Join of empty int indexed product."
-    | (_, first_fields) :: other_fields ->
+  match fields with
+  | [] -> Misc.fatal_error "Join of empty int indexed product."
+  | (_, first_fields) :: other_fields ->
+    let length =
       List.fold_left
         (fun length (_, other_fields) -> min length (Array.length other_fields))
         (Array.length first_fields)
         other_fields
-  in
-  let fields, env =
-    let env_ref = ref env in
-    let fields =
-      Array.init length (fun index ->
-          (* CR bclement: if fields are all physically equal and only involve
-             variables defined in the central env, we should reuse the type. *)
-          let fields =
-            List.map (fun (id, fields) -> id, fields.(index)) fields
-          in
-          match n_way_join !env_ref fields with
-          | Unknown, env ->
-            env_ref := env;
-            MTC.unknown_from_shape shape index
-          | Known ty, env ->
-            env_ref := env;
-            ty)
     in
-    fields, !env_ref
-  in
-  TG.Product.Int_indexed.create_from_array fields, env
+    let all_phys_equal =
+      try
+        for index = 0 to length - 1 do
+          let first_field = Array.unsafe_get first_fields index in
+          if
+            List.exists
+              (fun (_, other_fields) ->
+                Array.unsafe_get other_fields index != first_field)
+              other_fields
+          then raise_notrace Exit
+        done;
+        true
+      with Exit -> false
+    in
+    if all_phys_equal
+    then (
+      let fields0 = fields in
+      match
+        List.find_map
+          (fun (_, fields) ->
+            if Array.length fields = length then Some fields else None)
+          fields
+      with
+      | None -> assert false
+      | Some fields ->
+        if Flambda_features.debug_flambda2 ()
+        then
+          Format.eprintf "@[<v 2>importating (from %d)@ @[<v>%a@]@]@."
+            (List.length fields0)
+            (Format.pp_print_array ~pp_sep:Format.pp_print_space TG.print)
+            fields;
+        let envs = List.map fst fields0 in
+        ( TG.Product.Int_indexed.create_from_array fields,
+          Array.fold_left
+            (fun env ty -> Join_env.import_type env envs ty)
+            env fields ))
+    else
+      let fields, env =
+        let env_ref = ref env in
+        let fields =
+          Array.init length (fun index ->
+              (* CR bclement: if fields are all physically equal and only
+                 involve variables defined in the central env, we should reuse
+                 the type. *)
+              let fields =
+                List.map (fun (id, fields) -> id, fields.(index)) fields
+              in
+              match n_way_join !env_ref fields with
+              | Unknown, env ->
+                env_ref := env;
+                MTC.unknown_from_shape shape index
+              | Known ty, env ->
+                env_ref := env;
+                ty)
+        in
+        fields, !env_ref
+      in
+      TG.Product.Int_indexed.create_from_array fields, env
 
 and n_way_join_function_type (env : Join_env.t)
     (func_types : TG.Function_type.t Or_unknown.t Join_env.join_arg list) :
