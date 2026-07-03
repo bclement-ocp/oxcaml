@@ -90,7 +90,7 @@ module TE = Typing_env
 module ME = Meet_env
 module TEE = Typing_env_extension
 module TEL = Typing_env_level
-module ET = Expand_head.Expanded_type
+module NO = Name_occurrences
 
 module Symbol_projection = struct
   include Symbol_projection
@@ -845,6 +845,10 @@ module Bindings_in_target_env : sig
 
   val definition_of_local_variables_in_one_joined_env :
     t -> Index.t -> Type_in_one_joined_env.t Variable_in_target_env.Map.t
+
+  val must_be_pristine : t -> Variable.t -> t
+
+  val pristine_vars : t -> Variable.Set.t
 end = struct
   type coercion_to_canonical_in_target_env = Coercion.t
 
@@ -891,13 +895,14 @@ end = struct
          This is used to implement [replay_definitions_of_aliases_in_target_env]
          in the join of env extensions, see [prepare_nested_join]. *)
       equations_for_local_vars :
-        Type_in_one_joined_env.t Variable_in_target_env.Map.t Index.Map.t
+        Type_in_one_joined_env.t Variable_in_target_env.Map.t Index.Map.t;
           (* Environment extensions to use in each of the joined environments to
              replay the definition of local variables.
 
              This is used to implement
              [definitions_of_local_variables_in_one_joined_env] in the join of
              env extensions, see [prepare_nested_join]. *)
+      pristine_vars : Variable.Set.t
     }
 
   let from_source_env source_env =
@@ -908,8 +913,14 @@ end = struct
       aliases_of_names_in_joined_envs = Index.Map.empty;
       definitions_in_joined_envs = Name_in_target_env.Map.empty;
       equations_for_local_vars = Index.Map.empty;
-      created_variables = Variable_in_target_env.Map.empty
+      created_variables = Variable_in_target_env.Map.empty;
+      pristine_vars = Variable.Set.empty
     }
+
+  let must_be_pristine t var =
+    { t with pristine_vars = Variable.Set.add var t.pristine_vars }
+
+  let pristine_vars { pristine_vars; _ } = pristine_vars
 
   let add_alias t kind ~canonical_element:canonical_element_with_coercion
       ~name_to_be_demoted ~coercion_to_name_to_be_demoted =
@@ -1305,14 +1316,29 @@ end = struct
         else None)
       (envs_and_equations t)
 
+  let expand_head env ty =
+    match TG.get_alias_opt ty with
+    | None -> ty
+    | Some simple ->
+      let kind = TG.kind ty in
+      let simple = TE.get_canonical_simple_ignoring_name_mode env simple in
+      Simple.pattern_match simple
+        ~const:(fun _ -> TG.alias_type_of kind simple)
+        ~name:(fun name ~coercion ->
+          let ty = TE.find env name (Some kind) in
+          match TG.get_alias_opt ty with
+          | Some _ ->
+            Misc.fatal_errorf
+              "Canonical alias %a should never have [Equals] type %a:@\n\n%a"
+              Simple.print simple TG.print ty TE.print env
+          | None -> TG.apply_coercion ty coercion)
+
   let expand_heads t types =
     Index.Map.mapi
       (fun index ty ->
         let typing_env = get_nth_joined_env t index in
-        Type_in_one_joined_env.create
-          (ET.to_type
-             (Expand_head.expand_head typing_env
-                (ty : Type_in_one_joined_env.t :> TG.t))))
+        let ty = (ty : Type_in_one_joined_env.t :> TG.t) in
+        Type_in_one_joined_env.create (expand_head typing_env ty))
       types
 end
 
@@ -1658,25 +1684,29 @@ let recover_inverse_relations inverse_relations name ty =
             TG.Relation.is_int ~scrutinee:name
       in
       let ty =
-        match get_tag with
-        | None -> ty
-        | Some get_tag_var ->
-          let when_immediate, when_block =
-            match extensions with
-            | No_extensions -> TEE.empty, TEE.empty
-            | Ext { when_immediate; when_block } -> when_immediate, when_block
-          in
-          let when_block =
-            add_inverse_relation_to_env_extension when_block
-              (Name.var get_tag_var) TG.Relation.get_tag ~scrutinee:name
-          in
-          let head' =
-            TG.Head_of_kind_value_non_null.create_variant ~is_unique ~blocks
-              ~immediates
-              ~extensions:(Ext { when_immediate; when_block })
-              ~is_int ~get_tag
-          in
-          TG.create_from_head_value { is_null = Not_null; non_null = Ok head' }
+        if true
+        then ty
+        else
+          match get_tag with
+          | None -> ty
+          | Some get_tag_var ->
+            let when_immediate, when_block =
+              match extensions with
+              | No_extensions -> TEE.empty, TEE.empty
+              | Ext { when_immediate; when_block } -> when_immediate, when_block
+            in
+            let when_block =
+              add_inverse_relation_to_env_extension when_block
+                (Name.var get_tag_var) TG.Relation.get_tag ~scrutinee:name
+            in
+            let head' =
+              TG.Head_of_kind_value_non_null.create_variant ~is_unique ~blocks
+                ~immediates
+                ~extensions:(Ext { when_immediate; when_block })
+                ~is_int ~get_tag
+            in
+            TG.create_from_head_value
+              { is_null = Not_null; non_null = Ok head' }
       in
       ty, inverse_relations
     | Mutable_block _
@@ -1715,6 +1745,28 @@ let recover_inverse_relations inverse_relations name ty =
   | Naked_vec128 _ | Naked_vec256 _ | Naked_vec512 _ | Rec_info _ | Region _ ->
     ty, inverse_relations
 
+let import_type t _envs ty : t =
+  let bindings =
+    Name_occurrences.fold_variables (TG.free_names ty) ~init:t.bindings
+      ~f:(fun bindings var ->
+        match
+          Source_env.exists_in_source_env
+            (Bindings_in_target_env.source_env bindings)
+            var
+        with
+        | Some _ -> bindings
+        | None ->
+          let simple, bindings =
+            Bindings_in_target_env.import_from_all_envs bindings
+              (Variable_in_one_joined_env.create var)
+              (Variable.kind var)
+          in
+          let bindings = Bindings_in_target_env.must_be_pristine bindings var in
+          assert (Simple.equal (simple :> Simple.t) (Simple.var var));
+          bindings)
+  in
+  { t with bindings }
+
 let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
     types_in_target_env inverse_relations =
   Name_in_target_env.Map.fold
@@ -1726,21 +1778,38 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
         Misc.fatal_errorf
           "Processing join of %a but we already have a type for it."
           Name_in_target_env.print name;
-      match
-        n_way_join_type t
-          (Index.Map.bindings (Joined_envs.expand_heads t.joined_envs types)
-            : (Index.t * Type_in_one_joined_env.t) list
-            :> (Index.t * TG.t) list)
-      with
-      | Unknown, t -> types_in_target_env, inverse_relations, t
-      | Known ty, t ->
-        let ty, inverse_relations =
-          recover_inverse_relations inverse_relations (name :> Name.t) ty
-        in
-        let ty = Type_in_target_env.create ty in
-        ( Name_in_target_env.Map.add name ty types_in_target_env,
-          inverse_relations,
-          t ))
+      let heads =
+        (Index.Map.bindings (Joined_envs.expand_heads t.joined_envs types)
+          : (Index.t * Type_in_one_joined_env.t) list
+          :> (Index.t * TG.t) list)
+      in
+      let[@local] regular_join () =
+        match n_way_join_type t heads with
+        | Unknown, t -> types_in_target_env, inverse_relations, t
+        | Known ty, t ->
+          let ty, inverse_relations =
+            recover_inverse_relations inverse_relations (name :> Name.t) ty
+          in
+          let ty = Type_in_target_env.create ty in
+          ( Name_in_target_env.Map.add name ty types_in_target_env,
+            inverse_relations,
+            t )
+      in
+      match heads with
+      | [] -> regular_join ()
+      | (_, t1) :: ts ->
+        if List.for_all (fun (_, t2) -> t1 == t2) ts
+        then
+          (* XXX: recover_inverse_relations? *)
+          let t = import_type t [] t1 in
+          let t1, inverse_relations =
+            recover_inverse_relations inverse_relations (name :> Name.t) t1
+          in
+          let ty = Type_in_target_env.create t1 in
+          ( Name_in_target_env.Map.add name ty types_in_target_env,
+            inverse_relations,
+            t )
+        else regular_join ())
     equations_to_join
     (types_in_target_env, inverse_relations, t)
 
@@ -1815,8 +1884,14 @@ let cut_for_join typing_env ~cut_after =
   in
   incremental_equations, symbol_projections
 
+let n_way_join_suitable_extensions =
+  Oxcaml_args.Extra_options.bool __LOC__ "n-way-join-suitable-extensions"
+
+let use_pristine_vars = Oxcaml_args.Extra_options.bool __LOC__ "pristine-vars"
+
 let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     source_env joined_envs equations_to_join symbol_projections_to_join =
+  let joined_envs0 = joined_envs in
   try
     let empty_bindings =
       Bindings_in_target_env.from_source_env
@@ -1843,6 +1918,15 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     let equations_to_join =
       Name_in_target_env.Map.disjoint_union concrete_equations_to_join
         (equations_for_bindings bindings ~since:empty_bindings)
+    in
+    let relevant_vars =
+      Name_in_target_env.Map.fold
+        (fun name _ acc ->
+          Name.pattern_match
+            (name : Name_in_target_env.t :> Name.t)
+            ~var:(fun var -> Variable.Set.add var acc)
+            ~symbol:(fun _symbol -> acc))
+        equations_to_join Variable.Set.empty
     in
     let rec loop t equations_to_join concrete_types_in_target_env
         inverse_relations =
@@ -1886,20 +1970,98 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
            (Bindings_in_target_env.alias_types_in_target_env bindings))
         Name.Map.empty
     in
-    let target_env =
+    let created_variables =
       Bindings_in_target_env.fold_created_variables
-        (fun var kind target_env ->
-          ME.add_variable_definition target_env
-            (var : Variable_in_target_env.t :> Variable.t)
-            kind Name_mode.in_types)
-        bindings source_env
+        (fun var _kind vars -> Variable.Set.add (var :> Variable.t) vars)
+        bindings Variable.Set.empty
+    in
+    let equations =
+      (equations
+        : Type_in_target_env.t Name_in_target_env.Map.t
+        :> TG.t Name.Map.t)
+    in
+    let new_bindings =
+      Bindings_in_target_env.new_bindings bindings ~since:empty_bindings
+    in
+    let name_occurrences =
+      Name.Map.fold
+        (fun _name ty free_names ->
+          NO.union free_names (NO.with_only_variables (TG.free_names ty)))
+        equations NO.empty
+    in
+    let name_occurrences =
+      NO.union name_occurrences
+        (NO.with_only_variables
+           (TEE.free_names env_extension_for_inverse_relations))
+    in
+    let to_project =
+      Variable.Set.filter
+        (fun var ->
+          (* match Name_in_target_env.Map.find_or_null
+             (Name_in_target_env.create (Name.var var)) new_bindings with | This
+             (Imported_var _) -> false | This (These_canonicals _) | Null -> *)
+          match NO.count_variable name_occurrences var with
+          | Zero | One ->
+            (not (use_pristine_vars ()))
+            || not
+                 (Variable.Set.mem var
+                    (Bindings_in_target_env.pristine_vars bindings))
+          | More_than_one -> false)
+        created_variables
+    in
+    let rec expand var =
+      match Name.Map.find_or_null (Name.var var) equations with
+      | Null -> More_type_creators.unknown (Variable.kind var)
+      | This ty -> (
+        match TG.get_alias_opt ty with
+        | None -> TG.project_variables_out ~to_project ~expand ty
+        | Some simple ->
+          Simple.pattern_match' simple
+            ~const:(fun _ -> ty)
+            ~symbol:(fun _ ~coercion:_ -> ty)
+            ~var:(fun var ~coercion ->
+              if Variable.Set.mem var to_project
+              then TG.apply_coercion (expand var) coercion
+              else ty))
+    in
+    let raw_equations = equations in
+    let equations =
+      if n_way_join_suitable_extensions ()
+      then
+        Name.Map.filter_map
+          (fun name ty ->
+            Name.pattern_match name
+              ~symbol:(fun _ ->
+                Some (TG.project_variables_out ~to_project ~expand ty))
+              ~var:(fun var ->
+                if Variable.Set.mem var to_project
+                then None
+                else Some (TG.project_variables_out ~to_project ~expand ty)))
+          equations
+      else equations
+    in
+    let target_env =
+      if n_way_join_suitable_extensions ()
+      then
+        Bindings_in_target_env.fold_created_variables
+          (fun var kind target_env ->
+            let var = (var : Variable_in_target_env.t :> Variable.t) in
+            if Variable.Set.mem var to_project
+            then target_env
+            else
+              ME.add_variable_definition target_env var kind Name_mode.in_types)
+          bindings source_env
+      else
+        Bindings_in_target_env.fold_created_variables
+          (fun var kind target_env ->
+            ME.add_variable_definition target_env
+              (var : Variable_in_target_env.t :> Variable.t)
+              kind Name_mode.in_types)
+          bindings source_env
     in
     let target_env =
       ME.add_env_extension ~meet_expanded_head target_env
-        (TEE.from_map
-           (equations
-             : Type_in_target_env.t Name_in_target_env.Map.t
-             :> TG.t Name.Map.t))
+        (TEE.from_map equations)
     in
     let target_env =
       ME.add_env_extension ~meet_expanded_head target_env
@@ -1913,8 +2075,35 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
             symbol_projection)
         symbol_projections target_env
     in
-    ( target_env,
-      Bindings_in_target_env.new_bindings bindings ~since:empty_bindings )
+    if
+      Flambda_features.debug_flambda2 ()
+      && not (Name.Map.is_empty raw_equations)
+    then (
+      Format.eprintf "Levels@.";
+      Index.Map.iter
+        (fun i env ->
+          let level = TE.cut env ~cut_after in
+          Format.eprintf "@[<v 1>-- Level %a --@ %a@]@ " Index.print i TEL.print
+            level)
+        joined_envs0;
+      Format.eprintf "Before compression@.";
+      Format.eprintf "%a@." TEE.print (TEE.from_map raw_equations);
+      Format.eprintf "Relevant variables: %a@." Variable.Set.print relevant_vars;
+      Format.eprintf "After compression@.";
+      Format.eprintf "%a@." TEE.print (TEE.from_map equations));
+    let new_bindings' =
+      if n_way_join_suitable_extensions ()
+      then
+        Name_in_target_env.Map.filter
+          (fun name _ ->
+            Name.pattern_match
+              (name :> Name.t)
+              ~var:(fun var -> not (Variable.Set.mem var to_project))
+              ~symbol:(fun _ -> true))
+          new_bindings
+      else new_bindings
+    in
+    target_env, new_bindings'
   with Misc.Fatal_error ->
     let bt = Printexc.get_raw_backtrace () in
     Format.eprintf "\n@[<v 2>%tContext is:%t cut and join of levels:@ %a@]\n"
