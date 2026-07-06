@@ -13,6 +13,23 @@
 (*                                                                        *)
 (**************************************************************************)
 
+let import_types = Oxcaml_args.Extra_options.bool __LOC__ "import-types"
+
+type recover_inverse_relations =
+  | Always_recover
+  | Recover_existentials
+  | Never_recover
+
+let recover_inverse_relations_flag =
+  Oxcaml_args.Extra_options.symbol __LOC__ "recover-inverse-relations"
+    Always_recover
+    [ "always", Always_recover;
+      "existentials", Recover_existentials;
+      "never", Never_recover ]
+
+let n_way_join_suitable_extensions =
+  Oxcaml_args.Extra_options.bool __LOC__ "n-way-join-suitable-extensions"
+
 (* Implement the join of typing envs, or more precisely of typing env levels.
 
    Most of the code here is actually concerned with the join of *aliases*
@@ -766,7 +783,7 @@ module Bindings_in_target_env : sig
   (* Must only be called from the toplevel join, before creating any local
      variable. *)
   val add_alias_between_names_in_source_env :
-    t -> K.t -> Name_in_source_env.t -> Simple_in_source_env.t -> t
+    t -> K.t -> Name_in_source_env.t -> Simple_in_target_env.t -> t
 
   (* Record the [name_in_source_env] as the canonical name for this set of
      simples in joined environments. If there was already a [name_in_source_env]
@@ -845,10 +862,6 @@ module Bindings_in_target_env : sig
 
   val definition_of_local_variables_in_one_joined_env :
     t -> Index.t -> Type_in_one_joined_env.t Variable_in_target_env.Map.t
-
-  val must_be_pristine : t -> Variable.t -> t
-
-  val pristine_vars : t -> Variable.Set.t
 end = struct
   type coercion_to_canonical_in_target_env = Coercion.t
 
@@ -895,14 +908,13 @@ end = struct
          This is used to implement [replay_definitions_of_aliases_in_target_env]
          in the join of env extensions, see [prepare_nested_join]. *)
       equations_for_local_vars :
-        Type_in_one_joined_env.t Variable_in_target_env.Map.t Index.Map.t;
+        Type_in_one_joined_env.t Variable_in_target_env.Map.t Index.Map.t
           (* Environment extensions to use in each of the joined environments to
              replay the definition of local variables.
 
              This is used to implement
              [definitions_of_local_variables_in_one_joined_env] in the join of
              env extensions, see [prepare_nested_join]. *)
-      pristine_vars : Variable.Set.t
     }
 
   let from_source_env source_env =
@@ -913,14 +925,8 @@ end = struct
       aliases_of_names_in_joined_envs = Index.Map.empty;
       definitions_in_joined_envs = Name_in_target_env.Map.empty;
       equations_for_local_vars = Index.Map.empty;
-      created_variables = Variable_in_target_env.Map.empty;
-      pristine_vars = Variable.Set.empty
+      created_variables = Variable_in_target_env.Map.empty
     }
-
-  let must_be_pristine t var =
-    { t with pristine_vars = Variable.Set.add var t.pristine_vars }
-
-  let pristine_vars { pristine_vars; _ } = pristine_vars
 
   let add_alias t kind ~canonical_element:canonical_element_with_coercion
       ~name_to_be_demoted ~coercion_to_name_to_be_demoted =
@@ -995,8 +1001,7 @@ end = struct
            (Name_in_target_env.from_source_env name)
            t.definitions_in_joined_envs));
     add_alias t kind ~name_to_be_demoted:name
-      ~coercion_to_name_to_be_demoted:Coercion.id
-      ~canonical_element:(Simple_in_target_env.from_source_env canonical)
+      ~coercion_to_name_to_be_demoted:Coercion.id ~canonical_element:canonical
 
   let update_aliases_of_names_in_joined_envs ~f simples aliases_in_target_env =
     Index.Map.fold
@@ -1556,17 +1561,30 @@ let join_aliases_into_bindings ~joined_envs ~bindings equations_to_join =
         | Canonical_in_source_env canonical ->
           let bindings =
             Bindings_in_target_env.add_alias_between_names_in_source_env
-              bindings kind name canonical
+              bindings kind name
+              (Simple_in_target_env.from_source_env canonical)
           in
           equations_to_join, bindings
         | Import_from_all_joined_envs (var, coercion) ->
           (* name = coercion(var) *)
-          let bindings =
-            Bindings_in_target_env.add_imported_var bindings
-              ~name_in_source_env:name ~coercion_to_name_in_source_env:coercion
-              var kind
-          in
-          equations_to_join, bindings
+          if import_types ()
+          then
+            let imported, bindings =
+              Bindings_in_target_env.import_from_all_envs bindings var kind
+            in
+            let bindings =
+              Bindings_in_target_env.add_alias_between_names_in_source_env
+                bindings kind name
+                (Simple_in_target_env.apply_coercion_exn imported coercion)
+            in
+            equations_to_join, bindings
+          else
+            let bindings =
+              Bindings_in_target_env.add_imported_var bindings
+                ~name_in_source_env:name
+                ~coercion_to_name_in_source_env:coercion var kind
+            in
+            equations_to_join, bindings
         | Existential_for_these_simples ->
           let bindings =
             Bindings_in_target_env.add_existential_for_these_simples bindings
@@ -1684,29 +1702,25 @@ let recover_inverse_relations inverse_relations name ty =
             TG.Relation.is_int ~scrutinee:name
       in
       let ty =
-        if true
-        then ty
-        else
-          match get_tag with
-          | None -> ty
-          | Some get_tag_var ->
-            let when_immediate, when_block =
-              match extensions with
-              | No_extensions -> TEE.empty, TEE.empty
-              | Ext { when_immediate; when_block } -> when_immediate, when_block
-            in
-            let when_block =
-              add_inverse_relation_to_env_extension when_block
-                (Name.var get_tag_var) TG.Relation.get_tag ~scrutinee:name
-            in
-            let head' =
-              TG.Head_of_kind_value_non_null.create_variant ~is_unique ~blocks
-                ~immediates
-                ~extensions:(Ext { when_immediate; when_block })
-                ~is_int ~get_tag
-            in
-            TG.create_from_head_value
-              { is_null = Not_null; non_null = Ok head' }
+        match get_tag with
+        | None -> ty
+        | Some get_tag_var ->
+          let when_immediate, when_block =
+            match extensions with
+            | No_extensions -> TEE.empty, TEE.empty
+            | Ext { when_immediate; when_block } -> when_immediate, when_block
+          in
+          let when_block =
+            add_inverse_relation_to_env_extension when_block
+              (Name.var get_tag_var) TG.Relation.get_tag ~scrutinee:name
+          in
+          let head' =
+            TG.Head_of_kind_value_non_null.create_variant ~is_unique ~blocks
+              ~immediates
+              ~extensions:(Ext { when_immediate; when_block })
+              ~is_int ~get_tag
+          in
+          TG.create_from_head_value { is_null = Not_null; non_null = Ok head' }
       in
       ty, inverse_relations
     | Mutable_block _
@@ -1761,8 +1775,11 @@ let import_type t _envs ty : t =
               (Variable_in_one_joined_env.create var)
               (Variable.kind var)
           in
-          let bindings = Bindings_in_target_env.must_be_pristine bindings var in
-          assert (Simple.equal (simple :> Simple.t) (Simple.var var));
+          if not (Simple.equal (simple :> Simple.t) (Simple.var var))
+          then
+            Misc.fatal_errorf "Imported variable %a under a different name (%a)"
+              Variable.print var Simple.print
+              (simple :> Simple.t);
           bindings)
   in
   { t with bindings }
@@ -1788,7 +1805,10 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
         | Unknown, t -> types_in_target_env, inverse_relations, t
         | Known ty, t ->
           let ty, inverse_relations =
-            recover_inverse_relations inverse_relations (name :> Name.t) ty
+            match recover_inverse_relations_flag () with
+            | Always_recover | Recover_existentials ->
+              recover_inverse_relations inverse_relations (name :> Name.t) ty
+            | Never_recover -> ty, inverse_relations
           in
           let ty = Type_in_target_env.create ty in
           ( Name_in_target_env.Map.add name ty types_in_target_env,
@@ -1798,12 +1818,14 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
       match heads with
       | [] -> regular_join ()
       | (_, t1) :: ts ->
-        if List.for_all (fun (_, t2) -> t1 == t2) ts
+        if import_types () && List.for_all (fun (_, t2) -> t1 == t2) ts
         then
-          (* XXX: recover_inverse_relations? *)
           let t = import_type t [] t1 in
           let t1, inverse_relations =
-            recover_inverse_relations inverse_relations (name :> Name.t) t1
+            match recover_inverse_relations_flag () with
+            | Always_recover ->
+              recover_inverse_relations inverse_relations (name :> Name.t) t1
+            | Never_recover | Recover_existentials -> t1, inverse_relations
           in
           let ty = Type_in_target_env.create t1 in
           ( Name_in_target_env.Map.add name ty types_in_target_env,
@@ -1884,14 +1906,8 @@ let cut_for_join typing_env ~cut_after =
   in
   incremental_equations, symbol_projections
 
-let n_way_join_suitable_extensions =
-  Oxcaml_args.Extra_options.bool __LOC__ "n-way-join-suitable-extensions"
-
-let use_pristine_vars = Oxcaml_args.Extra_options.bool __LOC__ "pristine-vars"
-
 let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     source_env joined_envs equations_to_join symbol_projections_to_join =
-  let joined_envs0 = joined_envs in
   try
     let empty_bindings =
       Bindings_in_target_env.from_source_env
@@ -1919,17 +1935,8 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
       Name_in_target_env.Map.disjoint_union concrete_equations_to_join
         (equations_for_bindings bindings ~since:empty_bindings)
     in
-    let relevant_vars =
-      Name_in_target_env.Map.fold
-        (fun name _ acc ->
-          Name.pattern_match
-            (name : Name_in_target_env.t :> Name.t)
-            ~var:(fun var -> Variable.Set.add var acc)
-            ~symbol:(fun _symbol -> acc))
-        equations_to_join Variable.Set.empty
-    in
     let rec loop t equations_to_join concrete_types_in_target_env
-        inverse_relations =
+        inverse_relations depth =
       let bindings_before_this_round = t.bindings in
       let types_in_target_env, inverse_relations, t =
         n_way_join_round ~n_way_join_type t equations_to_join
@@ -1938,7 +1945,9 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
       let new_equations_to_join =
         equations_for_bindings t.bindings ~since:bindings_before_this_round
       in
-      if Name_in_target_env.Map.is_empty new_equations_to_join
+      if
+        Name_in_target_env.Map.is_empty new_equations_to_join
+        || depth >= Flambda_features.join_depth ()
       then
         let env_extension_for_inverse_relations =
           TEE.from_map
@@ -1959,7 +1968,9 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
           env_extension_for_inverse_relations,
           n_way_join_symbol_projections t symbol_projections_to_join,
           t.bindings )
-      else loop t new_equations_to_join types_in_target_env inverse_relations
+      else
+        loop t new_equations_to_join types_in_target_env inverse_relations
+          (depth + 1)
     in
     let ( equations,
           env_extension_for_inverse_relations,
@@ -1968,7 +1979,7 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
       loop { joined_envs; bindings } equations_to_join
         (Name_in_target_env.from_source_env_map
            (Bindings_in_target_env.alias_types_in_target_env bindings))
-        Name.Map.empty
+        Name.Map.empty 0
     in
     let created_variables =
       Bindings_in_target_env.fold_created_variables
@@ -1997,15 +2008,8 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     let to_project =
       Variable.Set.filter
         (fun var ->
-          (* match Name_in_target_env.Map.find_or_null
-             (Name_in_target_env.create (Name.var var)) new_bindings with | This
-             (Imported_var _) -> false | This (These_canonicals _) | Null -> *)
           match NO.count_variable name_occurrences var with
-          | Zero | One ->
-            (not (use_pristine_vars ()))
-            || not
-                 (Variable.Set.mem var
-                    (Bindings_in_target_env.pristine_vars bindings))
+          | Zero | One -> true
           | More_than_one -> false)
         created_variables
     in
@@ -2024,7 +2028,6 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
               then TG.apply_coercion (expand var) coercion
               else ty))
     in
-    let raw_equations = equations in
     let equations =
       if n_way_join_suitable_extensions ()
       then
@@ -2075,22 +2078,6 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
             symbol_projection)
         symbol_projections target_env
     in
-    if
-      Flambda_features.debug_flambda2 ()
-      && not (Name.Map.is_empty raw_equations)
-    then (
-      Format.eprintf "Levels@.";
-      Index.Map.iter
-        (fun i env ->
-          let level = TE.cut env ~cut_after in
-          Format.eprintf "@[<v 1>-- Level %a --@ %a@]@ " Index.print i TEL.print
-            level)
-        joined_envs0;
-      Format.eprintf "Before compression@.";
-      Format.eprintf "%a@." TEE.print (TEE.from_map raw_equations);
-      Format.eprintf "Relevant variables: %a@." Variable.Set.print relevant_vars;
-      Format.eprintf "After compression@.";
-      Format.eprintf "%a@." TEE.print (TEE.from_map equations));
     let new_bindings' =
       if n_way_join_suitable_extensions ()
       then

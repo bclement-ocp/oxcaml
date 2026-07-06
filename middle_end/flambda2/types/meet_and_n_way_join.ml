@@ -14,6 +14,15 @@
 (*                                                                        *)
 (**************************************************************************)
 
+type import_phys_equal_types =
+  | All_phys_equal
+  | Phys_equal_variants
+  | Only_named
+
+let import_phys_equal_types =
+  Oxcaml_args.Extra_options.symbol __LOC__ "import-phys-equal-types" Only_named
+    ["all", All_phys_equal; "named", Only_named; "variant", Phys_equal_variants]
+
 module ET = Expand_head.Expanded_type
 module K = Flambda_kind
 module MTC = More_type_creators
@@ -1874,7 +1883,10 @@ and n_way_join env (ts : _ Join_env.join_arg list) : TG.t n_way_join_result =
       let all_phys_equal = loop t1 true kind ts in
       all_phys_equal, t1, kind
   in
-  if all_phys_equal && false
+  if
+    all_phys_equal
+    && import_phys_equal_types () == All_phys_equal
+    && Join_env.import_types ()
   then Known t1, Join_env.import_type env (List.map fst ts) t1
   else
     let ts = List.filter (fun (_, ty) -> not (TG.is_obviously_bottom ty)) ts in
@@ -3003,18 +3015,21 @@ and n_way_join_int_indexed_product env shape
         other_fields
     in
     let all_phys_equal =
-      try
-        for index = 0 to length - 1 do
-          let first_field = Array.unsafe_get first_fields index in
-          if
-            List.exists
-              (fun (_, other_fields) ->
-                Array.unsafe_get other_fields index != first_field)
-              other_fields
-          then raise_notrace Exit
-        done;
-        true
-      with Exit -> false
+      match import_phys_equal_types () with
+      | Only_named -> false
+      | All_phys_equal | Phys_equal_variants -> (
+        try
+          for index = 0 to length - 1 do
+            let first_field = Array.unsafe_get first_fields index in
+            if
+              List.exists
+                (fun (_, other_fields) ->
+                  Array.unsafe_get other_fields index != first_field)
+                other_fields
+            then raise_notrace Exit
+          done;
+          true
+        with Exit -> false)
     in
     if all_phys_equal
     then (

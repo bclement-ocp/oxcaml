@@ -13,6 +13,8 @@
 (*                                                                        *)
 (**************************************************************************)
 
+val import_types : unit -> bool
+
 type env_id
 
 type 'a join_arg = env_id * 'a
