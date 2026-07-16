@@ -107,15 +107,6 @@ end
 (* CR bclement: These should be in [Flambda_algorithms]. *)
 
 module Iterator_utils : sig
-  (* Given two maps [m1] and [m2], calls [f name (find m1 name) (find m2 name)]
-     for each [name] in the intersection of [m1] and [m2]. *)
-  val fold_binary_join :
-    f:(Name.t -> 'a -> 'b -> 'c -> 'c) ->
-    init:'c ->
-    'a Name.Map.t ->
-    'b Name.Map.t ->
-    'c
-
   type ('a, 'b) incremental_join_entry
 
   val fold_incremental_join_entry :
@@ -171,19 +162,6 @@ end = struct
     in
     Name_map_join_iterator.init iterator;
     loop iterator init
-
-  let fold_binary_join ~f ~init a b =
-    (* CR bclement: create an [Name.Map.iterator], get its initial value, and
-       initialise the [Name_map_iterator] (and the [Name_map_join_iterator])
-       from it to avoid double lookups. *)
-    match Name.Map.choose_opt a, Name.Map.choose_opt b with
-    | None, _ | _, None -> init
-    | Some (_, dummy_a), Some (_, dummy_b) ->
-      let iterator_a, recv_a = naive_iterator ~init:a ~dummy:dummy_a in
-      let iterator_b, recv_b = naive_iterator ~init:b ~dummy:dummy_b in
-      let iterator = join_iterators [iterator_a; iterator_b] in
-      fold_iterator iterator ~init ~f:(fun name acc ->
-          f name (Channel.recv recv_a) (Channel.recv recv_b) acc)
 
   type ('a, 'b) incremental_join_entry = ('a * 'b Channel.receiver) list
 
@@ -365,6 +343,7 @@ module Int_ids_in_env () = struct
 
     val pattern_match :
       t -> var:(Variable.t -> 'a) -> symbol:(Symbol.t -> 'a) -> 'a
+    [@@warning "-32"]
   end = struct
     include Id_in_env (Name) ()
 
@@ -390,7 +369,7 @@ module Int_ids_in_env () = struct
 
     val const : Reg_width_const.t -> t
 
-    val name : ?coercion:Coercion.t -> Name.t -> t
+    val name : ?coercion:Coercion.t -> Name.t -> t [@@warning "-32"]
 
     val symbol : ?coercion:Coercion.t -> Symbol.t -> t
 
@@ -510,7 +489,6 @@ module Symbol_in_one_joined_env = struct
     Symbol_in_source_env.create (symbol : t :> Symbol.t)
 end
 
-module Name_in_one_joined_env = Int_ids_in_one_joined_env.Name
 module Simple_in_one_joined_env = Int_ids_in_one_joined_env.Simple
 
 module Type_in_env () : sig
@@ -893,8 +871,6 @@ module Bindings_in_target_env : sig
 
   val source_env : t -> Source_env.t
 
-  val exists_in_target_env : t -> Variable.t -> Variable_in_target_env.t option
-
   (* Return the (unique across the whole join) name to be used to represent this
      set of simples in joined environments.
 
@@ -904,114 +880,33 @@ module Bindings_in_target_env : sig
   val existential_for_these_simples :
     t -> Simples_in_joined_envs.t -> K.t -> Variable_in_target_env.t * t
 
-  (* Assuming that [t] derives from [since], extract the created variables from
-     [t], adding them to [since]. Any information about the created variables
-     besides their kind (in particular, their [definition_in_joined_env]) is
-     forgotten, and they won't appear in the [new_bindings]. *)
-  val forget_definition_of_created_variables : t -> since:t -> t
+  val import_var : t -> Variable_in_one_joined_env.t -> t
 
   val fold_created_variables :
     (Variable_in_target_env.t -> K.t -> 'a -> 'a) -> t -> 'a -> 'a
-
-  (* These are for the join of env extensions, see [prepare_nested_join]. *)
-
-  val replay_definition_of_aliases_in_target_env :
-    t ->
-    Index.t ->
-    Type_in_one_joined_env.t Name.Map.t ->
-    Type_in_one_joined_env.t Name.Map.t
-
-  val definition_of_local_variables_in_one_joined_env :
-    t -> Index.t -> Type_in_one_joined_env.t Variable_in_target_env.Map.t
 end = struct
-  type coercion_to_canonical_in_target_env = Coercion.t
-
   type t =
     { source_env : Source_env.t;
+      imported_variables : Variable_in_one_joined_env.Set.t;
       existential_for_these_simples :
         Variable_in_target_env.t Simples_in_joined_envs.Map.t;
       (* Maps a set of [simples] in joined environments to the (unique across
          the whole join) name used to represent this exact set of simples in the
          target environment. *)
-      created_variables : K.t Variable_in_target_env.Map.t;
-      (* This contains all the local variables (existentials or imported) that
-         exist in the target environment but not in the source environment. *)
-      aliases_of_names_in_joined_envs :
-        coercion_to_canonical_in_target_env Name_in_target_env.Map.t
-        Name_in_one_joined_env.Map.t
-        Index.Map.t;
-      (* For each joined environment and each name in the joined environment,
-         record the set of names in the target environment it is equal to (and
-         the corresponding coercions).
-
-         This is used to implement [replay_definitions_of_aliases_in_target_env]
-         in the join of env extensions, see [prepare_nested_join]. *)
-      equations_for_local_vars :
-        Type_in_one_joined_env.t Variable_in_target_env.Map.t Index.Map.t
-          (* Environment extensions to use in each of the joined environments to
-             replay the definition of local variables.
-
-             This is used to implement
-             [definitions_of_local_variables_in_one_joined_env] in the join of
-             env extensions, see [prepare_nested_join]. *)
+      created_variables : K.t Variable_in_target_env.Map.t
+          (* This contains all the local variables (existentials or imported)
+             that exist in the target environment but not in the source
+             environment. *)
     }
 
   let from_source_env source_env =
     { source_env;
+      imported_variables = Variable_in_one_joined_env.Set.empty;
       existential_for_these_simples = Simples_in_joined_envs.Map.empty;
-      aliases_of_names_in_joined_envs = Index.Map.empty;
-      equations_for_local_vars = Index.Map.empty;
       created_variables = Variable_in_target_env.Map.empty
     }
 
-  let forget_definition_of_created_variables t ~since =
-    (* We still need to record the fact that we created those variables in order
-       to add them to the target environment at the end of the join. *)
-    { since with created_variables = t.created_variables }
-
   let source_env { source_env; _ } = source_env
-
-  let is_local_variable { created_variables; _ } name =
-    Name_in_target_env.pattern_match name
-      ~symbol:(fun _ -> None)
-      ~var:(fun var ->
-        if Variable_in_target_env.Map.mem var created_variables
-        then Some var
-        else None)
-
-  let exists_in_target_env t var =
-    match Source_env.exists_in_source_env (source_env t) var with
-    | Some var_in_source_env ->
-      Some (Variable_in_target_env.from_source_env var_in_source_env)
-    | None ->
-      let var = Variable_in_target_env.create var in
-      if Variable_in_target_env.Map.mem var t.created_variables
-      then Some var
-      else None
-
-  let update_aliases_of_names_in_joined_envs ~f simples aliases_in_target_env =
-    Index.Map.fold
-      (fun index simple aliases_in_target_env ->
-        Simple_in_one_joined_env.pattern_match simple
-          ~const:(fun _ -> aliases_in_target_env)
-          ~name:(fun name ~coercion ->
-            Index.Map.update index
-              (fun aliases ->
-                let aliases =
-                  Name_in_one_joined_env.Map.update name
-                    (fun aliases ->
-                      let aliases =
-                        f coercion
-                          (Option.value ~default:Name_in_target_env.Map.empty
-                             aliases)
-                      in
-                      Some aliases)
-                    (Option.value ~default:Name_in_one_joined_env.Map.empty
-                       aliases)
-                in
-                Some aliases)
-              aliases_in_target_env))
-      simples aliases_in_target_env
 
   let has_existential_for_these_simples t simples =
     Simples_in_joined_envs.Map.find_opt simples t.existential_for_these_simples
@@ -1028,74 +923,37 @@ end = struct
         Variable_in_target_env.Map.add var kind t.created_variables
       in
       let t = { t with created_variables } in
-      let name_in_target_env = Name_in_target_env.var var in
-      (* name_in_target_env ~ coercion_to_name_in_target_env(definition) *)
       let existential_for_these_simples =
         Simples_in_joined_envs.Map.add simples var
           t.existential_for_these_simples
       in
-      (* The following is some bookkeeping so that we know how to replay the
-         definition of existential variables during nested joins (i.e. joins of
-         env extensions); see {!section-extensions}. *)
-      let equations_for_local_vars =
-        (* If the variable is a fresh variable, record it so that we can replay
-           its definition during the join of env extensions. *)
-        match is_local_variable t name_in_target_env with
-        | None -> t.equations_for_local_vars
-        | Some var ->
-          Index.Map.update_many
-            (fun _index existentials simple ->
-              let ty = Type_in_one_joined_env.alias_type_of kind simple in
-              let existentials_in_one_joined_env =
-                Variable_in_target_env.Map.add var ty
-                  (Option.value ~default:Variable_in_target_env.Map.empty
-                     existentials)
-              in
-              Some existentials_in_one_joined_env)
-            t.equations_for_local_vars simples
-      in
-      let aliases_of_names_in_joined_envs =
-        update_aliases_of_names_in_joined_envs simples
-          t.aliases_of_names_in_joined_envs ~f:(fun coercion aliases ->
-            Name_in_target_env.Map.add name_in_target_env coercion aliases)
-      in
-      ( var,
-        { t with
-          equations_for_local_vars;
-          existential_for_these_simples;
-          aliases_of_names_in_joined_envs
-        } )
+      var, { t with existential_for_these_simples }
 
-  let replay_definition_of_aliases_in_target_env t index equations =
-    match Index.Map.find_opt index t.aliases_of_names_in_joined_envs with
-    | None -> equations
-    | Some aliases_in_target_env ->
-      fold_binary_join equations
-        (aliases_in_target_env
-          : Coercion.t Name_in_target_env.Map.t Name_in_one_joined_env.Map.t
-          :> Coercion.t Name_in_target_env.Map.t Name.Map.t)
-        ~init:equations
-        ~f:(fun[@inline] name ty aliases equations ->
-          let kind = Type_in_one_joined_env.kind ty in
-          let name = Name_in_one_joined_env.create name in
-          Name_in_target_env.Map.fold
-            (fun alias coercion equations ->
-              (* alias = coercion(name) *)
-              let ty =
-                Type_in_one_joined_env.alias_type_of kind
-                  (Simple_in_one_joined_env.name ~coercion name)
-              in
-              Name.Map.add (alias : Name_in_target_env.t :> Name.t) ty equations)
-            aliases equations)
-
-  let definition_of_local_variables_in_one_joined_env t index =
-    match Index.Map.find_opt index t.equations_for_local_vars with
-    | None -> Variable_in_target_env.Map.empty
-    | Some existentials -> existentials
+  let import_var t (var : Variable_in_one_joined_env.t) =
+    if Variable_in_one_joined_env.Set.mem var t.imported_variables
+    then t
+    else
+      let imported_variables =
+        Variable_in_one_joined_env.Set.add var t.imported_variables
+      in
+      let created_variables =
+        Variable_in_target_env.Map.add
+          (Variable_in_target_env.create (var :> Variable.t))
+          (Variable.kind (var :> Variable.t))
+          t.created_variables
+      in
+      { t with imported_variables; created_variables }
 
   let fold_created_variables f t acc =
     (* CR bclement: iterate in order consistent with the recorded binding
        times. *)
+    let acc =
+      Variable_in_one_joined_env.Set.fold
+        (fun var acc ->
+          let kind = Variable.kind (var :> Variable.t) in
+          f (Variable_in_target_env.create (var :> Variable.t)) kind acc)
+        t.imported_variables acc
+    in
     Variable_in_target_env.Map.fold f t.created_variables acc
 end
 
@@ -1114,9 +972,6 @@ module Joined_envs : sig
 
   val get_nth_joined_env : t -> Index.t -> TE.t
 
-  val equations_in_nth_joined_env :
-    t -> Index.t -> Type_in_one_joined_env.t Name.Map.t
-
   val keys : t -> Index.Set.t
 
   val exists_in_all_joined_envs : t -> _ Index.Map.t -> bool
@@ -1131,6 +986,9 @@ module Joined_envs : sig
     Variable_in_one_joined_env.t ->
     Type_in_one_joined_env.t Index.Map.t
   [@@warning "-32"]
+
+  val canonicals_for_imported_var :
+    t -> Variable_in_one_joined_env.t -> Simples_in_joined_envs.t
 
   val expand_heads :
     t ->
@@ -1157,12 +1015,6 @@ end = struct
     | None ->
       Misc.fatal_errorf "Join does not include environment %a" Index.print index
 
-  let equations_in_nth_joined_env t index =
-    match Index.Map.find_opt index (envs_and_equations t) with
-    | None ->
-      Misc.fatal_errorf "Join does not include environment %a" Index.print index
-    | Some (_, { current; _ }) -> current
-
   let keys t = Index.Map.keys (envs_and_equations t)
 
   let exists_in_all_joined_envs t m =
@@ -1183,6 +1035,34 @@ end = struct
                 (get_nth_joined_env t index)
                 simple))
       simples_in_joined_envs
+
+  let canonicals_for_imported_var t var =
+    if Flambda_features.check_light_invariants ()
+    then
+      if
+        not
+          (Compilation_unit.is_current
+             (Variable.compilation_unit
+                (var : Variable_in_one_joined_env.t :> Variable.t)))
+      then
+        Misc.fatal_errorf
+          "Cannot re-define variable %a defined in another compilation unit \
+           into the target environment of join"
+          Variable.print
+          (var : Variable_in_one_joined_env.t :> Variable.t);
+    Index.Map.filter_map
+      (fun _index (env, _) ->
+        if
+          TE.mem env
+            (Name.var (var : Variable_in_one_joined_env.t :> Variable.t))
+        then
+          let canonical =
+            get_canonical_simple_ignoring_name_mode env
+              (Simple_in_one_joined_env.var var)
+          in
+          Some canonical
+        else None)
+      (envs_and_equations t)
 
   let alias_types_of_local_var t kind var =
     if Flambda_features.check_light_invariants ()
@@ -1232,6 +1112,8 @@ type 'a join_arg = env_id * 'a
 type t =
   { joined_envs : Joined_envs.t;
     aliases_in_target_env : Aliases_in_target_env.t;
+    imported_vars :
+      (Simples_in_joined_envs.t * K.t) Variable_in_one_joined_env.Map.t;
     definitions_in_joined_envs :
       definition_in_joined_envs Name_in_target_env.Map.t;
     bindings : Bindings_in_target_env.t
@@ -1245,6 +1127,7 @@ let new_bindings t ~since =
 let create ~joined_envs ~bindings =
   { joined_envs;
     aliases_in_target_env = Aliases_in_target_env.empty;
+    imported_vars = Variable_in_one_joined_env.Map.empty;
     definitions_in_joined_envs = Name_in_target_env.Map.empty;
     bindings
   }
@@ -1354,22 +1237,7 @@ let get_types_in_joined_envs join_entry : _ Or_bottom.t =
            (Index.Map.disjoint_union alias_equations concrete_equations))
 
 (* Wrapper around [fold_incremental_join] so that we only fold over equations
-   for names that exist in the target env (see [prepare_nested_join]). *)
-let fold_incremental_join_in_target_env equations_to_join ~exists_in_target_env
-    ~init ~f =
-  fold_incremental_join equations_to_join ~init ~f:(fun name join_entry acc ->
-      Name.pattern_match name
-        ~var:(fun var ->
-          match exists_in_target_env var with
-          | None -> acc
-          | Some var_in_target_env ->
-            f (Name_in_target_env.var var_in_target_env) join_entry acc)
-        ~symbol:(fun symbol ->
-          (* See {!section-lifted_constants} *)
-          let symbol = Symbol_in_target_env.create symbol in
-          let name = Name_in_target_env.symbol symbol in
-          f name join_entry acc))
-
+   for names that exist in the source env. *)
 let fold_incremental_join_in_source_env equations_to_join ~exists_in_source_env
     ~init ~f =
   fold_incremental_join equations_to_join ~init ~f:(fun name join_entry acc ->
@@ -1420,6 +1288,40 @@ let existential_for_these_simples env simples kind =
          (These_canonicals (simples, kind)))
   in
   canonical, { env with definitions_in_joined_envs; bindings }
+
+let import_var env var =
+  let var = Variable_in_one_joined_env.create var in
+  if Variable_in_one_joined_env.Map.mem var env.imported_vars
+  then env
+  else
+    let kind = Variable.kind (var :> Variable.t) in
+    let canonicals =
+      Joined_envs.canonicals_for_imported_var env.joined_envs var
+    in
+    let bindings = Bindings_in_target_env.import_var env.bindings var in
+    let imported_vars =
+      Variable_in_one_joined_env.Map.add var (canonicals, kind)
+        env.imported_vars
+    in
+    let env = { env with bindings; imported_vars } in
+    let canonical, env = existential_for_these_simples env canonicals kind in
+    let aliases_in_target_env =
+      Aliases_in_target_env.add env.aliases_in_target_env
+        ~demoted_variable:(Variable_in_target_env.create (var :> Variable.t))
+        ~canonical_element:(Simple_in_target_env.var canonical)
+    in
+    { env with aliases_in_target_env }
+
+let import_type env ty =
+  Name_occurrences.fold_variables (TG.free_names ty) ~init:env
+    ~f:(fun env var ->
+      match
+        Source_env.exists_in_source_env
+          (Bindings_in_target_env.source_env env.bindings)
+          var
+      with
+      | Some _ -> env
+      | None -> import_var env var)
 
 (* This function is responsible for splitting the [equations_to_join] between
    those that are demotions in all joined environments, that are replayed in the
@@ -2099,277 +2001,27 @@ let n_way_join_simples t kind simples : _ Or_bottom.t * t =
 
 (** {2:extensions Join of extensions} *)
 
-let prepare_nested_join ~meet_expanded_head ~joined_envs ~bindings extensions =
-  let joined_envs_and_extensions =
-    List.fold_left
-      (fun joined_envs_and_extensions (index, extension) ->
-        let parent_env = Joined_envs.get_nth_joined_env joined_envs index in
-        (* The extension is not guaranteed to still be in canonical form, but we
-           need the equations to be in canonical form to known which variables
-           are actually touched by the extension, so we add it once then cut it.
-
-           Note: we need to cut it as a level, because the meets from
-           [add_env_extension_strict] could add perform nested joins which could
-           add new variables. *)
-        assert (not (TE.is_bottom parent_env));
-        let cut_after = TE.current_scope parent_env in
-        let typing_env = TE.increment_scope parent_env in
-        match
-          ME.add_env_extension_strict ~meet_expanded_head (ME.create typing_env)
-            extension
-        with
-        | Bottom ->
-          (* We can reach bottom here if the extension was created in a more
-             generic context, but is added in a context where it is no longer
-             reachable. *)
-          joined_envs_and_extensions
-        | Ok env ->
-          let level = ME.cut env ~cut_after in
-          Index.Map.add index
-            (ME.typing_env env, level)
-            joined_envs_and_extensions)
-      Index.Map.empty extensions
-  in
-  Index.Map.mapi
-    (fun index (env, diff_level) ->
-      let previous_equations =
-        Joined_envs.equations_in_nth_joined_env joined_envs index
+let n_way_join_env_extension ~n_way_join_type:_ ~meet_expanded_head:_ t
+    extensions : _ Or_bottom.t =
+  (* Don't try to do something complicated for the join of env extensions for
+     now: simply import the content of the env extension if it is the same in
+     all joined environments (in particular, always import env extensions when
+     there is a single joined environment). *)
+  match extensions with
+  | [] -> Bottom
+  | (_, first_extension) :: other_extensions ->
+    if
+      List.for_all
+        (fun (_, ext) ->
+          Name.Map.equal ( == ) (TEE.to_map ext) (TEE.to_map first_extension))
+        other_extensions
+    then
+      let t =
+        TEE.fold first_extension t ~equation:(fun name ty t ->
+            let t = import_type t ty in
+            Name.pattern_match name
+              ~var:(fun var -> import_var t var)
+              ~symbol:(fun _symbol -> t))
       in
-      let diff_equations =
-        (* Note that we forget the potential newly created variables here, but
-           they could end up in the [Bindings_in_target_env] and cause issue if
-           they are ever used in the parent environment.
-
-           This is fine, however, because we drop any possible information about
-           these variables by calling [forget_definition_of_created_variables]
-           in [n_way_join_env_extension]. *)
-        Type_in_one_joined_env.create_equations (TEL.equations diff_level)
-      in
-      (* The call below to [replay_definition_of_aliases_in_target_env] is only
-         relevant when doing a nested join (join of env extensions); for a
-         toplevel join, [join_aliases] is empty and this does nothing.
-
-         Consider that we first perform the following join (assuming that [x]
-         and [y] exist in the source env and all other variables are local to
-         their joined env) of:
-
-         x: (= a) ; y: (= a)
-
-         and
-
-         x: (= c)
-
-         and that we later perform in the same context the join of nested
-         extensions:
-
-         a: (= d)
-
-         and
-
-         y: (= c)
-
-         We'd like to determine that the join of the extensions is:
-
-         x: (= y)
-
-         If we simply use the incremental join algorithm without taking
-         demotions into account, we'll find the join of [y: (= a)] (from the
-         outer scope in the left environment) and [y: (= c)] (from the nested
-         scope in the right environment) but we don't have a way to determine
-         that [x] and [y] are equal without reprocessing the equations on [x]
-         (in the outer scope, the canonicals for [x] were [(a, c)] so we
-         couldn't even find it from the canonicals of [y] in the inner scope,
-         which are [(d, c)]).
-
-         We do this by keeping track of the aliases of [a] in the joined env
-         ([x] and [y]), and adding back the corresponding demotions (only for
-         the variables that actually have an equation in the extension) to the
-         first extension, yielding:
-
-         x: (= a) ; y: (= a) ; a: (= d)
-
-         This will interact with the equation [y: (= c)] from the extension
-         scope in the right environment, and with the equation [x: (= c)] from
-         the parent scope in the right environment, from which we can deduce the
-         equality between [x] and [y].
-
-         Note that if we instead have:
-
-         x: (Block 0 (= a)) ; y: (Block 0 (= a))
-
-         and
-
-         x: (Block 0 (= c))
-
-         at the toplevel and
-
-         a: (= d)
-
-         and
-
-         y: (Block 0 (= c))
-
-         in the extensions, we will create a single existential variable [ac] at
-         the toplevel.
-
-         When performing the join of the extensions, we will add the equation
-         [ac: (= a)] to the left extension, but we also need to add an equation
-         [ac: (= c)] to the outer scope in the right env (see the call to
-         [defining_equations_of_existentials] below) in order to reprocess
-         [ac]. *)
-      let diff_equations =
-        Bindings_in_target_env.replay_definition_of_aliases_in_target_env
-          bindings index diff_equations
-      in
-      (* We call [union diff previous] rather than [union previous diff] because
-         we want maximum sharing with [diff] (see the computation of
-         [previous_equations] below). *)
-      let current_equations =
-        Name.Map.union_left_biased diff_equations previous_equations
-      in
-      (* Drop variables from the previous level if they get a more precise type
-         in the current level (otherwise they would appear in both $Pi$ and $Δi$
-         and be processed twice -- see [incremental_join]). *)
-      let previous_equations =
-        Name.Map.diff_shared
-          (fun _ _current_ty _diff_ty -> None)
-          current_equations diff_equations
-      in
-      (* This call is only relevant if we are doing a nested join (join of env
-         extensions); for a toplevel join, we don't have existential variables.
-
-         When doing a nested join, we need to make sure that any existential
-         variables created at an earlier level are tracked in the previous level
-         so that they can correctly interact with equations added by
-         [replay_definition_of_aliases_in_target_env] to the [diff_equations] of
-         another joined env (see the call to
-         [replay_definition_of_aliases_in_target_env] above). *)
-      (* CR bclement: it would be more efficient to do an union of iterators to
-         avoid re-processing all the existentials every time. *)
-      let previous_equations =
-        let defining_equations_of_existential_vars =
-          Bindings_in_target_env.definition_of_local_variables_in_one_joined_env
-            bindings index
-        in
-        (* Sometimes we might have already added the defining equation of an
-           existential due to [replay_definition_of_aliases_in_target_env],
-           which is fine. *)
-        Name.Map.union_left_biased previous_equations
-          (Name.var_map
-             (defining_equations_of_existential_vars
-               : Type_in_one_joined_env.t Variable_in_target_env.Map.t
-               :> Type_in_one_joined_env.t Variable.Map.t))
-      in
-      let incremental_equations =
-        { previous = previous_equations;
-          diff = diff_equations;
-          current = current_equations
-        }
-      in
-      env, incremental_equations)
-    joined_envs_and_extensions
-
-(* This is similar to [join_aliases_into_bindings], except that when doing a
-   join of env extensions, we cannot just accumulate aliases into the [bindings]
-   because any demotion we process is local *just* to the current env extension,
-   and stops being valid once we leave the extension.
-
-   Instead, we just accumulate the (local) alias equations directly. *)
-let join_aliases_in_env_extension env equations_to_join =
-  fold_incremental_join_in_target_env equations_to_join
-    ~exists_in_target_env:
-      (Bindings_in_target_env.exists_in_target_env env.bindings)
-    ~init:(Name_in_target_env.Map.empty, Name_in_target_env.Map.empty, env)
-    ~f:(fun name join_entry (equations_in_target_env, equations_to_join, env) ->
-      match get_types_in_joined_envs join_entry with
-      | Bottom -> Misc.fatal_error "Unexpected bottom during join"
-      | Ok (No_alias_in_some_env types) ->
-        let equations_to_join =
-          Name_in_target_env.Map.add name types equations_to_join
-        in
-        equations_in_target_env, equations_to_join, env
-      | Ok (Equals_in_all_envs (canonicals, kind)) ->
-        (* CR-someday bclement: If this creates new variables, they will not be
-           processed inside the env extension (see also the comment in
-           [n_way_join_simples]). *)
-        let canonical, env = n_way_join_canonicals env kind canonicals in
-        let equations_in_target_env =
-          Name_in_target_env.Map.add name
-            (Type_in_target_env.alias_type_of kind canonical)
-            equations_in_target_env
-        in
-        equations_in_target_env, equations_to_join, env)
-
-let n_way_join_env_extension ~n_way_join_type ~meet_expanded_head t extensions :
-    _ Or_bottom.t =
-  let joined_equations =
-    try
-      prepare_nested_join ~meet_expanded_head ~bindings:t.bindings
-        ~joined_envs:t.joined_envs extensions
-    with Misc.Fatal_error ->
-      let bt = Printexc.get_raw_backtrace () in
-      Format.eprintf
-        "\n@[<v 2>%tContext is:%t preparing join of env extensions:@ %a@]\n"
-        Flambda_colours.error Flambda_colours.pop
-        (Index.Map.print TEE.print)
-        (Index.Map.of_list extensions);
-      Printexc.raise_with_backtrace Misc.Fatal_error bt
-  in
-  if Index.Map.is_empty joined_equations
-  then Bottom
-  else
-    try
-      let joined_envs = Joined_envs.create joined_equations in
-      let alias_types_in_target_env, concrete_types_to_join, env_in_extension =
-        join_aliases_in_env_extension
-          (create ~joined_envs ~bindings:t.bindings)
-          joined_equations
-      in
-      (* CR-someday bclement: if we create new existential variables during the
-         join of env extensions, we might need additional rounds for
-         completeness (see comment in [n_way_join_simples]) -- in practice one
-         round should be plenty. *)
-      let ( equations,
-            _env_extension_for_inverse_relations,
-            { bindings = bindings_after_extension; _ } ) =
-        n_way_join_round ~n_way_join_type env_in_extension
-          concrete_types_to_join alias_types_in_target_env Name.Map.empty
-      in
-      (* It is possible for the call to [add_env_extension] in
-         [prepare_nested_join] above to create new variables, which do not exist
-         in the parent environments. These variables must not leak into the
-         [bindings]: since they don't exist in the parent joined environments,
-         we won't be able to find a type for them in the target environment
-         outside of the extension.
-
-         For now, we avoid this problem by simply forgetting about the
-         definition of new variables (in the target env) during the join of
-         extensions. This means that in some cases we might create the same
-         variable twice (e.g. we might create a variable to represent {0, 1}
-         inside an env extension and then another one outside of the env
-         extension), but not incorrect, only slighly inefficient. *)
-      let bindings =
-        Bindings_in_target_env.forget_definition_of_created_variables
-          bindings_after_extension ~since:t.bindings
-      in
-      Ok
-        ( TEE.from_map
-            (equations
-              : Type_in_target_env.t Name_in_target_env.Map.t
-              :> TG.t Name.Map.t),
-          { t with bindings } )
-    with Misc.Fatal_error ->
-      (* Note that we display the env extensions in their current canonical
-         form, which might differ from their form as recorded in the input
-         types. *)
-      let bt = Printexc.get_raw_backtrace () in
-      Format.eprintf "\n@[<v 2>%tContext is:%t join of env extensions:@ %a@]\n"
-        Flambda_colours.error Flambda_colours.pop
-        (Index.Map.print (fun ppf (_, extension) ->
-             TEE.print ppf
-               (TEE.from_map
-                  (extension.current
-                    : Type_in_one_joined_env.t Name.Map.t
-                    :> TG.t Name.Map.t))))
-        joined_equations;
-      Printexc.raise_with_backtrace Misc.Fatal_error bt
+      Ok (first_extension, t)
+    else Ok (TEE.empty, t)
