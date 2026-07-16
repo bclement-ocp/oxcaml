@@ -483,9 +483,6 @@ module Int_ids_from_source_env () = struct
 
     (* See {!section-scope_of_names} *)
     let from_source_env (name : Name_in_source_env.t) = create (name :> Name.t)
-
-    let from_source_env_map (type a) map =
-      create_map (map : a Name_in_source_env.Map.t :> a Name.Map.t)
   end
 
   module Simple = struct
@@ -902,7 +899,7 @@ module Bindings_in_target_env : sig
      [add_existential_for_these_simples], or an existential local variable
      created to represent it. *)
   val existential_for_these_simples :
-    t -> Simples_in_joined_envs.t -> K.t -> Simple_in_target_env.t * t
+    t -> Simples_in_joined_envs.t -> K.t -> Variable_in_target_env.t * t
 
   type definition_in_joined_envs =
     | These_canonicals of Simple_in_one_joined_env.t Index.Map.t * K.t
@@ -940,7 +937,7 @@ end = struct
   type t =
     { source_env : Source_env.t;
       existential_for_these_simples :
-        Simple_in_target_env.t Simples_in_joined_envs.Map.t;
+        Variable_in_target_env.t Simples_in_joined_envs.Map.t;
       (* Maps a set of [simples] in joined environments to the (unique across
          the whole join) name used to represent this exact set of simples in the
          target environment. *)
@@ -1033,66 +1030,6 @@ end = struct
               aliases_in_target_env))
       simples aliases_in_target_env
 
-  let record_definition_for_these_simples t ~name_in_target_env
-      ~coercion_to_name_in_target_env simples kind =
-    (* name_in_target_env ~ coercion_to_name_in_target_env(definition) *)
-    let definitions_in_joined_envs =
-      Name_in_target_env.Map.add name_in_target_env
-        (These_canonicals (simples, kind))
-        t.definitions_in_joined_envs
-    in
-    let canonical_in_target_env =
-      Simple_in_target_env.name
-        ~coercion:(Coercion.inverse coercion_to_name_in_target_env)
-        name_in_target_env
-    in
-    let existential_for_these_simples =
-      Simples_in_joined_envs.Map.add simples canonical_in_target_env
-        t.existential_for_these_simples
-    in
-    (* The following is some bookkeeping so that we know how to replay the
-       definition of existential variables during nested joins (i.e. joins of
-       env extensions); see {!section-extensions}. *)
-    let equations_for_local_vars =
-      (* If the variable is a fresh variable, record it so that we can replay
-         its definition during the join of env extensions. *)
-      match is_local_variable t name_in_target_env with
-      | None -> t.equations_for_local_vars
-      | Some var ->
-        Index.Map.update_many
-          (fun _index existentials simple ->
-            let ty =
-              Type_in_one_joined_env.alias_type_of kind
-                (Simple_in_one_joined_env.apply_coercion_exn simple
-                   coercion_to_name_in_target_env)
-            in
-            let existentials_in_one_joined_env =
-              Variable_in_target_env.Map.add var ty
-                (Option.value ~default:Variable_in_target_env.Map.empty
-                   existentials)
-            in
-            Some existentials_in_one_joined_env)
-          t.equations_for_local_vars simples
-    in
-    let aliases_of_names_in_joined_envs =
-      update_aliases_of_names_in_joined_envs simples
-        t.aliases_of_names_in_joined_envs ~f:(fun coercion aliases ->
-          (* name_in_target_env ~ coercion_to_name_in_target_env(definition) *)
-          (* definition ~ coercion(name_in_joined_env) *)
-          let coercion_from_joined_to_target =
-            Coercion.compose_exn coercion ~then_:coercion_to_name_in_target_env
-          in
-          Name_in_target_env.Map.add name_in_target_env
-            coercion_from_joined_to_target aliases)
-    in
-    ( canonical_in_target_env,
-      { t with
-        equations_for_local_vars;
-        existential_for_these_simples;
-        aliases_of_names_in_joined_envs;
-        definitions_in_joined_envs
-      } )
-
   let has_existential_for_these_simples t simples =
     Simples_in_joined_envs.Map.find_opt simples t.existential_for_these_simples
 
@@ -1109,8 +1046,48 @@ end = struct
       in
       let t = { t with created_variables } in
       let name_in_target_env = Name_in_target_env.var var in
-      record_definition_for_these_simples t ~name_in_target_env
-        ~coercion_to_name_in_target_env:Coercion.id simples kind
+      (* name_in_target_env ~ coercion_to_name_in_target_env(definition) *)
+      let definitions_in_joined_envs =
+        Name_in_target_env.Map.add name_in_target_env
+          (These_canonicals (simples, kind))
+          t.definitions_in_joined_envs
+      in
+      let existential_for_these_simples =
+        Simples_in_joined_envs.Map.add simples var
+          t.existential_for_these_simples
+      in
+      (* The following is some bookkeeping so that we know how to replay the
+         definition of existential variables during nested joins (i.e. joins of
+         env extensions); see {!section-extensions}. *)
+      let equations_for_local_vars =
+        (* If the variable is a fresh variable, record it so that we can replay
+           its definition during the join of env extensions. *)
+        match is_local_variable t name_in_target_env with
+        | None -> t.equations_for_local_vars
+        | Some var ->
+          Index.Map.update_many
+            (fun _index existentials simple ->
+              let ty = Type_in_one_joined_env.alias_type_of kind simple in
+              let existentials_in_one_joined_env =
+                Variable_in_target_env.Map.add var ty
+                  (Option.value ~default:Variable_in_target_env.Map.empty
+                     existentials)
+              in
+              Some existentials_in_one_joined_env)
+            t.equations_for_local_vars simples
+      in
+      let aliases_of_names_in_joined_envs =
+        update_aliases_of_names_in_joined_envs simples
+          t.aliases_of_names_in_joined_envs ~f:(fun coercion aliases ->
+            Name_in_target_env.Map.add name_in_target_env coercion aliases)
+      in
+      ( var,
+        { t with
+          equations_for_local_vars;
+          existential_for_these_simples;
+          aliases_of_names_in_joined_envs;
+          definitions_in_joined_envs
+        } )
 
   let replay_definition_of_aliases_in_target_env t index equations =
     match Index.Map.find_opt index t.aliases_of_names_in_joined_envs with
@@ -1489,7 +1466,7 @@ let join_aliases_into_bindings ~joined_envs ~bindings equations_to_join =
           let aliases_in_target_env =
             Aliases_in_target_env.add aliases_in_target_env
               ~demoted_variable:(Variable_in_target_env.from_source_env var)
-              ~canonical_element:existential
+              ~canonical_element:(Simple_in_target_env.var existential)
           in
           equations_to_join, aliases_in_target_env, bindings))
 
@@ -2094,7 +2071,10 @@ let n_way_join_canonicals ~bindings ~joined_envs kind simples =
   | Canonical_in_source_env simple ->
     Simple_in_target_env.from_source_env simple, bindings
   | Existential_for_these_simples ->
-    Bindings_in_target_env.existential_for_these_simples bindings simples kind
+    let var, bindings =
+      Bindings_in_target_env.existential_for_these_simples bindings simples kind
+    in
+    Simple_in_target_env.var var, bindings
 
 let n_way_join_simples t kind simples : _ Or_bottom.t * t =
   match simples with
