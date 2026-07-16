@@ -1231,6 +1231,7 @@ type 'a join_arg = env_id * 'a
 
 type t =
   { joined_envs : Joined_envs.t;
+    aliases_in_target_env : Aliases_in_target_env.t;
     definitions_in_joined_envs :
       definition_in_joined_envs Name_in_target_env.Map.t;
     bindings : Bindings_in_target_env.t
@@ -1243,6 +1244,7 @@ let new_bindings t ~since =
 
 let create ~joined_envs ~bindings =
   { joined_envs;
+    aliases_in_target_env = Aliases_in_target_env.empty;
     definitions_in_joined_envs = Name_in_target_env.Map.empty;
     bindings
   }
@@ -1439,8 +1441,8 @@ let join_aliases_into_bindings env equations_to_join =
     ~exists_in_source_env:
       (Source_env.exists_in_source_env
          (Bindings_in_target_env.source_env env.bindings))
-    ~init:(Name_in_target_env.Map.empty, Aliases_in_target_env.empty, env)
-    ~f:(fun var join_entry (equations_to_join, aliases_in_target_env, env) ->
+    ~init:(Name_in_target_env.Map.empty, env)
+    ~f:(fun var join_entry (equations_to_join, env) ->
       match get_types_in_joined_envs join_entry with
       | Bottom -> Misc.fatal_error "Unexpected bottom during join"
       | Ok (No_alias_in_some_env types) ->
@@ -1449,7 +1451,7 @@ let join_aliases_into_bindings env equations_to_join =
             (Name_in_target_env.from_source_env (Name_in_source_env.var var))
             types equations_to_join
         in
-        equations_to_join, aliases_in_target_env, env
+        equations_to_join, env
       | Ok (Equals_in_all_envs (canonicals, kind)) -> (
         match
           get_canonical_in_target_env ~bindings:env.bindings
@@ -1457,22 +1459,22 @@ let join_aliases_into_bindings env equations_to_join =
         with
         | Canonical_in_source_env canonical ->
           let aliases_in_target_env =
-            Aliases_in_target_env.add aliases_in_target_env
+            Aliases_in_target_env.add env.aliases_in_target_env
               ~demoted_variable:(Variable_in_target_env.from_source_env var)
               ~canonical_element:
                 (Simple_in_target_env.from_source_env canonical)
           in
-          equations_to_join, aliases_in_target_env, env
+          equations_to_join, { env with aliases_in_target_env }
         | Existential_for_these_simples ->
           let existential, env =
             existential_for_these_simples env canonicals kind
           in
           let aliases_in_target_env =
-            Aliases_in_target_env.add aliases_in_target_env
+            Aliases_in_target_env.add env.aliases_in_target_env
               ~demoted_variable:(Variable_in_target_env.from_source_env var)
               ~canonical_element:(Simple_in_target_env.var existential)
           in
-          equations_to_join, aliases_in_target_env, env))
+          equations_to_join, { env with aliases_in_target_env }))
 
 let rec add_inverse_relation_to_env_extension ?(seen = Name.Set.empty)
     env_extension name relation ~scrutinee =
@@ -1778,7 +1780,7 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     in
     let joined_envs = Joined_envs.create equations_to_join in
     let empty_env = create ~joined_envs ~bindings:empty_bindings in
-    let concrete_equations_to_join, aliases_in_target_env, env =
+    let concrete_equations_to_join, env =
       join_aliases_into_bindings empty_env equations_to_join
     in
     let equations_for_bindings env ~since =
@@ -1816,6 +1818,10 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
                       inverse_relations))
                inverse_relations)
         in
+        let types_in_target_env =
+          Name_in_target_env.Map.disjoint_union types_in_target_env
+            (Aliases_in_target_env.to_alias_types t.aliases_in_target_env)
+        in
         ( (* We compute symbol projections last so that we can pick up
              existential variables, but there is no need to create existential
              variables from symbol projections since they would not be
@@ -1834,9 +1840,7 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
           symbol_projections,
           bindings,
           definitions ) =
-      loop env equations_to_join
-        (Aliases_in_target_env.to_alias_types aliases_in_target_env)
-        Name.Map.empty
+      loop env equations_to_join Name_in_target_env.Map.empty Name.Map.empty
     in
     let target_env =
       Bindings_in_target_env.fold_created_variables
