@@ -90,7 +90,6 @@ module TE = Typing_env
 module ME = Meet_env
 module TEE = Typing_env_extension
 module TEL = Typing_env_level
-module ET = Expand_head.Expanded_type
 
 module Symbol_projection = struct
   include Symbol_projection
@@ -1092,14 +1091,30 @@ end = struct
         else None)
       (envs_and_equations t)
 
+  let expand_head env ty =
+    match TG.get_alias_opt ty with
+    | None -> ty
+    | Some simple ->
+      let kind = TG.kind ty in
+      let simple = TE.get_canonical_simple_ignoring_name_mode env simple in
+      Simple.pattern_match simple
+        ~const:(fun const ->
+          Expand_head.Expanded_type.(create_const const |> to_type))
+        ~name:(fun name ~coercion ->
+          let ty = TE.find env name (Some kind) in
+          match TG.get_alias_opt ty with
+          | Some _ ->
+            Misc.fatal_errorf
+              "Canonical alias %a should never have [Equals] type %a:@\n\n%a"
+              Simple.print simple TG.print ty TE.print env
+          | None -> TG.apply_coercion ty coercion)
+
   let expand_heads t types =
     Index.Map.mapi
       (fun index ty ->
         let typing_env = get_nth_joined_env t index in
-        Type_in_one_joined_env.create
-          (ET.to_type
-             (Expand_head.expand_head typing_env
-                (ty : Type_in_one_joined_env.t :> TG.t))))
+        let ty = (ty : Type_in_one_joined_env.t :> TG.t) in
+        Type_in_one_joined_env.create (expand_head typing_env ty))
       types
 end
 
