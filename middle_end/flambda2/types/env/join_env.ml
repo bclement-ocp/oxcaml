@@ -585,7 +585,9 @@ end = struct
           None
       with Not_found -> None
     in
-    match shared_name with Some raw_name -> raw_name | None -> "join_var"
+    match shared_name with
+    | Some raw_name -> "j" ^ raw_name
+    | None -> "join_var"
 end
 
 module Source_env : sig
@@ -1590,14 +1592,12 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
         Misc.fatal_errorf
           "Processing join of %a but we already have a type for it."
           Name_in_target_env.print name;
-      match
-        n_way_join_type t
-          (Index.Map.bindings (Joined_envs.expand_heads t.joined_envs types)
-            : (Index.t * Type_in_one_joined_env.t) list
-            :> (Index.t * TG.t) list)
-      with
-      | Unknown, t -> types_in_target_env, inverse_relations, t
-      | Known ty, t ->
+      let heads =
+        (Index.Map.bindings (Joined_envs.expand_heads t.joined_envs types)
+          : (Index.t * Type_in_one_joined_env.t) list
+          :> (Index.t * TG.t) list)
+      in
+      let[@local] return t ty =
         let exists_in_all_joined_envs =
           Joined_envs.exists_in_all_joined_envs t.joined_envs types
         in
@@ -1613,7 +1613,15 @@ let n_way_join_round ~(n_way_join_type : n_way_join_type) t equations_to_join
         let ty = Type_in_target_env.create ty in
         ( Name_in_target_env.Map.add name ty types_in_target_env,
           inverse_relations,
-          t ))
+          t )
+      in
+      match heads with
+      | (_, t1) :: ts when List.for_all (fun (_, t2) -> t1 == t2) ts ->
+        return (import_type t t1) t1
+      | _ -> (
+        match n_way_join_type t heads with
+        | Unknown, t -> types_in_target_env, inverse_relations, t
+        | Known ty, t -> return t ty))
     equations_to_join
     (types_in_target_env, inverse_relations, t)
 
