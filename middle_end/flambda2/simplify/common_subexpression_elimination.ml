@@ -249,6 +249,8 @@ type extra_binding =
     extra_args : EA.t RI.Map.t
   }
 
+let print_cse_params = Oxcaml_args.Extra_options.bool __LOC__ "dump-cse-params"
+
 let join_one_cse_equation ~machine_width ~cse_at_each_use prim bound_to_map
     (cse, extra_bindings, env_extension, allowed) =
   let has_value_on_all_paths =
@@ -265,6 +267,10 @@ let join_one_cse_equation ~machine_width ~cse_at_each_use prim bound_to_map
     | None | Some (Rhs_kind.Needs_extra_binding { bound_to = _ }) ->
       let prim_result_kind = P.result_kind' (EP.to_primitive prim) in
       let var = Variable.create "cse_param" prim_result_kind in
+      if print_cse_params ()
+      then
+        Format.eprintf "Creating cse param var %a for: %a@." Variable.print var
+          EP.print prim;
       let var_duid = Flambda_debug_uid.none in
       let extra_param =
         BP.create var (K.With_subkind.anything prim_result_kind) var_duid

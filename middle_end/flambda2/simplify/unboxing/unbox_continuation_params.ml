@@ -81,6 +81,9 @@ type continuation_arg_types =
   | Recursive
   | Non_recursive of Continuation_uses.arg_types_by_use_id
 
+let print_it =
+  Oxcaml_args.Extra_options.bool __LOC__ "dump-typing-env-after-unboxing"
+
 let make_decisions ~continuation_arg_types denv params params_types :
     DE.t * Decisions.t =
   let params = Bound_parameters.to_list params in
@@ -91,6 +94,10 @@ let make_decisions ~continuation_arg_types denv params params_types :
     | Non_recursive arg_types_by_use_id -> false, arg_types_by_use_id
   in
   let empty = Apply_cont_rewrite_id.Set.empty in
+  if print_it ()
+  then
+    Format.eprintf "@[<v>Typing env before unboxing:@ %a@]@." TE.print
+      (DE.typing_env denv);
   let _, denv, rev_decisions, seen, invalids =
     List.fold_left3
       (fun (nth, denv, rev_decisions, seen, invalids) param param_type
@@ -151,6 +158,10 @@ let make_decisions ~continuation_arg_types denv params params_types :
   in
   let rewrite_ids_seen = match seen with None -> empty | Some s -> s in
   let decisions = List.combine params (List.rev rev_decisions) in
+  if print_it ()
+  then
+    Format.eprintf "@[<v>Typing env after unboxing:@ %a@]@." TE.print
+      (DE.typing_env denv);
   ( denv,
     { decisions; rewrite_ids_seen; rewrites_ids_known_as_invalid = invalids } )
 

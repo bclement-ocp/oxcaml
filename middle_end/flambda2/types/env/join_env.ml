@@ -706,6 +706,328 @@ end = struct
       canonicals_in_joined_envs No_simples_in_joined_envs
 end
 
+type definition_in_joined_envs =
+  | These_canonicals of Simple_in_one_joined_env.t Index.Map.t * K.t
+
+module Bindings_in_target_env : sig
+  (* This module is only concerned with providing a consistent name to represent
+     a set of simples in the joined environments.
+
+     Names in the target environment are either names that exist in the source
+     environment, or local variables that are created in the target environment
+     but do not exist in the source environment.
+
+     We currently maintain two types of relations between names in the joined
+     environment and names in the target environment:
+
+     - Imported variables represent a specific variable in all the joined
+     environments where it exists.
+
+     - Existentials represent a specific set of simples in the joined
+     environments.
+
+     {b Warning}: Each local variable is defined either as an imported variable
+     or as an existential, but imported variables and existentials are not
+     necessarily represented by local variables in the target environment: there
+     might already be a suitable name in the source environment to represent
+     this imported variable or existential.
+
+     For instance, consider that we are doing the join of [x: (= a)] in env 0
+     and [x: (= b)] in env 1, where [x] exists in the source environment but not
+     [a] and [b]. Then we can use [x] to represent [((0 a) (1 b))], we do not
+     have to create a local variable. Note that in the case of imported
+     variables, this effectively mean that we can rename variables as we import
+     them. *)
+
+  type t
+
+  val from_source_env : Source_env.t -> t
+
+  val source_env : t -> Source_env.t
+
+  (* Return the (unique across the whole join) name to be used to represent this
+     set of simples in joined environments.
+
+     This is either a name that has been recorded with
+     [add_existential_for_these_simples], or an existential local variable
+     created to represent it. *)
+  val existential_for_these_simples :
+    ?existing_var_in_target_env:Variable_in_target_env.t ->
+    t ->
+    Simples_in_joined_envs.t ->
+    K.t ->
+    Variable_in_target_env.t * t
+
+  val import_var : t -> Variable_in_one_joined_env.t -> t
+
+  val is_imported : t -> Variable.t -> bool
+
+  val fold_created_variables :
+    (Variable_in_target_env.t -> K.t -> 'a -> 'a) -> t -> 'a -> 'a
+end = struct
+  type t =
+    { source_env : Source_env.t;
+      imported_variables : Variable_in_one_joined_env.Set.t;
+      existential_for_these_simples :
+        Variable_in_target_env.t Simples_in_joined_envs.Map.t;
+      (* Maps a set of [simples] in joined environments to the (unique across
+         the whole join) name used to represent this exact set of simples in the
+         target environment. *)
+      created_variables : K.t Variable_in_target_env.Map.t
+          (* This contains all the local variables (existentials or imported)
+             that exist in the target environment but not in the source
+             environment. *)
+    }
+
+  let from_source_env source_env =
+    { source_env;
+      imported_variables = Variable_in_one_joined_env.Set.empty;
+      existential_for_these_simples = Simples_in_joined_envs.Map.empty;
+      created_variables = Variable_in_target_env.Map.empty
+    }
+
+  let source_env { source_env; _ } = source_env
+
+  let is_imported t var =
+    Variable_in_one_joined_env.Set.mem
+      (Variable_in_one_joined_env.create var)
+      t.imported_variables
+
+  let has_existential_for_these_simples t simples =
+    Simples_in_joined_envs.Map.find_opt simples t.existential_for_these_simples
+
+  let existential_for_these_simples ?existing_var_in_target_env t simples kind =
+    match has_existential_for_these_simples t simples with
+    | Some existing_canonical -> existing_canonical, t
+    | None ->
+      let var, t =
+        match existing_var_in_target_env with
+        | None ->
+          let var =
+            let name = Simples_in_joined_envs.choose_a_suitable_name simples in
+            Variable_in_target_env.create (Variable.create name kind)
+          in
+          let created_variables =
+            Variable_in_target_env.Map.add var kind t.created_variables
+          in
+          var, { t with created_variables }
+        | Some var -> var, t
+      in
+      let existential_for_these_simples =
+        Simples_in_joined_envs.Map.add simples var
+          t.existential_for_these_simples
+      in
+      var, { t with existential_for_these_simples }
+
+  let import_var t (var : Variable_in_one_joined_env.t) =
+    if Variable_in_one_joined_env.Set.mem var t.imported_variables
+    then t
+    else
+      let imported_variables =
+        Variable_in_one_joined_env.Set.add var t.imported_variables
+      in
+      let created_variables =
+        Variable_in_target_env.Map.add
+          (Variable_in_target_env.create (var :> Variable.t))
+          (Variable.kind (var :> Variable.t))
+          t.created_variables
+      in
+      { t with imported_variables; created_variables }
+
+  let fold_created_variables f t acc =
+    (* CR bclement: iterate in order consistent with the recorded binding
+       times. *)
+    let acc =
+      Variable_in_one_joined_env.Set.fold
+        (fun var acc ->
+          let kind = Variable.kind (var :> Variable.t) in
+          f (Variable_in_target_env.create (var :> Variable.t)) kind acc)
+        t.imported_variables acc
+    in
+    Variable_in_target_env.Map.fold f t.created_variables acc
+end
+
+module Joined_envs : sig
+  type t
+
+  (* We use an [incremental] type for equations because the join of env
+     extensions needs to know about the equations that exist outside of the join
+     extension.
+
+     The [previous] field correspond to the equations added at higher scopes
+     (one layer of env extensions removed), and is empty for a top-level
+     join. *)
+  val create :
+    (TE.t * Type_in_one_joined_env.t Name.Map.t incremental) Index.Map.t -> t
+
+  val get_nth_joined_env : t -> Index.t -> TE.t
+
+  val keys : t -> Index.Set.t
+
+  val exists_in_all_joined_envs : t -> _ Index.Map.t -> bool
+
+  (** Returns the aliases of a variable in all the environments where it exists.
+
+      The provided variable {b must} be defined in the current compilation unit.
+  *)
+  val alias_types_of_local_var :
+    t ->
+    K.t ->
+    Variable_in_one_joined_env.t ->
+    Type_in_one_joined_env.t Index.Map.t
+  [@@warning "-32"]
+
+  val canonicals_for_imported_var :
+    t -> Variable_in_one_joined_env.t -> Simples_in_joined_envs.t
+
+  val binding_times_and_modes_for_imported_var :
+    t -> Variable.t -> Binding_time.With_name_mode.t Index.Map.t
+
+  val expand_heads :
+    t ->
+    Type_in_one_joined_env.t Index.Map.t ->
+    Type_in_one_joined_env.t Index.Map.t
+
+  val equal_in_all_joined_envs :
+    t -> Simple_in_one_joined_env.t -> Simples_in_joined_envs.t -> bool
+end = struct
+  type t =
+    { envs_and_equations :
+        (TE.t * Type_in_one_joined_env.t Name.Map.t incremental) Index.Map.t
+    }
+  [@@unboxed]
+
+  let create envs_and_equations = { envs_and_equations }
+
+  let envs_and_equations = function
+    | { envs_and_equations } -> envs_and_equations
+
+  let get_nth_joined_env t index =
+    match Index.Map.find_opt index (envs_and_equations t) with
+    | Some (one_joined_env, _) -> one_joined_env
+    | None ->
+      Misc.fatal_errorf "Join does not include environment %a" Index.print index
+
+  let keys t = Index.Map.keys (envs_and_equations t)
+
+  let exists_in_all_joined_envs t m =
+    Index.Map.subset_domain (envs_and_equations t) m
+
+  let get_canonical_simple_ignoring_name_mode typing_env simple =
+    Simple_in_one_joined_env.create
+      (TE.get_canonical_simple_ignoring_name_mode typing_env
+         (simple : Simple_in_one_joined_env.t :> Simple.t))
+
+  let equal_in_all_joined_envs t simple simples_in_joined_envs =
+    Index.Map.for_all
+      (fun index canonical ->
+        (* Avoid env lookup when not necessary *)
+        Simple_in_one_joined_env.equal canonical simple
+        || Simple_in_one_joined_env.equal canonical
+             (get_canonical_simple_ignoring_name_mode
+                (get_nth_joined_env t index)
+                simple))
+      simples_in_joined_envs
+
+  let canonicals_for_imported_var t var =
+    if Flambda_features.check_light_invariants ()
+    then
+      if
+        not
+          (Compilation_unit.is_current
+             (Variable.compilation_unit
+                (var : Variable_in_one_joined_env.t :> Variable.t)))
+      then
+        Misc.fatal_errorf
+          "Cannot re-define variable %a defined in another compilation unit \
+           into the target environment of join"
+          Variable.print
+          (var : Variable_in_one_joined_env.t :> Variable.t);
+    Index.Map.filter_map
+      (fun _index (env, _) ->
+        if
+          TE.mem env
+            (Name.var (var : Variable_in_one_joined_env.t :> Variable.t))
+        then
+          let canonical =
+            get_canonical_simple_ignoring_name_mode env
+              (Simple_in_one_joined_env.var var)
+          in
+          Some canonical
+        else None)
+      (envs_and_equations t)
+
+  let binding_times_and_modes_for_imported_var t var =
+    if Flambda_features.check_light_invariants ()
+    then
+      if not (Compilation_unit.is_current (Variable.compilation_unit var))
+      then
+        Misc.fatal_errorf
+          "Cannot re-define variable %a defined in another compilation unit \
+           into the target environment of join"
+          Variable.print var;
+    Index.Map.filter_map
+      (fun _index (env, _) ->
+        if TE.mem env (Name.var var)
+        then Some (TE.binding_time_and_mode env (Name.var var))
+        else None)
+      (envs_and_equations t)
+
+  let alias_types_of_local_var t kind var =
+    if Flambda_features.check_light_invariants ()
+    then
+      if
+        not
+          (Compilation_unit.is_current
+             (Variable.compilation_unit
+                (var : Variable_in_one_joined_env.t :> Variable.t)))
+      then
+        Misc.fatal_errorf
+          "Cannot re-define variable %a defined in another compilation unit \
+           into the target environment of join"
+          Variable.print
+          (var : Variable_in_one_joined_env.t :> Variable.t);
+    Index.Map.filter_map
+      (fun _index (env, _) ->
+        if
+          TE.mem env
+            (Name.var (var : Variable_in_one_joined_env.t :> Variable.t))
+        then
+          let canonical =
+            get_canonical_simple_ignoring_name_mode env
+              (Simple_in_one_joined_env.var var)
+          in
+          Some (Type_in_one_joined_env.alias_type_of kind canonical)
+        else None)
+      (envs_and_equations t)
+
+  let expand_head env ty =
+    match TG.get_alias_opt ty with
+    | None -> ty
+    | Some simple ->
+      let kind = TG.kind ty in
+      let simple = TE.get_canonical_simple_ignoring_name_mode env simple in
+      Simple.pattern_match simple
+        ~const:(fun const ->
+          Expand_head.Expanded_type.(create_const const |> to_type))
+        ~name:(fun name ~coercion ->
+          let ty = TE.find env name (Some kind) in
+          match TG.get_alias_opt ty with
+          | Some _ ->
+            Misc.fatal_errorf
+              "Canonical alias %a should never have [Equals] type %a:@\n\n%a"
+              Simple.print simple TG.print ty TE.print env
+          | None -> TG.apply_coercion ty coercion)
+
+  let expand_heads t types =
+    Index.Map.mapi
+      (fun index ty ->
+        let typing_env = get_nth_joined_env t index in
+        let ty = (ty : Type_in_one_joined_env.t :> TG.t) in
+        Type_in_one_joined_env.create (expand_head typing_env ty))
+      types
+end
+
 module Aliases_in_target_env = struct
   type coercion_to_canonical = Coercion.t
 
@@ -806,328 +1128,156 @@ module Aliases_in_target_env = struct
         in
         { t with aliases_of_variables })
 
-  let to_alias_types
-      { aliases_of_symbols; aliases_of_variables; aliases_of_consts } =
-    Name_in_target_env.Map.empty
-    |> Reg_width_const.Map.fold
-         (fun const aliases_of_const acc ->
-           Aliases_of_canonical_element.to_alias_types_of
-             (Reg_width_const.kind const)
-             aliases_of_const
-             ~canonical_element:(Simple_in_target_env.const const)
-           |> Name_in_target_env.Map.disjoint_union acc)
-         aliases_of_consts
-    |> Symbol_in_target_env.Map.fold
-         (fun symbol aliases_of_symbol acc ->
-           Aliases_of_canonical_element.to_alias_types_of K.value
-             aliases_of_symbol
-             ~canonical_element:(Simple_in_target_env.symbol symbol)
-           |> Name_in_target_env.Map.disjoint_union acc)
-         aliases_of_symbols
-    |> Variable_in_target_env.Map.fold
-         (fun var aliases_of_var acc ->
-           Aliases_of_canonical_element.to_alias_types_of
-             (Variable.kind (var :> Variable.t))
-             aliases_of_var
-             ~canonical_element:(Simple_in_target_env.var var)
-           |> Name_in_target_env.Map.disjoint_union acc)
-         aliases_of_variables
-end
+  type classification_of_variable =
+    | In_source_env
+    | Imported_from_joined_envs of Binding_time.With_name_mode.t Index.Map.t
+    | Existential
 
-type definition_in_joined_envs =
-  | These_canonicals of Simple_in_one_joined_env.t Index.Map.t * K.t
+  let compare_classification_of_variable c1 c2 =
+    match c1, c2 with
+    | In_source_env, In_source_env | Existential, Existential -> 0
+    | ( Imported_from_joined_envs binding_times_and_modes1,
+        Imported_from_joined_envs binding_times_and_modes2 ) ->
+      Index.Map.compare
+        (fun binding_time_and_mode1 binding_time_and_mode2 ->
+          Binding_time.compare
+            (Binding_time.With_name_mode.binding_time binding_time_and_mode1)
+            (Binding_time.With_name_mode.binding_time binding_time_and_mode2))
+        binding_times_and_modes1 binding_times_and_modes2
+    | In_source_env, (Imported_from_joined_envs _ | Existential) -> -1
+    | _, In_source_env -> 1
+    | Imported_from_joined_envs _, _ -> -1
+    | _, Imported_from_joined_envs _ -> 1
 
-module Bindings_in_target_env : sig
-  (* This module is only concerned with providing a consistent name to represent
-     a set of simples in the joined environments.
-
-     Names in the target environment are either names that exist in the source
-     environment, or local variables that are created in the target environment
-     but do not exist in the source environment.
-
-     We currently maintain two types of relations between names in the joined
-     environment and names in the target environment:
-
-     - Imported variables represent a specific variable in all the joined
-     environments where it exists.
-
-     - Existentials represent a specific set of simples in the joined
-     environments.
-
-     {b Warning}: Each local variable is defined either as an imported variable
-     or as an existential, but imported variables and existentials are not
-     necessarily represented by local variables in the target environment: there
-     might already be a suitable name in the source environment to represent
-     this imported variable or existential.
-
-     For instance, consider that we are doing the join of [x: (= a)] in env 0
-     and [x: (= b)] in env 1, where [x] exists in the source environment but not
-     [a] and [b]. Then we can use [x] to represent [((0 a) (1 b))], we do not
-     have to create a local variable. Note that in the case of imported
-     variables, this effectively mean that we can rename variables as we import
-     them. *)
-
-  type t
-
-  val from_source_env : Source_env.t -> t
-
-  val source_env : t -> Source_env.t
-
-  (* Return the (unique across the whole join) name to be used to represent this
-     set of simples in joined environments.
-
-     This is either a name that has been recorded with
-     [add_existential_for_these_simples], or an existential local variable
-     created to represent it. *)
-  val existential_for_these_simples :
-    ?existing_var_in_target_env:Variable_in_target_env.t ->
-    t ->
-    Simples_in_joined_envs.t ->
-    K.t ->
-    Variable_in_target_env.t * t
-
-  val import_var : t -> Variable_in_one_joined_env.t -> t
-
-  val fold_created_variables :
-    (Variable_in_target_env.t -> K.t -> 'a -> 'a) -> t -> 'a -> 'a
-end = struct
-  type t =
-    { source_env : Source_env.t;
-      imported_variables : Variable_in_one_joined_env.Set.t;
-      existential_for_these_simples :
-        Variable_in_target_env.t Simples_in_joined_envs.Map.t;
-      (* Maps a set of [simples] in joined environments to the (unique across
-         the whole join) name used to represent this exact set of simples in the
-         target environment. *)
-      created_variables : K.t Variable_in_target_env.Map.t
-          (* This contains all the local variables (existentials or imported)
-             that exist in the target environment but not in the source
-             environment. *)
-    }
-
-  let from_source_env source_env =
-    { source_env;
-      imported_variables = Variable_in_one_joined_env.Set.empty;
-      existential_for_these_simples = Simples_in_joined_envs.Map.empty;
-      created_variables = Variable_in_target_env.Map.empty
-    }
-
-  let source_env { source_env; _ } = source_env
-
-  let has_existential_for_these_simples t simples =
-    Simples_in_joined_envs.Map.find_opt simples t.existential_for_these_simples
-
-  let existential_for_these_simples ?existing_var_in_target_env t simples kind =
-    match has_existential_for_these_simples t simples with
-    | Some existing_canonical -> existing_canonical, t
+  let classify_variable ~joined_envs ~source_env var =
+    match Source_env.exists_in_source_env source_env var with
+    | Some _ -> In_source_env
     | None ->
-      let var, t =
-        match existing_var_in_target_env with
-        | None ->
-          let var =
-            let name = Simples_in_joined_envs.choose_a_suitable_name simples in
-            Variable_in_target_env.create (Variable.create name kind)
-          in
-          let created_variables =
-            Variable_in_target_env.Map.add var kind t.created_variables
-          in
-          var, { t with created_variables }
-        | Some var -> var, t
+      let binding_times_and_modes =
+        Joined_envs.binding_times_and_modes_for_imported_var joined_envs var
       in
-      let existential_for_these_simples =
-        Simples_in_joined_envs.Map.add simples var
-          t.existential_for_these_simples
-      in
-      var, { t with existential_for_these_simples }
+      if Index.Map.is_empty binding_times_and_modes
+      then Existential
+      else Imported_from_joined_envs binding_times_and_modes
 
-  let import_var t (var : Variable_in_one_joined_env.t) =
-    if Variable_in_one_joined_env.Set.mem var t.imported_variables
-    then t
-    else
-      let imported_variables =
-        Variable_in_one_joined_env.Set.add var t.imported_variables
-      in
-      let created_variables =
-        Variable_in_target_env.Map.add
-          (Variable_in_target_env.create (var :> Variable.t))
-          (Variable.kind (var :> Variable.t))
-          t.created_variables
-      in
-      { t with imported_variables; created_variables }
+  let with_classification ~joined_envs ~source_env var coercion =
+    var, coercion, classify_variable ~joined_envs ~source_env var
 
-  let fold_created_variables f t acc =
-    (* CR bclement: iterate in order consistent with the recorded binding
-       times. *)
-    let acc =
-      Variable_in_one_joined_env.Set.fold
-        (fun var acc ->
-          let kind = Variable.kind (var :> Variable.t) in
-          f (Variable_in_target_env.create (var :> Variable.t)) kind acc)
-        t.imported_variables acc
+  let compare_with_classification (_, _, classification1) (_, _, classification2)
+      =
+    compare_classification_of_variable classification1 classification2
+
+  let to_substitution_and_alias_types ~source_env ~joined_envs
+      { aliases_of_consts; aliases_of_symbols; aliases_of_variables }
+      types_in_target_env =
+    let types_in_target_env =
+      types_in_target_env
+      |> Reg_width_const.Map.fold
+           (fun const aliases_of_const acc ->
+             Aliases_of_canonical_element.to_alias_types_of
+               (Reg_width_const.kind const)
+               aliases_of_const
+               ~canonical_element:(Simple_in_target_env.const const)
+             |> Name_in_target_env.Map.disjoint_union acc)
+           aliases_of_consts
+      |> Symbol_in_target_env.Map.fold
+           (fun symbol aliases_of_symbol acc ->
+             Aliases_of_canonical_element.to_alias_types_of K.value
+               aliases_of_symbol
+               ~canonical_element:(Simple_in_target_env.symbol symbol)
+             |> Name_in_target_env.Map.disjoint_union acc)
+           aliases_of_symbols
     in
-    Variable_in_target_env.Map.fold f t.created_variables acc
-end
-
-module Joined_envs : sig
-  type t
-
-  (* We use an [incremental] type for equations because the join of env
-     extensions needs to know about the equations that exist outside of the join
-     extension.
-
-     The [previous] field correspond to the equations added at higher scopes
-     (one layer of env extensions removed), and is empty for a top-level
-     join. *)
-  val create :
-    (TE.t * Type_in_one_joined_env.t Name.Map.t incremental) Index.Map.t -> t
-
-  val get_nth_joined_env : t -> Index.t -> TE.t
-
-  val keys : t -> Index.Set.t
-
-  val exists_in_all_joined_envs : t -> _ Index.Map.t -> bool
-
-  (** Returns the aliases of a variable in all the environments where it exists.
-
-      The provided variable {b must} be defined in the current compilation unit.
-  *)
-  val alias_types_of_local_var :
-    t ->
-    K.t ->
-    Variable_in_one_joined_env.t ->
-    Type_in_one_joined_env.t Index.Map.t
-  [@@warning "-32"]
-
-  val canonicals_for_imported_var :
-    t -> Variable_in_one_joined_env.t -> Simples_in_joined_envs.t
-
-  val expand_heads :
-    t ->
-    Type_in_one_joined_env.t Index.Map.t ->
-    Type_in_one_joined_env.t Index.Map.t
-
-  val equal_in_all_joined_envs :
-    t -> Simple_in_one_joined_env.t -> Simples_in_joined_envs.t -> bool
-end = struct
-  type t =
-    { envs_and_equations :
-        (TE.t * Type_in_one_joined_env.t Name.Map.t incremental) Index.Map.t
-    }
-  [@@unboxed]
-
-  let create envs_and_equations = { envs_and_equations }
-
-  let envs_and_equations = function
-    | { envs_and_equations } -> envs_and_equations
-
-  let get_nth_joined_env t index =
-    match Index.Map.find_opt index (envs_and_equations t) with
-    | Some (one_joined_env, _) -> one_joined_env
-    | None ->
-      Misc.fatal_errorf "Join does not include environment %a" Index.print index
-
-  let keys t = Index.Map.keys (envs_and_equations t)
-
-  let exists_in_all_joined_envs t m =
-    Index.Map.subset_domain (envs_and_equations t) m
-
-  let get_canonical_simple_ignoring_name_mode typing_env simple =
-    Simple_in_one_joined_env.create
-      (TE.get_canonical_simple_ignoring_name_mode typing_env
-         (simple : Simple_in_one_joined_env.t :> Simple.t))
-
-  let equal_in_all_joined_envs t simple simples_in_joined_envs =
-    Index.Map.for_all
-      (fun index canonical ->
-        (* Avoid env lookup when not necessary *)
-        Simple_in_one_joined_env.equal canonical simple
-        || Simple_in_one_joined_env.equal canonical
-             (get_canonical_simple_ignoring_name_mode
-                (get_nth_joined_env t index)
-                simple))
-      simples_in_joined_envs
-
-  let canonicals_for_imported_var t var =
-    if Flambda_features.check_light_invariants ()
-    then
-      if
-        not
-          (Compilation_unit.is_current
-             (Variable.compilation_unit
-                (var : Variable_in_one_joined_env.t :> Variable.t)))
-      then
-        Misc.fatal_errorf
-          "Cannot re-define variable %a defined in another compilation unit \
-           into the target environment of join"
-          Variable.print
-          (var : Variable_in_one_joined_env.t :> Variable.t);
-    Index.Map.filter_map
-      (fun _index (env, _) ->
-        if
-          TE.mem env
-            (Name.var (var : Variable_in_one_joined_env.t :> Variable.t))
-        then
-          let canonical =
-            get_canonical_simple_ignoring_name_mode env
-              (Simple_in_one_joined_env.var var)
-          in
-          Some canonical
-        else None)
-      (envs_and_equations t)
-
-  let alias_types_of_local_var t kind var =
-    if Flambda_features.check_light_invariants ()
-    then
-      if
-        not
-          (Compilation_unit.is_current
-             (Variable.compilation_unit
-                (var : Variable_in_one_joined_env.t :> Variable.t)))
-      then
-        Misc.fatal_errorf
-          "Cannot re-define variable %a defined in another compilation unit \
-           into the target environment of join"
-          Variable.print
-          (var : Variable_in_one_joined_env.t :> Variable.t);
-    Index.Map.filter_map
-      (fun _index (env, _) ->
-        if
-          TE.mem env
-            (Name.var (var : Variable_in_one_joined_env.t :> Variable.t))
-        then
-          let canonical =
-            get_canonical_simple_ignoring_name_mode env
-              (Simple_in_one_joined_env.var var)
-          in
-          Some (Type_in_one_joined_env.alias_type_of kind canonical)
-        else None)
-      (envs_and_equations t)
-
-  let expand_head env ty =
-    match TG.get_alias_opt ty with
-    | None -> ty
-    | Some simple ->
-      let kind = TG.kind ty in
-      let simple = TE.get_canonical_simple_ignoring_name_mode env simple in
-      Simple.pattern_match simple
-        ~const:(fun const ->
-          Expand_head.Expanded_type.(create_const const |> to_type))
-        ~name:(fun name ~coercion ->
-          let ty = TE.find env name (Some kind) in
-          match TG.get_alias_opt ty with
-          | Some _ ->
-            Misc.fatal_errorf
-              "Canonical alias %a should never have [Equals] type %a:@\n\n%a"
-              Simple.print simple TG.print ty TE.print env
-          | None -> TG.apply_coercion ty coercion)
-
-  let expand_heads t types =
-    Index.Map.mapi
-      (fun index ty ->
-        let typing_env = get_nth_joined_env t index in
-        let ty = (ty : Type_in_one_joined_env.t :> TG.t) in
-        Type_in_one_joined_env.create (expand_head typing_env ty))
-      types
+    Variable_in_target_env.Map.fold
+      (fun join_var aliases_of_join_var (sigma, types_in_target_env) ->
+        let existentials, aliases, (best_var, coercion, _) =
+          Variable_in_target_env.Map.fold
+            (fun var coercion (existentials, aliases, best_var) ->
+              let var =
+                with_classification ~joined_envs ~source_env
+                  (var :> Variable.t)
+                  coercion
+              in
+              let ( ( demoted_var,
+                      coercion_from_demoted_var_to_canonical,
+                      classification_of_demoted_var ),
+                    best_var ) =
+                if compare_with_classification var best_var < 0
+                then best_var, var
+                else var, best_var
+              in
+              match classification_of_demoted_var with
+              | Existential ->
+                ( Variable.Map.add demoted_var
+                    coercion_from_demoted_var_to_canonical existentials,
+                  aliases,
+                  best_var )
+              | Imported_from_joined_envs _ | In_source_env ->
+                ( existentials,
+                  Variable.Map.add demoted_var coercion aliases,
+                  best_var ))
+            aliases_of_join_var
+            ( Variable.Map.empty,
+              Variable.Map.empty,
+              with_classification ~joined_envs ~source_env
+                (join_var :> Variable.t)
+                Coercion.id )
+        in
+        let types_in_target_env =
+          (* If the canonical has changed, we need to move its type. *)
+          if Variable.equal (join_var :> Variable.t) best_var
+          then types_in_target_env
+          else
+            match
+              Name_in_target_env.Map.find_opt
+                (Name_in_target_env.var join_var)
+                types_in_target_env
+            with
+            | None -> types_in_target_env
+            | Some ty ->
+              let types_in_target_env =
+                Name_in_target_env.Map.remove
+                  (Name_in_target_env.var join_var)
+                  types_in_target_env
+              in
+              let canonical_name =
+                Name_in_target_env.var (Variable_in_target_env.create best_var)
+              in
+              assert (
+                not
+                  (Name_in_target_env.Map.mem canonical_name types_in_target_env));
+              Name_in_target_env.Map.add canonical_name ty types_in_target_env
+        in
+        let sigma =
+          Variable.Map.fold
+            (fun alias coercion_to_canonical sigma ->
+              Variable.Map.add alias
+                (Simple.apply_coercion_exn (Simple.var best_var)
+                   (Coercion.compose_exn coercion
+                      ~then_:(Coercion.inverse coercion_to_canonical)))
+                sigma)
+            existentials sigma
+        in
+        let kind = Variable.kind (join_var :> Variable.t) in
+        let types_in_target_env =
+          Variable.Map.fold
+            (fun var coercion_to_canonical types_in_target_env ->
+              let canonical =
+                Simple_in_target_env.var
+                  (Variable_in_target_env.create best_var)
+                  ~coercion:
+                    (Coercion.compose_exn coercion
+                       ~then_:(Coercion.inverse coercion_to_canonical))
+              in
+              let ty = Type_in_target_env.alias_type_of kind canonical in
+              Name_in_target_env.Map.add
+                (Name_in_target_env.var (Variable_in_target_env.create var))
+                ty types_in_target_env)
+            aliases types_in_target_env
+        in
+        sigma, types_in_target_env)
+      aliases_of_variables
+      (Variable.Map.empty, types_in_target_env)
 end
 
 (** {1 Public interface} *)
@@ -1390,7 +1540,7 @@ let import_var ?(allowed_as_existential = false) env var =
           ~demoted_variable:(Variable_in_target_env.create (var :> Variable.t))
           ~canonical_element:(Simple_in_target_env.var canonical)
       in
-      canonical, { env with aliases_in_target_env }
+      canonical, { env with bindings; aliases_in_target_env }
 
 let import_type env ty =
   Name_occurrences.fold_variables (TG.free_names ty) ~init:env
@@ -1779,6 +1929,69 @@ let cut_for_join typing_env ~cut_after =
   in
   incremental_equations, symbol_projections
 
+let substitute_types sigma types =
+  let to_project = Variable.Map.keys sigma in
+  let expand var =
+    match Variable.Map.find var sigma with
+    | exception Not_found -> assert false
+    | simple ->
+      Simple.pattern_match' simple
+        ~const:(fun const ->
+          TG.alias_type_of (Reg_width_const.kind const) simple)
+        ~symbol:(fun _ ~coercion:_ -> TG.alias_type_of K.value simple)
+        ~var:(fun var ~coercion:_ ->
+          assert (not (Variable.Map.mem var sigma));
+          TG.alias_type_of (Variable.kind var) simple)
+  in
+  Name.Map.fold
+    (fun name ty acc ->
+      let name, ty =
+        Name.pattern_match name
+          ~symbol:(fun _ -> name, ty)
+          ~var:(fun var ->
+            match Variable.Map.find_opt var sigma with
+            | None -> name, ty
+            | Some simple ->
+              Simple.pattern_match simple
+                ~const:(fun _ -> assert false)
+                ~name:(fun name ~coercion ->
+                  let ty = TG.apply_coercion ty (Coercion.inverse coercion) in
+                  name, ty))
+      in
+      Name.Map.add name (TG.project_variables_out ~to_project ~expand ty) acc)
+    types Name.Map.empty
+
+let substitute_definitions sigma definitions =
+  Name_in_target_env.Map.fold
+    (fun name (simples, kind) acc ->
+      Name_in_target_env.pattern_match name
+        ~symbol:(fun _ -> Name_in_target_env.Map.add name (simples, kind) acc)
+        ~var:(fun var ->
+          match Variable.Map.find_opt (var :> Variable.t) sigma with
+          | None -> Name_in_target_env.Map.add name (simples, kind) acc
+          | Some simple ->
+            Simple.pattern_match simple
+              ~const:(fun _ -> assert false)
+              ~name:(fun name ~coercion ->
+                let simples =
+                  if Coercion.is_id coercion
+                  then simples
+                  else
+                    let inverse_coercion = Coercion.inverse coercion in
+                    Index.Map.map_sharing
+                      (fun simple ->
+                        Simple_in_one_joined_env.apply_coercion_exn simple
+                          inverse_coercion)
+                      simples
+                in
+                let name = Name_in_target_env.create name in
+                assert (not (Name_in_target_env.Map.mem name acc));
+                Name_in_target_env.Map.add name (simples, kind) acc)))
+    definitions Name_in_target_env.Map.empty
+
+let project_imported_vars =
+  Oxcaml_args.Extra_options.bool __LOC__ "project-imported-vars"
+
 let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
     source_env joined_envs equations_to_join symbol_projections_to_join =
   try
@@ -1841,19 +2054,38 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
           symbol_projections,
           bindings,
           definitions ) =
-      let env_extension_for_inverse_relations =
-        TEE.from_map
-          (Name.Map.map
-             (fun inverse_relations ->
-               TG.create_from_head_naked_immediate
-                 (TG.Head_of_kind_naked_immediate.create_inverse_relations
-                    inverse_relations))
-             inverse_relations)
+      let sigma, types_in_target_env =
+        Aliases_in_target_env.to_substitution_and_alias_types
+          ~source_env:(Bindings_in_target_env.source_env env.bindings)
+          ~joined_envs:env.joined_envs env.aliases_in_target_env
+          types_in_target_env
       in
       let types_in_target_env =
-        Name_in_target_env.Map.disjoint_union types_in_target_env
-          (Aliases_in_target_env.to_alias_types env.aliases_in_target_env)
+        substitute_types sigma (types_in_target_env :> TG.t Name.Map.t)
       in
+      assert (
+        Name.Map.for_all
+          (fun name _ ->
+            Name.pattern_match name
+              ~symbol:(fun _ -> true)
+              ~var:(fun var -> not (Variable.Map.mem var sigma)))
+          types_in_target_env);
+      let env_extension_for_inverse_relations =
+        TEE.from_map
+          (substitute_types sigma
+             (Name.Map.map
+                (fun inverse_relations ->
+                  TG.create_from_head_naked_immediate
+                    (TG.Head_of_kind_naked_immediate.create_inverse_relations
+                       inverse_relations))
+                inverse_relations))
+      in
+      let definitions =
+        Name_in_target_env.Map.disjoint_union
+          (new_bindings_for_imported_vars env ~since:empty_env)
+          (new_bindings_for_existentials env ~since:empty_env)
+      in
+      let definitions = substitute_definitions sigma definitions in
       ( (* We compute symbol projections last so that we can pick up existential
            variables, but there is no need to create existential variables from
            symbol projections since they would not be accessible.
@@ -1863,24 +2095,73 @@ let cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
         env_extension_for_inverse_relations,
         n_way_join_symbol_projections env symbol_projections_to_join,
         env.bindings,
-        Name_in_target_env.Map.disjoint_union
-          (new_bindings_for_imported_vars env ~since:empty_env)
-          (new_bindings_for_existentials env ~since:empty_env) )
+        definitions )
     in
-    let target_env =
+    let free_names =
+      (* Only names in types, not the names that have equations! *)
+      Name.Map.fold
+        (fun _ t acc ->
+          Name_occurrences.union acc
+            (Name_occurrences.with_only_variables (TG.free_names t)))
+        equations
+        (Name_occurrences.with_only_variables
+           (TEE.free_names env_extension_for_inverse_relations))
+    in
+    let target_env, to_project =
       Bindings_in_target_env.fold_created_variables
-        (fun var kind target_env ->
-          ME.add_variable_definition target_env
-            (var : Variable_in_target_env.t :> Variable.t)
-            kind Name_mode.in_types)
-        bindings source_env
+        (fun var kind (target_env, to_project) ->
+          let var = (var :> Variable.t) in
+          match Name_occurrences.count_variable free_names var with
+          | Zero -> target_env, Variable.Set.add var to_project
+          | One
+            when (not (project_imported_vars ()))
+                 && not (Bindings_in_target_env.is_imported bindings var) ->
+            target_env, Variable.Set.add var to_project
+          | One | More_than_one ->
+            ( ME.add_variable_definition target_env var kind Name_mode.in_types,
+              to_project ))
+        bindings
+        (source_env, Variable.Set.empty)
     in
+    let definitions =
+      Name_in_target_env.Map.filter
+        (fun name _ ->
+          not (Name.Set.mem (name :> Name.t) (Name.var_set to_project)))
+        definitions
+    in
+    let rec expand var =
+      match Name.Map.find_or_null (Name.var var) equations with
+      | Null -> More_type_creators.unknown (Variable.kind var)
+      | This ty -> (
+        match TG.get_alias_opt ty with
+        | None -> TG.project_variables_out ~to_project ~expand ty
+        | Some simple ->
+          Simple.pattern_match' simple
+            ~const:(fun _ -> ty)
+            ~symbol:(fun _ ~coercion:_ -> ty)
+            ~var:(fun var ~coercion ->
+              if Variable.Set.mem var to_project
+              then TG.apply_coercion (expand var) coercion
+              else ty))
+    in
+    let equations =
+      Name.Map.filter_map
+        (fun name ty ->
+          Name.pattern_match name
+            ~symbol:(fun _ ->
+              Some (TG.project_variables_out ~to_project ~expand ty))
+            ~var:(fun var ->
+              if Variable.Set.mem var to_project
+              then None
+              else Some (TG.project_variables_out ~to_project ~expand ty)))
+        equations
+    in
+    let free_names = TEE.free_names (TEE.from_map equations) in
+    Name_occurrences.fold_variables free_names ~init:() ~f:(fun () var ->
+        assert (TE.mem (ME.typing_env target_env) (Name.var var)));
     let target_env =
       ME.add_env_extension ~meet_expanded_head target_env
-        (TEE.from_map
-           (equations
-             : Type_in_target_env.t Name_in_target_env.Map.t
-             :> TG.t Name.Map.t))
+        (TEE.from_map equations)
     in
     let target_env =
       ME.add_env_extension ~meet_expanded_head target_env
