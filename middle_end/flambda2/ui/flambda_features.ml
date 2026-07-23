@@ -195,6 +195,9 @@ let erase_in_types_depth_variables =
   Oxcaml_args.Extra_options.bool __LOC__
     "flambda2-erase-in-types-depth-variables"
 
+let no_join_extensions_in_meet =
+  Oxcaml_args.Extra_options.bool __LOC__ "flambda2-no-join-extensions-in-meet"
+
 module Inlining = struct
   module I = Oxcaml_flags.Flambda2.Inlining
   module IH = Clflags.Int_arg_helper

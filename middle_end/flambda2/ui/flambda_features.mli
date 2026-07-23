@@ -127,6 +127,8 @@ val freshen_when_printing : unit -> bool
 
 val erase_in_types_depth_variables : unit -> bool
 
+val no_join_extensions_in_meet : unit -> bool
+
 module Inlining : sig
   type round_or_default =
     | Round of int

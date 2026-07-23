@@ -354,18 +354,21 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
           let val_b = extract_value b_result val_b1 val_b2 in
           val_a, val_b, extensions)
     in
-    let join_env =
-      Join_env.create
-        (ME.typing_env initial_env)
-        ~left_env:(ME.typing_env env_a) ~right_env:(ME.typing_env env_b)
-    in
-    let result_extension = join_env_extension join_env when_a when_b in
-    let result_env =
-      (* Not strict, as we don't expect to be able to get bottom equations from
-         joining non-bottom ones *)
-      ME.add_env_extension initial_env result_extension ~meet_expanded_head
-    in
-    Ok (result, result_env)
+    if Flambda_features.no_join_extensions_in_meet ()
+    then Ok (result, initial_env)
+    else
+      let join_env =
+        Join_env.create
+          (ME.typing_env initial_env)
+          ~left_env:(ME.typing_env env_a) ~right_env:(ME.typing_env env_b)
+      in
+      let result_extension = join_env_extension join_env when_a when_b in
+      let result_env =
+        (* Not strict, as we don't expect to be able to get bottom equations
+           from joining non-bottom ones *)
+        ME.add_env_extension initial_env result_extension ~meet_expanded_head
+      in
+      Ok (result, result_env)
 
 let[@inline] meet_row_like :
     'lattice 'shape 'maps_to 'row_tag 'known.
@@ -456,14 +459,17 @@ let[@inline] meet_row_like :
       | No_result -> Extension (extract_extension scoped_env)
       | Extension ext1 ->
         assert need_join;
-        let ext2 = extract_extension scoped_env in
-        let join_env =
-          Join_env.create (ME.typing_env base_env)
-            ~left_env:(ME.typing_env base_env)
-            ~right_env:(ME.typing_env scoped_env)
-        in
-        let extension = join_env_extension join_env ext1 ext2 in
-        Extension extension
+        if Flambda_features.no_join_extensions_in_meet ()
+        then Extension TEE.empty
+        else
+          let ext2 = extract_extension scoped_env in
+          let join_env =
+            Join_env.create (ME.typing_env base_env)
+              ~left_env:(ME.typing_env base_env)
+              ~right_env:(ME.typing_env scoped_env)
+          in
+          let extension = join_env_extension join_env ext1 ext2 in
+          Extension extension
     in
     result_env := new_result_env
   in

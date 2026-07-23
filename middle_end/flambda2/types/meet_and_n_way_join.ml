@@ -331,11 +331,14 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
     direct_return (Ok (result, env))
   | Ok (a_result, env_a), Ok (b_result, env_b) ->
     let result_env =
-      (* Not strict, as we don't expect to be able to get bottom equations from
-         joining non-bottom ones *)
-      Join_env.cut_and_n_way_join ~meet_expanded_head
-        ~n_way_join_type:n_way_join ~cut_after:join_scope initial_env
-        [ME.typing_env env_a; ME.typing_env env_b]
+      if Flambda_features.no_join_extensions_in_meet ()
+      then initial_env
+      else
+        (* Not strict, as we don't expect to be able to get bottom equations
+           from joining non-bottom ones *)
+        Join_env.cut_and_n_way_join ~meet_expanded_head
+          ~n_way_join_type:n_way_join ~cut_after:join_scope initial_env
+          [ME.typing_env env_a; ME.typing_env env_b]
     in
     let when_a_level = ME.cut env_a ~cut_after:join_scope in
     let when_b_level = ME.cut env_b ~cut_after:join_scope in
@@ -435,8 +438,11 @@ let[@inline] meet_row_like :
        that variables defined in the central env are defined in all the joined
        envs. *)
     let result_env =
-      Join_env.cut_and_n_way_join ~n_way_join_type ~meet_expanded_head
-        ~cut_after:common_scope initial_env scoped_envs
+      if Flambda_features.no_join_extensions_in_meet ()
+      then initial_env
+      else
+        Join_env.cut_and_n_way_join ~n_way_join_type ~meet_expanded_head
+          ~cut_after:common_scope initial_env scoped_envs
     in
     Variable.Map.fold
       (fun var kind env ->
