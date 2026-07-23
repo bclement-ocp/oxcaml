@@ -86,6 +86,7 @@
 
 module K = Flambda_kind
 module TG = Type_grammar
+module MTC = More_type_creators
 module TE = Typing_env
 module ME = Meet_env
 module TEE = Typing_env_extension
@@ -1528,6 +1529,31 @@ let alias_equations_for_existential kind ~canonical_element ~demoted_aliases
 
 let define_or_eliminate_variables env source_env inverse_relations
     ~meet_expanded_head =
+  let names_in_inverse_relations =
+    Name.Map.fold
+      (fun name relations names_in_inverse_relations ->
+        TG.Relation.Map.fold
+          (fun _ names names_in_inverse_relations ->
+            Name.Set.union names names_in_inverse_relations)
+          relations
+          (Name.Set.add name names_in_inverse_relations))
+      inverse_relations Name.Set.empty
+  in
+  let equations = (env.types_in_target_env :> TG.t Name.Map.t) in
+  let free_vars_in_equations =
+    Name.Map.fold
+      (fun _ ty free_names_in_equations ->
+        Name_occurrences.with_only_variables (TG.free_names ty)
+        |> Name_occurrences.union free_names_in_equations)
+      equations Name_occurrences.empty
+  in
+  let unique_occurence_is_in_equations var =
+    (not (Name.Set.mem (Name.var var) names_in_inverse_relations))
+    &&
+    match Name_occurrences.count_variable free_vars_in_equations var with
+    | Zero | One -> true
+    | More_than_one -> false
+  in
   let target_env =
     Bindings_in_target_env.fold_imported_variables
       (fun var kind target_env ->
@@ -1547,13 +1573,25 @@ let define_or_eliminate_variables env source_env inverse_relations
         let erased_var = (var :> Variable.t) in
         match Variable_in_target_env.Set.choose_opt aliases_of_var with
         | None ->
-          (* TODO: name occurrences to decide whether to project or not *)
-          ( ME.add_variable_definition target_env erased_var kind
-              Name_mode.in_types,
-            to_expand,
-            equations,
-            inverse_relations,
-            definitions )
+          if unique_occurence_is_in_equations erased_var
+          then
+            let ty, equations =
+              match Name.Map.find (Name.var erased_var) equations with
+              | exception Not_found -> MTC.unknown kind, equations
+              | ty -> ty, Name.Map.remove (Name.var erased_var) equations
+            in
+            ( target_env,
+              Variable.Map.add erased_var ty to_expand,
+              equations,
+              inverse_relations,
+              Variable_in_target_env.Map.remove var definitions )
+          else
+            ( ME.add_variable_definition target_env erased_var kind
+                Name_mode.in_types,
+              to_expand,
+              equations,
+              inverse_relations,
+              definitions )
         | Some alias ->
           let definitions = move_definition definitions ~from:var ~to_:alias in
           let equations =
@@ -1586,7 +1624,7 @@ let define_or_eliminate_variables env source_env inverse_relations
       env.bindings
       ( target_env,
         Variable.Map.empty,
-        (env.types_in_target_env :> TG.t Name.Map.t),
+        equations,
         inverse_relations,
         env.definitions_in_joined_envs )
   in
