@@ -379,6 +379,77 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
       in
       Ok (result, result_env)
 
+module Shared_canonicals_map = Map.Make (struct
+  type t = Simple.t Numeric_types.Int.Map.t
+
+  let compare = Numeric_types.Int.Map.compare Simple.compare
+end)
+
+let cut_and_n_way_join_aliases scoped_envs ~cut_after =
+  let extract_demoted_names index scoped_env =
+    Name.Map.fold
+      (fun name ty demoted_names ->
+        match TG.get_alias_opt ty with
+        | None -> demoted_names
+        | Some simple ->
+          let canonical =
+            TE.get_canonical_simple_ignoring_name_mode scoped_env simple
+          in
+          Name.Map.add name
+            (Numeric_types.Int.Map.singleton index canonical, TG.kind ty)
+            demoted_names)
+      (TEE.to_map (TE.cut_as_extension ~cut_after scoped_env))
+      Name.Map.empty
+  in
+  match scoped_envs with
+  | [] -> TEE.empty
+  | scoped_env1 :: scoped_envs ->
+    let demoted_names1 = extract_demoted_names 0 scoped_env1 in
+    let _, shared_demoted_names =
+      List.fold_left
+        (fun (index, demoted_names1) scoped_env ->
+          let demoted_names2 = extract_demoted_names index scoped_env in
+          let demoted_names =
+            Name.Map.inter
+              (fun _ (canonicals1, kind1) (canonicals2, kind2) ->
+                if not (K.equal kind2 kind1)
+                then Misc.fatal_error "Inconsistent kind for shared aliases";
+                ( Numeric_types.Int.Map.disjoint_union canonicals1 canonicals2,
+                  kind1 ))
+              demoted_names1 demoted_names2
+          in
+          index + 1, demoted_names)
+        (1, demoted_names1) scoped_envs
+    in
+    let _, ext =
+      Name.Map.fold
+        (fun name (canonicals, kind) (shared_canonicals, ext) ->
+          match Numeric_types.Int.Map.choose canonicals with
+          | exception Not_found -> shared_canonicals, ext
+          | _, canonical -> (
+            if
+              Numeric_types.Int.Map.for_all
+                (fun _ canonical' -> Simple.equal canonical canonical')
+                canonicals
+            then
+              ( shared_canonicals,
+                TEE.add_or_replace_equation ext name
+                  (TG.alias_type_of kind canonical) )
+            else
+              match
+                Shared_canonicals_map.find_opt canonicals shared_canonicals
+              with
+              | None ->
+                Shared_canonicals_map.add canonicals name shared_canonicals, ext
+              | Some other_name ->
+                ( shared_canonicals,
+                  TEE.add_or_replace_equation ext name
+                    (TG.alias_type_of kind (Simple.name other_name)) )))
+        shared_demoted_names
+        (Shared_canonicals_map.empty, TEE.empty)
+    in
+    ext
+
 let[@inline] meet_row_like :
     'lattice 'shape 'maps_to 'row_tag 'known.
     meet_maps_to:(ME.t -> 'maps_to -> 'maps_to -> 'maps_to meet_result) ->
@@ -419,7 +490,7 @@ let[@inline] meet_row_like :
   let open struct
     type result_env =
       | No_result
-      | Extension of TEE.t
+      | Extension of TE.t list
   end in
   let result_env = ref No_result in
   let need_join =
@@ -465,18 +536,8 @@ let[@inline] meet_row_like :
   let join_result_env scoped_env =
     let new_result_env =
       match !result_env with
-      | No_result -> Extension (extract_extension scoped_env)
-      | Extension ext1 ->
-        assert need_join;
-        if Flambda_features.no_join_extensions_in_meet ()
-        then Extension TEE.empty
-        else
-          let ext2 = extract_extension scoped_env in
-          let join_env =
-            Join_env.create base_tenv ~left_env:base_tenv ~right_env:scoped_env
-          in
-          let extension = join_env_extension join_env ext1 ext2 in
-          Extension extension
+      | No_result -> Extension [scoped_env]
+      | Extension scoped_envs -> Extension (scoped_env :: scoped_envs)
     in
     result_env := new_result_env
   in
@@ -681,8 +742,30 @@ let[@inline] meet_row_like :
     let env : _ Or_bottom.t =
       match !result_env with
       | No_result -> Bottom
-      | Extension ext ->
-        ME.add_env_extension_strict initial_env ext ~meet_expanded_head
+      | Extension scoped_envs -> (
+        match scoped_envs with
+        | [] -> Bottom
+        | [scoped_env] ->
+          extract_extension scoped_env
+          |> ME.add_env_extension_strict initial_env ~meet_expanded_head
+        | scoped_envs when Flambda_features.no_join_extensions_in_meet () ->
+          cut_and_n_way_join_aliases ~cut_after:common_scope scoped_envs
+          |> ME.add_env_extension_strict initial_env ~meet_expanded_head
+        | scoped_env :: (_ :: _ as scoped_envs) ->
+          let ext =
+            let ext1 = extract_extension scoped_env in
+            List.fold_left
+              (fun ext1 scoped_env ->
+                assert need_join;
+                let ext2 = extract_extension scoped_env in
+                let join_env =
+                  Join_env.create base_tenv ~left_env:base_tenv
+                    ~right_env:scoped_env
+                in
+                join_env_extension join_env ext1 ext2)
+              ext1 scoped_envs
+          in
+          ME.add_env_extension_strict initial_env ext ~meet_expanded_head)
     in
     let match_with_input v =
       match !result_is_t1, !result_is_t2 with
