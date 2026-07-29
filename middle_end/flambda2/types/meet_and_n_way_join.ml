@@ -342,7 +342,10 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
   | Ok (a_result, tenv_a), Ok (b_result, tenv_b) ->
     let result_env =
       if Flambda_features.no_join_extensions_in_meet ()
-      then initial_env
+      then
+        (* We used to compute a join of [tenv_a] and [tenv_b] here, but we
+           didn't actually get any useful information out of it in practice. *)
+        initial_env
       else
         (* Not strict, as we don't expect to be able to get bottom equations
            from joining non-bottom ones *)
@@ -519,17 +522,29 @@ let[@inline] meet_row_like :
        that variables defined in the central env are defined in all the joined
        envs. *)
     let result_env =
-      let[@local] full_join () =
-        Join_env.cut_and_n_way_join ~n_way_join_type ~meet_expanded_head
-          ~cut_after:common_scope initial_env initial_tenv scoped_envs
-      in
-      let[@local] only_aliases () =
-        cut_and_n_way_join_aliases scoped_envs ~cut_after:common_scope
+      match scoped_envs with
+      | [scoped_env] ->
+        add_extra_variables_and_extract_extension scoped_env
         |> ME.add_env_extension initial_env ~meet_expanded_head
-      in
-      if Flambda_features.no_join_extensions_in_meet ()
-      then match scoped_envs with [_] -> full_join () | _ -> only_aliases ()
-      else full_join ()
+      | _ ->
+        if Flambda_features.no_join_extensions_in_meet ()
+        then
+          (* We used to compute a full join of the different environments here,
+             but we didn't actually get much useful information out of it in
+             practice.
+
+             We still need to do a join of the aliases, as otherwise we lose
+             information when simplifying projections on variants (i.e. values
+             that can have multiple tags), which is done by computing a [meet]
+             with a variant type.
+
+             The join of aliases is simpler than a full join, and the reduction
+             in complexity from not calling the join from the meet is nice. *)
+          cut_and_n_way_join_aliases scoped_envs ~cut_after:common_scope
+          |> ME.add_env_extension initial_env ~meet_expanded_head
+        else
+          Join_env.cut_and_n_way_join ~n_way_join_type ~meet_expanded_head
+            ~cut_after:common_scope initial_env initial_tenv scoped_envs
     in
     Variable.Map.fold
       (fun var kind env ->

@@ -365,6 +365,8 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
           let val_b = extract_value b_result val_b1 val_b2 in
           val_a, val_b, extensions)
     in
+    (* We used to compute a join of [when_a] and [when_b] here, but we didn't
+       actually get any useful information out of it in practice. *)
     if Flambda_features.no_join_extensions_in_meet ()
     then Ok (result, initial_env)
     else
@@ -748,24 +750,34 @@ let[@inline] meet_row_like :
         | [scoped_env] ->
           extract_extension scoped_env
           |> ME.add_env_extension_strict initial_env ~meet_expanded_head
-        | scoped_envs when Flambda_features.no_join_extensions_in_meet () ->
-          cut_and_n_way_join_aliases ~cut_after:common_scope scoped_envs
-          |> ME.add_env_extension_strict initial_env ~meet_expanded_head
         | scoped_env :: (_ :: _ as scoped_envs) ->
-          let ext =
-            let ext1 = extract_extension scoped_env in
-            List.fold_left
-              (fun ext1 scoped_env ->
-                assert need_join;
-                let ext2 = extract_extension scoped_env in
-                let join_env =
-                  Join_env.create base_tenv ~left_env:base_tenv
-                    ~right_env:scoped_env
-                in
-                join_env_extension join_env ext1 ext2)
-              ext1 scoped_envs
-          in
-          ME.add_env_extension_strict initial_env ext ~meet_expanded_head)
+          assert need_join;
+          if Flambda_features.no_join_extensions_in_meet ()
+          then
+            (* We used to compute a full join of the different environments
+               here, but we didn't actually get much useful information out of
+               it in practice.
+
+               We still need to do a join of the aliases, as otherwise we lose
+               information when simplifying projections on variants (i.e. values
+               that can have multiple tags), which is done by computing a [meet]
+               with a variant type. *)
+            cut_and_n_way_join_aliases ~cut_after:common_scope scoped_envs
+            |> ME.add_env_extension_strict initial_env ~meet_expanded_head
+          else
+            let ext =
+              let ext1 = extract_extension scoped_env in
+              List.fold_left
+                (fun ext1 scoped_env ->
+                  let ext2 = extract_extension scoped_env in
+                  let join_env =
+                    Join_env.create base_tenv ~left_env:base_tenv
+                      ~right_env:scoped_env
+                  in
+                  join_env_extension join_env ext1 ext2)
+                ext1 scoped_envs
+            in
+            ME.add_env_extension_strict initial_env ext ~meet_expanded_head)
     in
     let match_with_input v =
       match !result_is_t1, !result_is_t2 with
