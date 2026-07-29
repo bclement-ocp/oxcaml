@@ -21,7 +21,6 @@ module TG = Type_grammar
 module TE = Typing_env
 module ME = Meet_env
 module TEE = Typing_env_extension
-module TEL = Typing_env_level
 module Vec128 = Vector_types.Vec128.Bit_pattern
 module Vec256 = Vector_types.Vec256.Bit_pattern
 module Vec512 = Vector_types.Vec512.Bit_pattern
@@ -248,29 +247,18 @@ type ext =
         when_b : TEE.t
       }
 
-let add_defined_vars env level =
-  TEL.fold_on_defined_vars
-    (fun var kind env ->
-      ME.add_definition env
-        (Bound_name.create_var
-           (Bound_var.create var Flambda_debug_uid.none
-              (* Variables with [Name_mode.in_types] do not exist at runtime, so
-                 we do not equip them with a [Flambda_debug_uid.t]. See
-                 #3967. *)
-              Name_mode.in_types))
-        kind)
-    level env
-
 let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
     ~meet_expanded_head initial_env val_a1 val_b1 extensions1 val_a2 val_b2
     extensions2 =
   let join_scope, env = ME.enter_scope initial_env in
+  let to_extension scoped_env =
+    TE.cut_as_extension scoped_env ~cut_after:join_scope
+  in
   let direct_return result scoped_env =
-    (* Need to cut as a level because we could have added new variables. *)
-    let level = TE.cut scoped_env ~cut_after:join_scope in
-    let initial_env = add_defined_vars initial_env level in
-    let ext = TEE.from_map (TEL.equations level) in
-    match ME.add_env_extension_strict initial_env ext ~meet_expanded_head with
+    let scoped_ext = to_extension scoped_env in
+    match
+      ME.add_env_extension_strict initial_env scoped_ext ~meet_expanded_head
+    with
     | Bottom -> Bottom (map_return_value (fun _ -> ()) result)
     | Ok env -> Ok (result, env)
   in
@@ -340,29 +328,17 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
     in
     direct_return result env
   | Ok (a_result, tenv_a), Ok (b_result, tenv_b) ->
-    (* We used to compute a join of [tenv_a] and [tenv_b] here, but we didn't
-       actually get any useful information out of it in practice. *)
-    let result_env = initial_env in
-    let when_a_level = TE.cut tenv_a ~cut_after:join_scope in
-    let when_b_level = TE.cut tenv_b ~cut_after:join_scope in
-    (* New variables introduced by either [meet_a] or [meet_b] are not
-       guaranteed to end up in the [result_env] (in fact, they will probably get
-       renamed), but they can still appear in [a_result] and [b_result], so we
-       need to add them back. *)
-    let result_env = add_defined_vars result_env when_a_level in
-    let result_env = add_defined_vars result_env when_b_level in
+    let when_a = to_extension tenv_a in
+    let when_b = to_extension tenv_b in
     let extensions =
-      if TEL.is_empty when_a_level && TEL.is_empty when_b_level
+      if TEE.is_empty when_a && TEE.is_empty when_b
       then
         No_extensions
         (* CR vlaviron: If both extensions have equations in common, the join
            below will add them to the result environment. Keeping those common
            equations in the variant extensions then becomes redundant, but we
            don't have an easy way to detect redundancy. *)
-      else
-        let when_a = TEE.from_map (TEL.equations when_a_level) in
-        let when_b = TEE.from_map (TEL.equations when_b_level) in
-        Ext { when_a; when_b }
+      else Ext { when_a; when_b }
     in
     let env_extension_result =
       (* We only catch the cases where empty extensions are preserved *)
@@ -384,7 +360,9 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
           let val_b = extract_value b_result val_b1 val_b2 in
           val_a, val_b, extensions)
     in
-    Ok (result, result_env)
+    (* We used to compute a join of [tenv_a] and [tenv_b] here, but we didn't
+       actually get any useful information out of it in practice. *)
+    Ok (result, initial_env)
 
 module Shared_canonicals_map = Map.Make (struct
   type t = Simple.t Numeric_types.Int.Map.t
@@ -488,55 +466,8 @@ let[@inline] meet_row_like :
      ~is_empty_map_known ~get_singleton_map_known ~merge_map_known
      ~meet_expanded_head initial_env ~known1 ~known2 ~other1 ~other2 ->
   let common_scope, base_env = ME.enter_scope initial_env in
-  (* Keep track of the variables used by all extensions and lift them to the
-     result env in [extract_and_join_extensions]. *)
-  let extra_variables = ref Variable.Map.empty in
-  let add_extra_variables_and_extract_extension scoped_env =
-    let level = TE.cut scoped_env ~cut_after:common_scope in
-    extra_variables
-      := Variable.Map.union_total_shared
-           (fun var k1 k2 ->
-             if not (K.equal k1 k2)
-             then Misc.fatal_errorf "Different kinds for %a" Variable.print var;
-             k1)
-           !extra_variables
-           (TEL.defined_variables_with_kinds level);
-    TEE.from_map (TEL.equations level)
-  in
-  let extract_and_join_extensions scoped_envs =
-    (* We add the extra variables after the join, because some of the extra
-       variables could appear in one of the [scoped_envs] and the join expects
-       that variables defined in the central env are defined in all the joined
-       envs. *)
-    let result_env =
-      match scoped_envs with
-      | [scoped_env] ->
-        add_extra_variables_and_extract_extension scoped_env
-        |> ME.add_env_extension initial_env ~meet_expanded_head
-      | _ ->
-        (* We used to compute a full join of the different environments here,
-           but we didn't actually get much useful information out of it in
-           practice.
-
-           We still need to do a join of the aliases, as otherwise we lose
-           information when simplifying projections on variants (i.e. values
-           that can have multiple tags), which is done by computing a [meet]
-           with a variant type.
-
-           The join of aliases is simpler than a full join, and the reduction in
-           complexity from not calling the join from the meet is nice. *)
-        cut_and_n_way_join_aliases scoped_envs ~cut_after:common_scope
-        |> ME.add_env_extension initial_env ~meet_expanded_head
-    in
-    Variable.Map.fold
-      (fun var kind env ->
-        ME.add_definition env
-          (Bound_name.create_var
-             (* Variables with [Name_mode.in_types] do not exist at runtime, so
-                we do not equip them with a [Flambda_debug_uid.t]. See #3967. *)
-             (Bound_var.create var Flambda_debug_uid.none Name_mode.in_types))
-          kind)
-      !extra_variables result_env
+  let extract_extension scoped_env =
+    TE.cut_as_extension scoped_env ~cut_after:common_scope
   in
   let open struct
     type result_env =
@@ -670,9 +601,7 @@ let[@inline] meet_row_like :
             extract_value maps_to_result case1.maps_to case2.maps_to
           in
           let env_extension =
-            if need_join
-            then add_extra_variables_and_extract_extension env
-            else TEE.empty
+            if need_join then extract_extension env else TEE.empty
           in
           if TEE.is_empty env_extension
           then ()
@@ -803,10 +732,27 @@ let[@inline] meet_row_like :
       match !result_env with
       | No_result -> Bottom
       | Initial_env -> Ok initial_env
-      | Extension scoped_envs ->
+      | Extension scoped_envs -> (
         (* We used add_env_extension_strict here before, but we don't expect to
            get bottom equations from joining non-bottom ones. *)
-        Ok (extract_and_join_extensions scoped_envs)
+        match scoped_envs with
+        | [scoped_env] ->
+          extract_extension scoped_env
+          |> ME.add_env_extension_strict initial_env ~meet_expanded_head
+        | _ ->
+          (* We used to compute a full join of the different environments here,
+             but we didn't actually get much useful information out of it in
+             practice.
+
+             We still need to do a join of the aliases, as otherwise we lose
+             information when simplifying projections on variants (i.e. values
+             that can have multiple tags), which is done by computing a [meet]
+             with a variant type.
+
+             The join of aliases is simpler than a full join, and the reduction
+             in complexity from not calling the join from the meet is nice. *)
+          cut_and_n_way_join_aliases scoped_envs ~cut_after:common_scope
+          |> ME.add_env_extension_strict initial_env ~meet_expanded_head)
     in
     let match_with_input v =
       match !result_is_t1, !result_is_t2 with

@@ -2117,35 +2117,6 @@ module Analysis = struct
       t.canonical_definitions_at_normal_mode init
 end
 
-let cut_and_n_way_join ~n_way_join_type ~meet_expanded_head ~cut_after
-    source_env source_tenv joined_envs =
-  let joined_envs, equations_to_join, symbol_projections_to_join =
-    Index.fold_list
-      (fun index typing_env
-           ((joined_envs, equations_to_join, symbol_projections_to_join) as acc)
-         ->
-        (* Skip bottom environments -- we should have detected the impossibility
-           and replaced them with an invalid earlier, but if we did not, they
-           won't bring anything but subtleties to the join. *)
-        if TE.is_bottom typing_env
-        then acc
-        else
-          let equations, symbol_projections =
-            cut_for_join typing_env ~cut_after
-          in
-          ( Index.Map.add index typing_env joined_envs,
-            Index.Map.add index (typing_env, equations) equations_to_join,
-            Index.Map.add index symbol_projections symbol_projections_to_join ))
-      joined_envs
-      (Index.Map.empty, Index.Map.empty, Index.Map.empty)
-  in
-  let target_env, _ =
-    cut_and_n_way_join0 ~n_way_join_type ~meet_expanded_head ~cut_after
-      source_env source_tenv joined_envs equations_to_join
-      symbol_projections_to_join
-  in
-  target_env
-
 let cut_and_n_way_join_with_analysis ~n_way_join_type ~meet_expanded_head
     ~cut_after source_tenv joined_envs =
   let external_ids, joined_envs, equations_to_join, symbol_projections_to_join =
