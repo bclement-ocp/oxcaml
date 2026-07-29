@@ -400,15 +400,14 @@ let add_equations_on_params t ~params ~param_types ~meet_expanded_head =
     param_types
 
 let[@inline] enter_scope env =
-  let tenv = env.typing_env in
-  let current_scope = TE.current_scope tenv in
+  let current_scope = TE.current_scope env.typing_env in
   let env =
-    { typing_env = TE.increment_scope tenv;
+    { typing_env = TE.increment_scope env.typing_env;
       adding_equations_for_names = env.adding_equations_for_names;
       delayed_equations = []
     }
   in
-  current_scope, tenv, env
+  current_scope, env
 
 let add_definition env bound_name kind =
   map_typing_env env ~f:(fun env -> TE.add_definition env bound_name kind)

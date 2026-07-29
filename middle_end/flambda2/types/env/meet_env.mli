@@ -139,11 +139,8 @@ val final_typing_env_strict :
     such as those introduced by env extensions.
 
     Returns a [Scope.t] that can be used to [cut] the [final_typing_env] inside
-    the scope, and the current version of the typing env outside the scope (that
-    is more precise than the typing environment initially passed to [create] or
-    [use_meet_env], but might be less precise than the result of calling
-    [final_typing_env]). *)
-val enter_scope : t -> Scope.t * Typing_env.t * t
+    the scope. *)
+val enter_scope : t -> Scope.t * t
 
 val add_variable_definition :
   t -> Variable.t -> Flambda_kind.t -> Name_mode.t -> t

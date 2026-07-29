@@ -253,9 +253,9 @@ type ext =
       }
 
 let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
-    ~meet_expanded_head ~join_env_extension initial_env val_a1 val_b1
-    extensions1 val_a2 val_b2 extensions2 =
-  let join_scope, initial_tenv, env = ME.enter_scope initial_env in
+    ~meet_expanded_head initial_env val_a1 val_b1 extensions1 val_a2 val_b2
+    extensions2 =
+  let join_scope, env = ME.enter_scope initial_env in
   let to_extension scoped_env =
     TE.cut_as_extension scoped_env ~cut_after:join_scope
   in
@@ -367,19 +367,7 @@ let[@inline] meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
     in
     (* We used to compute a join of [when_a] and [when_b] here, but we didn't
        actually get any useful information out of it in practice. *)
-    if Flambda_features.no_join_extensions_in_meet ()
-    then Ok (result, initial_env)
-    else
-      let join_env =
-        Join_env.create initial_tenv ~left_env:env_a ~right_env:env_b
-      in
-      let result_extension = join_env_extension join_env when_a when_b in
-      let result_env =
-        (* Not strict, as we don't expect to be able to get bottom equations
-           from joining non-bottom ones *)
-        ME.add_env_extension initial_env result_extension ~meet_expanded_head
-      in
-      Ok (result, result_env)
+    Ok (result, initial_env)
 
 module Shared_canonicals_map = Map.Make (struct
   type t = Simple.t Numeric_types.Int.Map.t
@@ -471,7 +459,6 @@ let[@inline] meet_row_like :
       'known ->
       'known ->
       'known) ->
-    join_env_extension:(Join_env.t -> TEE.t -> TEE.t -> TEE.t) ->
     meet_expanded_head:(ME.t -> ET.t -> ET.t -> ET.t meet_result) ->
     ME.t ->
     known1:'known ->
@@ -482,16 +469,15 @@ let[@inline] meet_row_like :
     meet_result =
  fun ~meet_maps_to ~equal_index ~subset_index ~union_index ~meet_shape
      ~is_empty_map_known ~get_singleton_map_known ~merge_map_known
-     ~join_env_extension ~meet_expanded_head initial_env ~known1 ~known2 ~other1
-     ~other2 ->
-  let common_scope, _initial_tenv, base_env = ME.enter_scope initial_env in
-  let base_tenv = ME.final_typing_env ~meet_expanded_head base_env in
+     ~meet_expanded_head initial_env ~known1 ~known2 ~other1 ~other2 ->
+  let common_scope, base_env = ME.enter_scope initial_env in
   let extract_extension scoped_env =
     TE.cut_as_extension scoped_env ~cut_after:common_scope
   in
   let open struct
     type result_env =
       | No_result
+      | Initial_env
       | Extension of TE.t list
   end in
   let result_env = ref No_result in
@@ -539,10 +525,12 @@ let[@inline] meet_row_like :
     let new_result_env =
       match !result_env with
       | No_result -> Extension [scoped_env]
+      | Initial_env -> Initial_env
       | Extension scoped_envs -> Extension (scoped_env :: scoped_envs)
     in
     result_env := new_result_env
   in
+  let result_env_is_initial_env () = result_env := Initial_env in
   let meet_index env (i1 : ('lattice, 'shape) TG.row_like_index)
       (i2 : ('lattice, 'shape) TG.row_like_index) :
       ('lattice, 'shape) TG.row_like_index meet_result =
@@ -688,7 +676,9 @@ let[@inline] meet_row_like :
     | Some case1, Some case2 -> (
       match case1, case2 with
       | Unknown, Unknown ->
-        join_result_env base_tenv;
+        (* If there is a case where we don't know anything, we are never going
+           to learn anything from the join -- don't even bother trying. *)
+        result_env_is_initial_env ();
         Some Unknown
       | Known case, Unknown -> (
         match
@@ -744,40 +734,25 @@ let[@inline] meet_row_like :
     let env : _ Or_bottom.t =
       match !result_env with
       | No_result -> Bottom
+      | Initial_env -> Ok initial_env
       | Extension scoped_envs -> (
         match scoped_envs with
         | [] -> Bottom
         | [scoped_env] ->
           extract_extension scoped_env
           |> ME.add_env_extension_strict initial_env ~meet_expanded_head
-        | scoped_env :: (_ :: _ as scoped_envs) ->
+        | _ ->
           assert need_join;
-          if Flambda_features.no_join_extensions_in_meet ()
-          then
-            (* We used to compute a full join of the different environments
-               here, but we didn't actually get much useful information out of
-               it in practice.
+          (* We used to compute a full join of the different environments here,
+             but we didn't actually get much useful information out of it in
+             practice.
 
-               We still need to do a join of the aliases, as otherwise we lose
-               information when simplifying projections on variants (i.e. values
-               that can have multiple tags), which is done by computing a [meet]
-               with a variant type. *)
-            cut_and_n_way_join_aliases ~cut_after:common_scope scoped_envs
-            |> ME.add_env_extension_strict initial_env ~meet_expanded_head
-          else
-            let ext =
-              let ext1 = extract_extension scoped_env in
-              List.fold_left
-                (fun ext1 scoped_env ->
-                  let ext2 = extract_extension scoped_env in
-                  let join_env =
-                    Join_env.create base_tenv ~left_env:base_tenv
-                      ~right_env:scoped_env
-                  in
-                  join_env_extension join_env ext1 ext2)
-                ext1 scoped_envs
-            in
-            ME.add_env_extension_strict initial_env ext ~meet_expanded_head)
+             We still need to do a join of the aliases, as otherwise we lose
+             information when simplifying projections on variants (i.e. values
+             that can have multiple tags), which is done by computing a [meet]
+             with a variant type. *)
+          cut_and_n_way_join_aliases ~cut_after:common_scope scoped_envs
+          |> ME.add_env_extension_strict initial_env ~meet_expanded_head)
     in
     let match_with_input v =
       match !result_is_t1, !result_is_t2 with
@@ -1094,8 +1069,7 @@ and meet_head_of_kind_value env
     ~f:(fun (non_null, is_null, _extensions) : TG.head_of_kind_value ->
       { non_null; is_null })
     (meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b ~meet_expanded_head
-       ~join_env_extension env non_null1 is_null1 No_extensions non_null2
-       is_null2 No_extensions)
+       env non_null1 is_null1 No_extensions non_null2 is_null2 No_extensions)
 
 and meet_head_of_kind_value_non_null env
     (head1 : TG.head_of_kind_value_non_null)
@@ -1423,8 +1397,8 @@ and meet_variant env ~(is_int1 : Variable.t option)
         ~f:(fun (imms, (get_tag, blocks), extensions) ->
           get_tag, blocks, imms, extensions)
         (meet_disjunction ~meet_a ~meet_b ~bottom_a ~bottom_b
-           ~meet_expanded_head ~join_env_extension env imms1 (get_tag1, blocks1)
-           extensions1 imms2 (get_tag2, blocks2) extensions2))
+           ~meet_expanded_head env imms1 (get_tag1, blocks1) extensions1 imms2
+           (get_tag2, blocks2) extensions2))
     ~left_a:is_int1 ~right_a:is_int2
     ~left_b:(get_tag1, blocks1, imms1, extensions1)
     ~right_b:(get_tag2, blocks2, imms2, extensions2)
@@ -1671,12 +1645,11 @@ and meet_row_like_for_blocks env
     ~rebuild:(fun (known_tags, other_tags) alloc_mode ->
       TG.Row_like_for_blocks.create_raw ~known_tags ~other_tags ~alloc_mode)
     ~meet_a:(fun env (known1, other1) (known2, other2) ->
-      meet_row_like ~meet_expanded_head ~join_env_extension
-        ~meet_maps_to:meet_int_indexed_product ~equal_index:TG.Block_size.equal
-        ~subset_index:TG.Block_size.subset ~union_index:TG.Block_size.union
-        ~meet_shape ~is_empty_map_known:Tag.Map.is_empty
-        ~get_singleton_map_known ~merge_map_known:Tag.Map.merge env ~known1
-        ~known2 ~other1 ~other2)
+      meet_row_like ~meet_expanded_head ~meet_maps_to:meet_int_indexed_product
+        ~equal_index:TG.Block_size.equal ~subset_index:TG.Block_size.subset
+        ~union_index:TG.Block_size.union ~meet_shape
+        ~is_empty_map_known:Tag.Map.is_empty ~get_singleton_map_known
+        ~merge_map_known:Tag.Map.merge env ~known1 ~known2 ~other1 ~other2)
     ~meet_b:meet_alloc_mode ~left_a:(known1, other1) ~right_a:(known2, other2)
     ~left_b:alloc_mode1 ~right_b:alloc_mode2
 
@@ -1701,8 +1674,7 @@ and meet_row_like_for_closures env
   map_result
     ~f:(fun (known_closures, other_closures) ->
       TG.Row_like_for_closures.create_raw ~known_closures ~other_closures)
-    (meet_row_like ~meet_expanded_head ~join_env_extension
-       ~meet_maps_to:meet_closures_entry
+    (meet_row_like ~meet_expanded_head ~meet_maps_to:meet_closures_entry
        ~equal_index:Set_of_closures_contents.equal
        ~subset_index:Set_of_closures_contents.subset
        ~union_index:Set_of_closures_contents.union ~meet_shape
