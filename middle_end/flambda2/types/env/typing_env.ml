@@ -1086,8 +1086,6 @@ module Serializable : sig
 
   val print : Format.formatter -> t -> unit
 
-  val name_domain : t -> Name.Set.t
-
   val ids_for_export : t -> Ids_for_export.t
 
   val apply_renaming : t -> Renaming.t -> t
@@ -1183,12 +1181,6 @@ end = struct
       names_to_types from_projections
 
   let print = print_serializable
-
-  let name_domain t =
-    List.fold_left
-      (fun name_domain symbol -> Name.Set.add (Name.symbol symbol) name_domain)
-      (Name.Map.keys t.names_to_types)
-      t.defined_symbols_without_equations
 
   let ids_for_export
       { defined_symbols_without_equations;
