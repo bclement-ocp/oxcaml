@@ -105,6 +105,8 @@ module Map_with_delayed_renaming (T : sig
   include Container_types.S
 
   val apply_renaming : t -> Renaming.t -> t
+
+  val apply_renaming_backwards : t -> Renaming.t -> t
 end) : sig
   type 'descr t
 
@@ -191,26 +193,26 @@ end = struct
       in
       { not_yet_renamed; already_renamed; delayed_renaming }
 
-  let find_or_null ~apply_renaming_descr key t =
+  let find_or_null ~apply_renaming_descr new_key t =
     let already_renamed = t.already_renamed in
-    match T.Map.find_or_null key already_renamed with
+    match T.Map.find_or_null new_key already_renamed with
     | This descr -> Or_null.this descr
     | Null -> (
+      let delayed_renaming = t.delayed_renaming in
       let not_yet_renamed = t.not_yet_renamed in
-      match T.Map.find_or_null key not_yet_renamed with
+      let old_key = T.apply_renaming_backwards new_key delayed_renaming in
+      match T.Map.find_or_null old_key not_yet_renamed with
       | Null -> Or_null.null
-      | This descr ->
-        let delayed_renaming = t.delayed_renaming in
-        let key' = T.apply_renaming key delayed_renaming in
-        let descr' = apply_renaming_descr descr delayed_renaming in
-        let not_yet_renamed' = T.Map.remove key not_yet_renamed in
-        let already_renamed' = T.Map.add key' descr' already_renamed in
+      | This old_descr ->
+        let new_descr = apply_renaming_descr old_descr delayed_renaming in
+        let not_yet_renamed' = T.Map.remove old_key not_yet_renamed in
+        let already_renamed' = T.Map.add new_key new_descr already_renamed in
         (* Maintain type invariant *)
         if T.Map.is_empty not_yet_renamed'
         then t.delayed_renaming <- Renaming.empty;
         t.not_yet_renamed <- not_yet_renamed';
         t.already_renamed <- already_renamed';
-        Or_null.this descr')
+        Or_null.this new_descr)
 
   let[@inline] descr ~apply_renaming_descr
       ({ not_yet_renamed; already_renamed; delayed_renaming } as t) =
@@ -236,6 +238,9 @@ module Name_map_with_delayed_renaming = Map_with_delayed_renaming (struct
   include Name
 
   let apply_renaming name renaming = Renaming.apply_name renaming name
+
+  let apply_renaming_backwards name renaming =
+    Renaming.apply_name_backwards renaming name
 end)
 
 type t =

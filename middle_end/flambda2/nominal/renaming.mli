@@ -58,6 +58,8 @@ val add_fresh_variable : t -> Variable.t -> guaranteed_fresh:Variable.t -> t
 
 val apply_variable : t -> Variable.t -> Variable.t
 
+val apply_variable_backwards : t -> Variable.t -> Variable.t
+
 val apply_variable_set : t -> Variable.Set.t -> Variable.Set.t
 
 val add_symbol : t -> Symbol.t -> Symbol.t -> t
@@ -66,9 +68,13 @@ val add_fresh_symbol : t -> Symbol.t -> guaranteed_fresh:Symbol.t -> t
 
 val apply_symbol : t -> Symbol.t -> Symbol.t
 
+val apply_symbol_backwards : t -> Symbol.t -> Symbol.t
+
 val apply_symbol_set : t -> Symbol.Set.t -> Symbol.Set.t
 
 val apply_name : t -> Name.t -> Name.t
+
+val apply_name_backwards : t -> Name.t -> Name.t
 
 val add_continuation : t -> Continuation.t -> Continuation.t -> t
 

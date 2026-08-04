@@ -27,6 +27,8 @@ module Make (N : Container_types.S) : sig
 
   val apply : t -> N.t -> N.t
 
+  val apply_backwards : t -> N.t -> N.t
+
   val compose_one : first:t -> N.t -> N.t -> t
 
   val compose_one_fresh : t -> N.t -> fresh:N.t -> t

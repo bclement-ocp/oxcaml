@@ -40,7 +40,11 @@ module Import_map : sig
 
   val variable : t -> Variable.t -> Variable.t
 
+  val variable_backwards : t -> Variable.t -> Variable.t
+
   val symbol : t -> Symbol.t -> Symbol.t
+
+  val symbol_backwards : t -> Symbol.t -> Symbol.t
 
   val simple : t -> Simple.t -> Simple.t
 
@@ -52,7 +56,9 @@ module Import_map : sig
 end = struct
   type t =
     { symbols : Symbol.t Symbol.Map.t;
+      inverse_symbols : Symbol.t Symbol.Map.t;
       variables : Variable.t Variable.Map.t;
+      inverse_variables : Variable.t Variable.Map.t;
       simples : Simple.t Simple.Map.t;
       consts : Const.t Const.Map.t;
       code_ids : Code_id.t Code_id.Map.t;
@@ -81,7 +87,17 @@ end = struct
   let create ~symbols ~variables ~simples ~consts ~code_ids ~continuations
       ~used_value_slots ~original_compilation_unit =
     { symbols;
+      inverse_symbols =
+        Symbol.Map.fold
+          (fun old_symbol new_symbol inverse_symbols ->
+            Symbol.Map.add new_symbol old_symbol inverse_symbols)
+          symbols Symbol.Map.empty;
       variables;
+      inverse_variables =
+        Variable.Map.fold
+          (fun old_variable new_variable inverse_variables ->
+            Variable.Map.add new_variable old_variable inverse_variables)
+          variables Variable.Map.empty;
       simples;
       consts;
       code_ids;
@@ -95,7 +111,13 @@ end = struct
 
   let symbol t orig = rename t.symbols orig ~find:Symbol.Map.find
 
+  let symbol_backwards t renamed =
+    rename t.inverse_symbols renamed ~find:Symbol.Map.find
+
   let variable t orig = rename t.variables orig ~find:Variable.Map.find
+
+  let variable_backwards t renamed =
+    rename t.inverse_variables renamed ~find:Variable.Map.find
 
   let const t orig = rename t.consts orig ~find:Const.Map.find
 
@@ -228,6 +250,12 @@ let apply_variable t var =
   in
   Variables.apply t.variables var
 
+let apply_variable_backwards t var =
+  let var = Variables.apply_backwards t.variables var in
+  match t.import_map with
+  | None -> var
+  | Some import_map -> Import_map.variable_backwards import_map var
+
 let apply_variable_set t vars =
   Variable.Set.fold
     (fun var result ->
@@ -251,6 +279,12 @@ let apply_symbol t symbol =
   in
   Symbols.apply t.symbols symbol
 
+let apply_symbol_backwards t symbol =
+  let symbol = Symbols.apply_backwards t.symbols symbol in
+  match t.import_map with
+  | None -> symbol
+  | Some import_map -> Import_map.symbol_backwards import_map symbol
+
 let apply_symbol_set t symbols =
   Symbol.Set.fold
     (fun symbol result ->
@@ -262,6 +296,11 @@ let apply_name t name =
   Name.pattern_match name
     ~var:(fun var -> Name.var (apply_variable t var))
     ~symbol:(fun symbol -> Name.symbol (apply_symbol t symbol))
+
+let apply_name_backwards t name =
+  Name.pattern_match name
+    ~var:(fun var -> Name.var (apply_variable_backwards t var))
+    ~symbol:(fun symbol -> Name.symbol (apply_symbol_backwards t symbol))
 
 let add_continuation t k1 k2 =
   { t with
