@@ -111,20 +111,20 @@ end) : sig
   val create : 'descr T.Map.t -> 'descr t
 
   val apply_renaming :
+    apply_renaming_descr:('descr -> Renaming.t -> 'descr) ->
     'descr t ->
     Renaming.t ->
-    apply_renaming_descr:('descr -> Renaming.t -> 'descr) ->
     'descr t
 
   val find_or_null :
+    apply_renaming_descr:('descr -> Renaming.t -> 'descr) ->
     T.t ->
     'descr t ->
-    apply_renaming_descr:('descr -> Renaming.t -> 'descr) ->
     'descr Or_null.t
 
   val descr :
-    'descr t ->
     apply_renaming_descr:('descr -> Renaming.t -> 'descr) ->
+    'descr t ->
     'descr T.Map.t
 end = struct
   type 'descr t =
@@ -132,72 +132,103 @@ end = struct
       mutable already_renamed : 'descr T.Map.t;
       mutable delayed_renaming : Renaming.t
     }
+  (* If the [delayed_renaming] is the identity, the two maps [not_yet_renamed]
+     and [already_renamed] live in the same environment and are interchangeable.
+     In this case, we make [not_yet_renamed] empty and store everything in
+     [already_renamed] so that the common case of looking up something that is
+     in the map is just a single lookup in that map (see [find_or_null]).
 
-  let create not_yet_renamed =
-    { not_yet_renamed;
-      already_renamed = T.Map.empty;
+     Conversely, if [not_yet_renamed] is empty, there is nothing to rename, and
+     we can set the [delayed_renaming] to be the identity.
+
+     This suggests maintaining the following type invariant:
+
+     - Either there is *something* to rename and both [not_yet_renamed] and
+     [delayed_renaming] are non-empty, or
+
+     - The map is fully renamed and both [not_yet_renamed] and
+     [delayed_renaming] are empty. *)
+
+  let create already_renamed =
+    { not_yet_renamed = T.Map.empty;
+      already_renamed;
       delayed_renaming = Renaming.empty
     }
 
-  let apply_renaming t renaming ~apply_renaming_descr =
-    let delayed_renaming =
-      Renaming.compose ~second:renaming ~first:t.delayed_renaming
-    in
-    let already_renamed =
-      T.Map.fold
-        (fun key descr acc ->
-          let key' = T.apply_renaming key renaming in
-          let descr' = apply_renaming_descr descr renaming in
-          T.Map.add key' descr' acc)
-        t.already_renamed T.Map.empty
-    in
-    { t with already_renamed; delayed_renaming }
+  let apply_renaming ~apply_renaming_descr
+      ({ delayed_renaming; not_yet_renamed; already_renamed } as t) renaming =
+    if
+      Renaming.is_identity renaming
+      || (T.Map.is_empty already_renamed && T.Map.is_empty not_yet_renamed)
+    then t
+    else if
+      (* Note: the check [T.Map.is_empty not_yet_renamed] should be unnecessary
+         according to the type invariant, but it's cheap and since the only
+         impact from breaking the invariant would be performance regressions,
+         it's safer to test it here. *)
+      Renaming.is_identity delayed_renaming || T.Map.is_empty not_yet_renamed
+    then
+      { not_yet_renamed = T.Map.disjoint_union not_yet_renamed already_renamed;
+        already_renamed = T.Map.empty;
+        delayed_renaming = renaming
+      }
+    else
+      (* We already have a non-identity renaming, and trying to compose a second
+         one on top. This should not happen in practice (we only rename typing
+         envs once, during import), so it is fine to be inefficient and just
+         apply the new renaming to anything that already had the old one
+         applied. *)
+      let delayed_renaming =
+        Renaming.compose ~second:renaming ~first:delayed_renaming
+      in
+      let already_renamed =
+        T.Map.fold
+          (fun key descr acc ->
+            let key' = T.apply_renaming key renaming in
+            let descr' = apply_renaming_descr descr renaming in
+            T.Map.add key' descr' acc)
+          already_renamed T.Map.empty
+      in
+      { not_yet_renamed; already_renamed; delayed_renaming }
 
-  let find_or_null key t ~apply_renaming_descr =
-    match T.Map.find_or_null key t.already_renamed with
+  let find_or_null ~apply_renaming_descr key t =
+    let already_renamed = t.already_renamed in
+    match T.Map.find_or_null key already_renamed with
     | This descr -> Or_null.this descr
     | Null -> (
-      if Renaming.is_identity t.delayed_renaming
-      then T.Map.find_or_null key t.not_yet_renamed
-      else
-        match T.Map.find_or_null key t.not_yet_renamed with
-        | Null -> Or_null.null
-        | This descr ->
-          let descr' = apply_renaming_descr descr t.delayed_renaming in
-          let key' = T.apply_renaming key t.delayed_renaming in
-          t.not_yet_renamed <- T.Map.remove key t.not_yet_renamed;
-          t.already_renamed <- T.Map.add key' descr' t.already_renamed;
-          Or_null.this descr')
+      let not_yet_renamed = t.not_yet_renamed in
+      match T.Map.find_or_null key not_yet_renamed with
+      | Null -> Or_null.null
+      | This descr ->
+        let delayed_renaming = t.delayed_renaming in
+        let key' = T.apply_renaming key delayed_renaming in
+        let descr' = apply_renaming_descr descr delayed_renaming in
+        let not_yet_renamed' = T.Map.remove key not_yet_renamed in
+        let already_renamed' = T.Map.add key' descr' already_renamed in
+        (* Maintain type invariant *)
+        if T.Map.is_empty not_yet_renamed'
+        then t.delayed_renaming <- Renaming.empty;
+        t.not_yet_renamed <- not_yet_renamed';
+        t.already_renamed <- already_renamed';
+        Or_null.this descr')
 
-  let[@inline] descr t ~apply_renaming_descr =
-    let delayed_renaming = t.delayed_renaming in
-    let not_yet_renamed = t.not_yet_renamed in
-    if Renaming.is_identity delayed_renaming
-    then (
-      if T.Map.is_empty not_yet_renamed
-      then t.already_renamed
-      else
-        let already_renamed =
-          T.Map.disjoint_union t.already_renamed not_yet_renamed
-        in
-        t.already_renamed <- already_renamed;
-        t.not_yet_renamed <- T.Map.empty;
-        already_renamed)
-    else (
+  let[@inline] descr ~apply_renaming_descr
+      ({ not_yet_renamed; already_renamed; delayed_renaming } as t) =
+    if T.Map.is_empty not_yet_renamed
+    then already_renamed
+    else
+      let result =
+        T.Map.fold
+          (fun key descr already_renamed ->
+            let key' = T.apply_renaming key delayed_renaming in
+            let descr' = apply_renaming_descr descr delayed_renaming in
+            T.Map.add key' descr' already_renamed)
+          not_yet_renamed already_renamed
+      in
       t.delayed_renaming <- Renaming.empty;
-      if T.Map.is_empty not_yet_renamed
-      then t.already_renamed
-      else
-        let already_renamed =
-          T.Map.fold
-            (fun key descr already_renamed ->
-              let key' = T.apply_renaming key delayed_renaming in
-              let descr' = apply_renaming_descr descr delayed_renaming in
-              T.Map.add key' descr' already_renamed)
-            not_yet_renamed t.already_renamed
-        in
-        t.already_renamed <- already_renamed;
-        already_renamed)
+      t.not_yet_renamed <- T.Map.empty;
+      t.already_renamed <- result;
+      result
 end
 [@@inline]
 
