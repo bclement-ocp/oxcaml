@@ -35,26 +35,31 @@ let load_cmx_file_contents loader comp_unit =
   in
   match Imported_unit_map.find cmx_file loader.imported_units with
   | typing_env_or_none -> typing_env_or_none
-  | exception Not_found -> (
-    match loader.get_module_info accessible_comp_unit with
-    | None ->
-      (* To make things easier to think about, we never retry after a .cmx load
-         fails. *)
-      loader.imported_units
-        <- Imported_unit_map.add cmx_file None loader.imported_units;
-      None
-    | Some cmx ->
-      Profile.record_call ~accumulate:true "load_cmx" (fun () ->
+  | exception Not_found ->
+    Profile.record_call ~accumulate:true "load_cmx" (fun () ->
+        match loader.get_module_info accessible_comp_unit with
+        | None ->
+          (* To make things easier to think about, we never retry after a .cmx
+             load fails. *)
+          loader.imported_units
+            <- Imported_unit_map.add cmx_file None loader.imported_units;
+          None
+        | Some cmx ->
           let typing_env, all_code =
             Flambda_cmx_format.import_typing_env_and_code cmx
           in
-          loader.imported_code <- EC.merge all_code loader.imported_code;
-          let offsets = Flambda_cmx_format.exported_offsets cmx in
-          Exported_offsets.import_offsets offsets;
-          loader.imported_units
-            <- Imported_unit_map.add cmx_file (Some typing_env)
-                 loader.imported_units;
-          Some typing_env))
+          Profile.record_call ~accumulate:true "exported_code_merge" (fun () ->
+              loader.imported_code <- EC.merge all_code loader.imported_code;
+              let offsets =
+                Profile.record_call ~accumulate:true "exported_offsets"
+                  (fun () -> Flambda_cmx_format.exported_offsets cmx)
+              in
+              Profile.record_call ~accumulate:true "import_offsets" (fun () ->
+                  Exported_offsets.import_offsets offsets);
+              loader.imported_units
+                <- Imported_unit_map.add cmx_file (Some typing_env)
+                     loader.imported_units;
+              Some typing_env))
 
 let load_symbol_approx loader symbol : Code_or_metadata.t Value_approximation.t
     =
