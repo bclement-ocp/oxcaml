@@ -109,16 +109,16 @@ end = struct
 
   type t =
     { import_data : In_original_compilation_unit.serializable;
-      imported_with_renaming :
+      original_to_current :
         In_current_compilation_unit.t In_original_compilation_unit.Map.t;
-      name_before_renaming :
+      current_to_original :
         In_original_compilation_unit.t In_current_compilation_unit.Map.t
     }
 
   let import import_data =
     { import_data = In_original_compilation_unit.import_table import_data;
-      imported_with_renaming = In_original_compilation_unit.Map.empty;
-      name_before_renaming = In_current_compilation_unit.Map.empty
+      original_to_current = In_original_compilation_unit.Map.empty;
+      current_to_original = In_current_compilation_unit.Map.empty
     }
 
   let find_data t n =
@@ -127,36 +127,35 @@ end = struct
 
   let apply t n =
     match
-      In_original_compilation_unit.Map.find_or_null n t.imported_with_renaming
+      In_original_compilation_unit.Map.find_or_null n t.original_to_current
     with
     | This n -> n
     | Null -> In_current_compilation_unit.import (find_data t n)
 
   let apply_backwards t n =
-    try In_current_compilation_unit.Map.find n t.name_before_renaming
+    try In_current_compilation_unit.Map.find n t.current_to_original
     with Not_found ->
       In_original_compilation_unit.Serializable.add t.import_data
         (In_current_compilation_unit.export n)
 
   let import_and_bind t n1 =
     let n2 = In_current_compilation_unit.import_and_rename (find_data t n1) in
-    let imported_with_renaming, name_before_renaming =
+    let original_to_current, current_to_original =
       match
-        In_original_compilation_unit.Map.find_or_null n1
-          t.imported_with_renaming
+        In_original_compilation_unit.Map.find_or_null n1 t.original_to_current
       with
-      | Null -> t.imported_with_renaming, t.name_before_renaming
+      | Null -> t.original_to_current, t.current_to_original
       | This n3 ->
-        ( In_original_compilation_unit.Map.remove n1 t.imported_with_renaming,
-          In_current_compilation_unit.Map.remove n3 t.name_before_renaming )
+        ( In_original_compilation_unit.Map.remove n1 t.original_to_current,
+          In_current_compilation_unit.Map.remove n3 t.current_to_original )
     in
-    let imported_with_renaming =
-      In_original_compilation_unit.Map.add n1 n2 imported_with_renaming
+    let original_to_current =
+      In_original_compilation_unit.Map.add n1 n2 original_to_current
     in
-    let name_before_renaming =
-      In_current_compilation_unit.Map.add n2 n1 name_before_renaming
+    let current_to_original =
+      In_current_compilation_unit.Map.add n2 n1 current_to_original
     in
-    { t with imported_with_renaming; name_before_renaming }, n2
+    { t with original_to_current; current_to_original }, n2
 
   let apply t n =
     let n = apply t (In_original_compilation_unit.create n) in
