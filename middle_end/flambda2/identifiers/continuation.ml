@@ -104,6 +104,10 @@ type t = Id.t
 
 type exported = Data.t
 
+let equal_exported = Data.equal
+
+let hash_exported = Data.hash
+
 module Table = Table_by_int_id.Make (Data)
 
 let grand_table_of_continuations = ref (Table.create ())
@@ -128,6 +132,10 @@ let create ?sort ?name () : t =
   Table.add !grand_table_of_continuations data
 
 let find_data t = Table.find !grand_table_of_continuations t
+
+let import_and_rename data =
+  let { Data.name; sort; name_stamp = _; compilation_unit = _ } = data in
+  create ~sort ~name ()
 
 let rename t =
   let { Data.name; sort; name_stamp = _; compilation_unit = _ } = find_data t in
@@ -175,3 +183,15 @@ module Lmap = Lmap.Make (T)
 let export t = find_data t
 
 let import data = Table.add !grand_table_of_continuations data
+
+type serializable = Table.serializable
+
+module Serializable = struct
+  let create vars =
+    Table.Serializable.create !grand_table_of_continuations ~iter:(fun f ->
+        Set.iter f vars)
+
+  let find = Table.Serializable.find
+
+  let add = Table.Serializable.add
+end

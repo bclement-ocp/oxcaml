@@ -477,6 +477,10 @@ module Variable = struct
 
   type exported = Variable_data.t
 
+  let equal_exported = Variable_data.equal
+
+  let hash_exported = Variable_data.hash
+
   module Table = Table_by_int_id.Make (Variable_data)
 
   let grand_table_of_variables = ref (Table.create ())
@@ -552,6 +556,22 @@ module Variable = struct
   let export t = find_data t
 
   let import (data : exported) = Table.add !grand_table_of_variables data
+
+  let import_and_rename (data : exported) =
+    let user_visible = if data.user_visible then Some () else None in
+    create ?user_visible data.name data.kind
+
+  type serializable = Table.serializable
+
+  module Serializable = struct
+    let create vars =
+      Table.Serializable.create !grand_table_of_variables ~iter:(fun f ->
+          Set.iter f vars)
+
+    let find = Table.Serializable.find
+
+    let add = Table.Serializable.add
+  end
 end
 
 module Symbol = struct

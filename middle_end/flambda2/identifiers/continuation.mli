@@ -20,6 +20,10 @@ type t = private Table_by_int_id.Id.t
 
 type exported
 
+val equal_exported : exported -> exported -> bool
+
+val hash_exported : exported -> int
+
 include Container_types.S with type t := t
 
 module Lmap : Lmap.S with type key := t
@@ -52,6 +56,18 @@ val export : t -> exported
 
 val import : exported -> t
 
+val import_and_rename : exported -> t
+
 val initialise : unit -> unit
 
 val reset : unit -> unit
+
+type serializable
+
+module Serializable : sig
+  val create : Set.t -> serializable
+
+  val find : serializable -> t -> exported
+
+  val add : serializable -> exported -> t
+end

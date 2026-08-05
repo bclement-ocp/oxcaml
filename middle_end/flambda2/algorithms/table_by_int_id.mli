@@ -44,4 +44,14 @@ end) : sig
   val add : t -> E.t -> Id.t
 
   val find : t -> Id.t -> E.t
+
+  type serializable
+
+  module Serializable : sig
+    val create : iter:((Id.t -> unit) -> unit) -> t -> serializable
+
+    val find : serializable -> Id.t -> E.t
+
+    val add : serializable -> E.t -> Id.t
+  end
 end

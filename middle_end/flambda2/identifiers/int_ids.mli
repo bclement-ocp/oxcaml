@@ -111,6 +111,10 @@ module Variable : sig
 
   type exported
 
+  val equal_exported : exported -> exported -> bool
+
+  val hash_exported : exported -> int
+
   include Container_types.S_plus_iterator with type t := t
 
   module Lmap : Lmap.S with type key := t
@@ -130,6 +134,18 @@ module Variable : sig
   val export : t -> exported
 
   val import : exported -> t
+
+  val import_and_rename : exported -> t
+
+  type serializable
+
+  module Serializable : sig
+    val create : Set.t -> serializable
+
+    val find : serializable -> t -> exported
+
+    val add : serializable -> exported -> t
+  end
 end
 
 module Symbol : sig

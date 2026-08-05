@@ -22,16 +22,169 @@ module Coercion = Int_ids.Coercion
 module Const = Reg_width_const
 module Simple = Int_ids.Simple
 
+module Make_importer (N : sig
+  include Container_types.S
+
+  type exported
+
+  val export : t -> exported
+
+  val import : exported -> t
+
+  val import_and_rename : exported -> t
+
+  type serializable
+
+  module Serializable : sig
+    val find : serializable -> t -> exported
+
+    val add : serializable -> exported -> t
+  end
+end) : sig
+  type t
+
+  val import : N.serializable -> t
+
+  val apply : t -> N.t -> N.t
+
+  val apply_backwards : t -> N.t -> N.t
+
+  val import_and_bind : t -> N.t -> t * N.t
+end = struct
+  module In_original_compilation_unit : sig
+    type t = private N.t
+
+    val create : N.t -> t
+
+    module Map : Container_types.Map with type key = t
+
+    type serializable
+
+    val import_table : N.serializable -> serializable
+
+    module Serializable : sig
+      val find : serializable -> t -> N.exported
+
+      val add : serializable -> N.exported -> t
+    end
+  end = struct
+    type t = N.t
+
+    let create t = t
+
+    module Map = N.Map
+
+    type serializable = N.serializable
+
+    let import_table import_data = import_data
+
+    module Serializable = N.Serializable
+  end
+
+  module In_current_compilation_unit : sig
+    type t = private N.t
+
+    val create : N.t -> t
+
+    val export : t -> N.exported
+
+    val import : N.exported -> t
+
+    val import_and_rename : N.exported -> t
+
+    module Map : Container_types.Map with type key = t
+  end = struct
+    type t = N.t
+
+    let create t = t
+
+    let import = N.import
+
+    let export = N.export
+
+    let import_and_rename = N.import_and_rename
+
+    module Map = N.Map
+  end
+
+  type t =
+    { import_data : In_original_compilation_unit.serializable;
+      imported_with_renaming :
+        In_current_compilation_unit.t In_original_compilation_unit.Map.t;
+      name_before_renaming :
+        In_original_compilation_unit.t In_current_compilation_unit.Map.t
+    }
+
+  let import import_data =
+    { import_data = In_original_compilation_unit.import_table import_data;
+      imported_with_renaming = In_original_compilation_unit.Map.empty;
+      name_before_renaming = In_current_compilation_unit.Map.empty
+    }
+
+  let find_data t n =
+    try In_original_compilation_unit.Serializable.find t.import_data n
+    with Not_found -> assert false
+
+  let apply t n =
+    match
+      In_original_compilation_unit.Map.find_or_null n t.imported_with_renaming
+    with
+    | This n -> n
+    | Null -> In_current_compilation_unit.import (find_data t n)
+
+  let apply_backwards t n =
+    try In_current_compilation_unit.Map.find n t.name_before_renaming
+    with Not_found ->
+      In_original_compilation_unit.Serializable.add t.import_data
+        (In_current_compilation_unit.export n)
+
+  let import_and_bind t n1 =
+    let n2 = In_current_compilation_unit.import_and_rename (find_data t n1) in
+    let imported_with_renaming, name_before_renaming =
+      match
+        In_original_compilation_unit.Map.find_or_null n1
+          t.imported_with_renaming
+      with
+      | Null -> t.imported_with_renaming, t.name_before_renaming
+      | This n3 ->
+        ( In_original_compilation_unit.Map.remove n1 t.imported_with_renaming,
+          In_current_compilation_unit.Map.remove n3 t.name_before_renaming )
+    in
+    let imported_with_renaming =
+      In_original_compilation_unit.Map.add n1 n2 imported_with_renaming
+    in
+    let name_before_renaming =
+      In_current_compilation_unit.Map.add n2 n1 name_before_renaming
+    in
+    { t with imported_with_renaming; name_before_renaming }, n2
+
+  let apply t n =
+    let n = apply t (In_original_compilation_unit.create n) in
+    (n : In_current_compilation_unit.t :> N.t)
+
+  let apply_backwards t n =
+    let n = apply_backwards t (In_current_compilation_unit.create n) in
+    (n : In_original_compilation_unit.t :> N.t)
+
+  let import_and_bind t n =
+    let t, n = import_and_bind t (In_original_compilation_unit.create n) in
+    t, (n : In_current_compilation_unit.t :> N.t)
+end
+[@@inline]
+
+module Variable_importer = Make_importer (Variable)
+module Continuation_importer = Make_importer (Continuation)
+
 module Import_map : sig
   type t
 
   val create :
     symbols:Symbol.t Symbol.Map.t ->
-    variables:Variable.t Variable.Map.t ->
+    variables:Variable.serializable ->
     simples:Simple.t Simple.Map.t ->
     consts:Const.t Const.Map.t ->
     code_ids:Code_id.t Code_id.Map.t ->
-    continuations:Continuation.t Continuation.Map.t ->
+    continuations:Continuation.serializable ->
     used_value_slots:Value_slot.Set.t ->
     original_compilation_unit:Compilation_unit.t ->
     t
@@ -41,6 +194,8 @@ module Import_map : sig
   val variable : t -> Variable.t -> Variable.t
 
   val variable_backwards : t -> Variable.t -> Variable.t
+
+  val freshen_variable : t -> Variable.t -> t * Variable.t [@@warning "-32"]
 
   val symbol : t -> Symbol.t -> Symbol.t
 
@@ -57,12 +212,11 @@ end = struct
   type t =
     { symbols : Symbol.t Symbol.Map.t;
       inverse_symbols : Symbol.t Symbol.Map.t;
-      variables : Variable.t Variable.Map.t;
-      inverse_variables : Variable.t Variable.Map.t;
+      variables : Variable_importer.t;
       simples : Simple.t Simple.Map.t;
       consts : Const.t Const.Map.t;
       code_ids : Code_id.t Code_id.Map.t;
-      continuations : Continuation.t Continuation.Map.t;
+      continuations : Continuation_importer.t;
       used_value_slots : Value_slot.Set.t;
       (* CR vlaviron: [used_value_slots] is here because we need to rewrite the
          types to remove occurrences of unused value slots, as otherwise the
@@ -92,16 +246,11 @@ end = struct
           (fun old_symbol new_symbol inverse_symbols ->
             Symbol.Map.add new_symbol old_symbol inverse_symbols)
           symbols Symbol.Map.empty;
-      variables;
-      inverse_variables =
-        Variable.Map.fold
-          (fun old_variable new_variable inverse_variables ->
-            Variable.Map.add new_variable old_variable inverse_variables)
-          variables Variable.Map.empty;
+      variables = Variable_importer.import variables;
       simples;
       consts;
       code_ids;
-      continuations;
+      continuations = Continuation_importer.import continuations;
       used_value_slots;
       original_compilation_unit
     }
@@ -114,17 +263,22 @@ end = struct
   let symbol_backwards t renamed =
     rename t.inverse_symbols renamed ~find:Symbol.Map.find
 
-  let variable t orig = rename t.variables orig ~find:Variable.Map.find
+  let variable t orig = Variable_importer.apply t.variables orig
 
   let variable_backwards t renamed =
-    rename t.inverse_variables renamed ~find:Variable.Map.find
+    Variable_importer.apply_backwards t.variables renamed
+
+  let freshen_variable t orig =
+    let variables, renamed =
+      Variable_importer.import_and_bind t.variables orig
+    in
+    { t with variables }, renamed
 
   let const t orig = rename t.consts orig ~find:Const.Map.find
 
   let code_id t orig = rename t.code_ids orig ~find:Code_id.Map.find
 
-  let continuation t orig =
-    rename t.continuations orig ~find:Continuation.Map.find
+  let continuation t orig = Continuation_importer.apply t.continuations orig
 
   let simple t simple =
     (* [t.simples] only holds those [Simple]s with [Coercion] (analogously to
@@ -251,10 +405,15 @@ let apply_variable t var =
   Variables.apply t.variables var
 
 let bind_fresh_variable t var1 =
-  let var1 = apply_variable t var1 in
-  let var2 = Variable.rename var1 in
-  let t = add_fresh_variable t var1 ~guaranteed_fresh:var2 in
-  t, var2
+  match t.import_map with
+  | None ->
+    let var1 = apply_variable t var1 in
+    let var2 = Variable.rename (apply_variable t var1) in
+    let t = add_fresh_variable t var1 ~guaranteed_fresh:var2 in
+    t, var2
+  | Some import_map ->
+    let import_map, var2 = Import_map.freshen_variable import_map var1 in
+    { t with import_map = Some import_map }, var2
 
 let apply_variable_backwards t var =
   let var = Variables.apply_backwards t.variables var in

@@ -35,11 +35,11 @@ val is_identity : t -> bool
 
 val create_import_map :
   symbols:Symbol.t Symbol.Map.t ->
-  variables:Variable.t Variable.Map.t ->
+  variables:Variable.serializable ->
   simples:Simple.t Simple.Map.t ->
   consts:Reg_width_const.t Reg_width_const.Map.t ->
   code_ids:Code_id.t Code_id.Map.t ->
-  continuations:Continuation.t Continuation.Map.t ->
+  continuations:Continuation.serializable ->
   used_value_slots:Value_slot.Set.t ->
   original_compilation_unit:Compilation_unit.t ->
   t

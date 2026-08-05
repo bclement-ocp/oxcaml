@@ -18,11 +18,11 @@
 
 type table_data =
   { symbols : (Symbol.t * Symbol.exported) list;
-    variables : (Variable.t * Variable.exported) list;
+    variables : Variable.serializable;
     simples : (Simple.t * Simple.exported) list;
     consts : (Reg_width_const.t * Reg_width_const.exported) list;
     code_ids : (Code_id.t * Code_id.exported) list;
-    continuations : (Continuation.t * Continuation.exported) list
+    continuations : Continuation.serializable
   }
 
 type t0 =
@@ -59,12 +59,7 @@ let create_raw ~final_typing_env ~all_code ~exported_offsets ~used_value_slots
       (fun symbol symbols -> (symbol, Symbol.export symbol) :: symbols)
       exported_ids.symbols []
   in
-  let variables =
-    Variable.Set.fold
-      (fun variable variables ->
-        (variable, Variable.export variable) :: variables)
-      exported_ids.variables []
-  in
+  let variables = Variable.Serializable.create exported_ids.variables in
   let simples =
     Simple.Set.fold
       (fun simple simples -> (simple, Simple.export simple) :: simples)
@@ -81,10 +76,7 @@ let create_raw ~final_typing_env ~all_code ~exported_offsets ~used_value_slots
       exported_ids.code_ids []
   in
   let continuations =
-    Continuation.Set.fold
-      (fun continuation continuations ->
-        (continuation, Continuation.export continuation) :: continuations)
-      exported_ids.continuations []
+    Continuation.Serializable.create exported_ids.continuations
   in
   let table_data =
     { symbols; variables; simples; consts; code_ids; continuations }
@@ -127,21 +119,17 @@ end
 [@@inline always]
 
 module Symbol_importer = Make_importer (Symbol)
-module Variable_importer = Make_importer (Variable)
 module Simple_importer = Make_importer (Simple)
 module Const_importer = Make_importer (Reg_width_const)
 module Code_id_importer = Make_importer (Code_id)
-module Continuation_importer = Make_importer (Continuation)
 
 let import_typing_env_and_code0 ~sections t =
   let symbols =
     Profile.record_call ~accumulate:true "import_symbols" (fun () ->
         Symbol_importer.import t.table_data.symbols)
   in
-  let variables =
-    Profile.record_call ~accumulate:true "import_variables" (fun () ->
-        Variable_importer.import t.table_data.variables)
-  in
+  (* Variables are imported lazily *)
+  let variables = t.table_data.variables in
   let simples =
     Profile.record_call ~accumulate:true "import_simples" (fun () ->
         Simple_importer.import t.table_data.simples)
@@ -154,10 +142,8 @@ let import_typing_env_and_code0 ~sections t =
     Profile.record_call ~accumulate:true "import_code_ids" (fun () ->
         Code_id_importer.import t.table_data.code_ids)
   in
-  let continuations =
-    Profile.record_call ~accumulate:true "import_continuations" (fun () ->
-        Continuation_importer.import t.table_data.continuations)
-  in
+  (* Continuations are imported lazily *)
+  let continuations = t.table_data.continuations in
   let used_value_slots = t.used_value_slots in
   let original_compilation_unit = t.original_compilation_unit in
   let renaming =
