@@ -191,6 +191,18 @@ module For_applications = struct
     | Heap _, Local _ | Local _, Heap _ ->
       Misc.fatal_error "Mismatched alloc_mode in renaming"
 
+  let bind_fresh t renaming =
+    let bind_fresh_variable = Renaming.bind_fresh_variable in
+    match t with
+    | Heap { alloc_region } ->
+      let renaming, alloc_region = bind_fresh_variable renaming alloc_region in
+      renaming, Heap { alloc_region }
+    | Local { alloc_region; region; ghost_region } ->
+      let renaming, alloc_region = bind_fresh_variable renaming alloc_region in
+      let renaming, region = bind_fresh_variable renaming region in
+      let renaming, ghost_region = bind_fresh_variable renaming ghost_region in
+      renaming, Local { alloc_region; region; ghost_region }
+
   let apply_renaming t renaming =
     match t with
     | Heap { alloc_region } ->

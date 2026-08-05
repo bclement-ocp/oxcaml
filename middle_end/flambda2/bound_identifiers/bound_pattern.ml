@@ -78,6 +78,20 @@ let ids_for_export t =
       Ids_for_export.empty bound_vars
   | Static bound_static -> Bound_static.ids_for_export bound_static
 
+let bind_fresh t renaming =
+  match t with
+  | Singleton bound_var ->
+    let renaming, bound_var' = Bound_var.bind_fresh bound_var renaming in
+    renaming, Singleton bound_var'
+  | Set_of_closures bound_vars ->
+    let renaming, bound_vars' =
+      List.fold_left_map
+        (fun renaming bound_var -> Bound_var.bind_fresh bound_var renaming)
+        renaming bound_vars
+    in
+    renaming, Set_of_closures bound_vars'
+  | Static _ -> renaming, t
+
 let rename t =
   match t with
   | Singleton bound_var -> Singleton (Bound_var.rename bound_var)

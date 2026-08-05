@@ -250,6 +250,12 @@ let apply_variable t var =
   in
   Variables.apply t.variables var
 
+let bind_fresh_variable t var1 =
+  let var1 = apply_variable t var1 in
+  let var2 = Variable.rename var1 in
+  let t = add_fresh_variable t var1 ~guaranteed_fresh:var2 in
+  t, var2
+
 let apply_variable_backwards t var =
   let var = Variables.apply_backwards t.variables var in
   match t.import_map with
@@ -319,6 +325,12 @@ let apply_continuation t k =
     | Some import_map -> Import_map.continuation import_map k
   in
   Continuations.apply t.continuations k
+
+let bind_fresh_continuation t k1 =
+  let k1 = apply_continuation t k1 in
+  let k2 = Continuation.rename k1 in
+  let t = add_fresh_continuation t k1 ~guaranteed_fresh:k2 in
+  t, k2
 
 let add_code_id t code_id1 code_id2 =
   { t with code_ids = Code_ids.compose_one ~first:t.code_ids code_id1 code_id2 }

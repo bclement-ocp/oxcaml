@@ -100,6 +100,9 @@ let renaming t1 ~guaranteed_fresh:t2 =
     Misc.fatal_errorf "Parameter lists are of differing lengths:@ %a@ and@ %a"
       print t1 print t2
 
+let bind_fresh t renaming =
+  List.fold_left_map (fun renaming t -> BP.bind_fresh t renaming) renaming t
+
 let iter f t = List.iter f t
 
 let filter f t = List.filter f t

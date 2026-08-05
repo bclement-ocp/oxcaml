@@ -111,6 +111,16 @@ module Bound = struct
         Renaming.add_fresh_variable renaming other_var
           ~guaranteed_fresh:fresh_other_var)
       renaming other_vars fresh_other_vars
+
+  let bind_fresh { params; results; other_vars } renaming =
+    let renaming, params = Bound_parameters.bind_fresh params renaming in
+    let renaming, results = Bound_parameters.bind_fresh results renaming in
+    let renaming, other_vars =
+      List.fold_left_map
+        (fun renaming var -> Renaming.bind_fresh_variable renaming var)
+        renaming other_vars
+    in
+    renaming, { params; results; other_vars }
 end
 
 module A = Name_abstraction.Make (Bound) (TEEV)

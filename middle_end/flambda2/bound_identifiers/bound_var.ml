@@ -63,3 +63,7 @@ let renaming { var; debug_uid = _; name_mode = _ } ~guaranteed_fresh =
     guaranteed_fresh
   in
   Renaming.add_fresh_variable Renaming.empty var ~guaranteed_fresh
+
+let bind_fresh t renaming =
+  let renaming, var = Renaming.bind_fresh_variable renaming t.var in
+  renaming, with_var t var
