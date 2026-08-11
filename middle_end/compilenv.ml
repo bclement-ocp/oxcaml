@@ -48,8 +48,44 @@ type unit_infos_builder =
 
 module Infos_table = Global_module.Name.Tbl
 
+module With_cached_export_info : sig
+  type t
+
+  val create : unit_infos option -> t
+
+  val export_info : t -> Flambda2_cmx.Flambda_cmx_format.t option
+end = struct
+  type t  =
+    | No_unit_infos
+    | Unit_infos of
+      { unit_infos : unit_infos
+      ; mutable export_info : Flambda2_cmx.Flambda_cmx_format.t option
+      }
+
+  let create = function
+    | None -> No_unit_infos
+    | Some unit_infos -> Unit_infos { unit_infos ; export_info = None }
+
+  let export_info t =
+    match t with
+    | No_unit_infos -> None
+    | Unit_infos { export_info = Some export_info; _ } -> Some export_info
+    | Unit_infos ({ export_info = None ; unit_infos = infos } as t) ->
+      match infos.ui_export_info with
+      | None -> None
+      | Some export_info ->
+        let export_info =
+          Profile.record_call ~accumulate:true "cmx_from_raw" (fun () ->
+            Flambda2_cmx.Flambda_cmx_format.from_raw
+              ~sections:infos.ui_file_sections
+              export_info)
+        in
+        t.export_info <- Some export_info;
+        Some export_info
+end
+
 let global_infos_table =
-  (Infos_table.create 17 : unit_infos option Infos_table.t)
+  (Infos_table.create 17 : With_cached_export_info.t Infos_table.t)
 
 let reset_info_tables () =
   Infos_table.reset global_infos_table
@@ -171,7 +207,8 @@ let get_export_info infos =
       Profile.record_call ~accumulate:true "cmx_from_raw" (fun () ->
       Flambda2_cmx.Flambda_cmx_format.from_raw
         ~sections:infos.ui_file_sections
-        export_info))
+        export_info)
+    )
     infos.ui_export_info
 
 let get_unit_export_info comp_unit =
@@ -188,8 +225,8 @@ let get_unit_export_info comp_unit =
   else begin
     let name = CU.to_global_name_without_prefix comp_unit in
     try
-      let ui = Infos_table.find global_infos_table name in
-      Option.bind ui get_export_info
+      Infos_table.find global_infos_table name
+      |> With_cached_export_info.export_info
     with Not_found ->
       let (infos, crc) =
         if Env.is_imported_opaque (CU.name comp_unit) then (None, None)
@@ -220,8 +257,9 @@ let get_unit_export_info comp_unit =
       in
       let import = Import_info.create_normal comp_unit ~crc in
       current_unit.uib_imports_cmx <- import :: current_unit.uib_imports_cmx;
+      let infos = With_cached_export_info.create infos in
       Infos_table.add global_infos_table name infos;
-      Option.bind infos get_export_info
+      With_cached_export_info.export_info infos
   end
 
 let which_cmx_file comp_unit =
@@ -233,7 +271,8 @@ let get_global_export_info comp_unit =
 let cache_unit_info ui =
   cache_zero_alloc_info ui.ui_zero_alloc_info;
   Infos_table.add global_infos_table
-    (ui.ui_unit |> CU.to_global_name_without_prefix) (Some ui)
+    (ui.ui_unit |> CU.to_global_name_without_prefix)
+    (With_cached_export_info.create (Some ui))
 
 (* Exporting cross-module information *)
 
