@@ -777,7 +777,7 @@ let rebuild_single_non_recursive_handler ~at_unit_toplevel
       let uacc = UA.with_uenv uacc uenv in
       (* The parameters are removed from the free name information as they are
          no longer in scope. *)
-      let free_names = remove_params params free_names in
+      let free_names = RE.Continuation_handler.free_names cont_handler in
       let rebuilt_handler : rebuilt_handler =
         { handler = cont_handler;
           handler_expr = handler;
@@ -823,7 +823,8 @@ let rebuild_single_recursive_handler cont
           ~is_exn_handler:false ~is_cold:handler_to_rebuild.is_cold
       in
       let free_names =
-        remove_params invariant_params (remove_params variant_params free_names)
+        remove_params invariant_params
+          (RE.Continuation_handler.free_names cont_handler)
       in
       let rebuilt_handler : rebuilt_handler =
         { handler = cont_handler;

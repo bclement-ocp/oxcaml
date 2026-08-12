@@ -96,13 +96,7 @@ module Continuation_handler : sig
     is_cold:bool ->
     t
 
-  val create' :
-    Are_rebuilding_terms.t ->
-    Bound_parameters.t ->
-    handler:rebuilt_expr ->
-    is_exn_handler:bool ->
-    is_cold:bool ->
-    t
+  val free_names : t -> Name_occurrences.t
 end
 
 val create_non_recursive_let_cont :

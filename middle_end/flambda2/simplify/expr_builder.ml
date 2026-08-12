@@ -500,12 +500,11 @@ let create_switch uacc ~condition_dbg ~scrutinee ~arms =
 type new_let_cont =
   { cont : Continuation.t;
     handler : RE.Continuation_handler.t;
-    free_names_of_handler : Name_occurrences.t;
     cost_metrics_of_handler : Cost_metrics.t
   }
 
 let bind_let_cont (uacc : UA.t) (body : RE.t)
-    { cont; handler; free_names_of_handler; cost_metrics_of_handler } =
+    { cont; handler; cost_metrics_of_handler } =
   let free_names_of_body = UA.name_occurrences uacc in
   let expr =
     RE.create_non_recursive_let_cont
@@ -514,7 +513,8 @@ let bind_let_cont (uacc : UA.t) (body : RE.t)
   in
   let name_occurrences =
     Name_occurrences.remove_continuation
-      (Name_occurrences.union free_names_of_body free_names_of_handler)
+      (Name_occurrences.union free_names_of_body
+         (RE.Continuation_handler.free_names handler))
       ~continuation:cont
   in
   let uacc =
@@ -665,14 +665,7 @@ let rewrite_fixed_arity_continuation0 uacc cont_or_apply_cont ~use_id arity :
            so we set [is_cold] to false so that this wrapper can be inlined by
            [to_cmm]. *)
       in
-      let free_names_of_handler =
-        ListLabels.fold_left (Bound_parameters.to_list params) ~init:free_names
-          ~f:(fun free_names param ->
-            Name_occurrences.remove_var free_names
-              ~var:(Bound_parameter.var param))
-      in
-      New_wrapper
-        { cont; handler; free_names_of_handler; cost_metrics_of_handler }
+      New_wrapper { cont; handler; cost_metrics_of_handler }
     in
     match cont_or_apply_cont with
     | Continuation _ -> (

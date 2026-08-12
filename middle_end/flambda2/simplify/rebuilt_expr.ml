@@ -85,30 +85,50 @@ module Function_params_and_body = struct
 end
 
 module Continuation_handler = struct
-  type t = Continuation_handler.t
+  type t =
+    { params : Bound_parameters.t;
+      handler : rebuilt_expr;
+      free_names_of_handler : Name_occurrences.t;
+      is_exn_handler : bool;
+      is_cold : bool;
+      (* These are the [free_names_of_handler] without the bound [params] *)
+      free_names : Name_occurrences.t
+    }
+
+  let to_continuation_handler
+      { params;
+        handler;
+        free_names_of_handler;
+        is_exn_handler;
+        is_cold;
+        free_names = _
+      } =
+    Continuation_handler.create params ~handler
+      ~free_names_of_handler:(Known free_names_of_handler) ~is_exn_handler
+      ~is_cold
 
   let print ~cont ~recursive ppf ch =
-    Continuation_handler.print ~cont ~recursive ppf ch
+    Continuation_handler.print ~cont ~recursive ppf (to_continuation_handler ch)
 
-  let dummy =
-    Continuation_handler.create Bound_parameters.empty ~handler:term_not_rebuilt
-      ~free_names_of_handler:Unknown ~is_exn_handler:false ~is_cold:false
-
-  let create are_rebuilding params ~handler ~free_names_of_handler
+  let create _are_rebuilding params ~handler ~free_names_of_handler
       ~is_exn_handler ~is_cold =
-    if ART.do_not_rebuild_terms are_rebuilding
-    then dummy
-    else
-      Continuation_handler.create params ~handler
-        ~free_names_of_handler:(Known free_names_of_handler) ~is_exn_handler
-        ~is_cold
+    let free_names =
+      List.fold_left
+        (fun free_names param ->
+          Name_occurrences.remove_var free_names
+            ~var:(Bound_parameter.var param))
+        free_names_of_handler
+        (Bound_parameters.to_list params)
+    in
+    { params;
+      handler;
+      free_names_of_handler;
+      is_exn_handler;
+      is_cold;
+      free_names
+    }
 
-  let create' are_rebuilding params ~handler ~is_exn_handler ~is_cold =
-    if ART.do_not_rebuild_terms are_rebuilding
-    then dummy
-    else
-      Continuation_handler.create params ~handler ~free_names_of_handler:Unknown
-        ~is_exn_handler ~is_cold
+  let free_names { free_names; _ } = free_names
 end
 
 let create_non_recursive_let_cont are_rebuilding cont handler ~body
@@ -116,15 +136,18 @@ let create_non_recursive_let_cont are_rebuilding cont handler ~body
   if ART.do_not_rebuild_terms are_rebuilding
   then term_not_rebuilt
   else
-    Let_cont.create_non_recursive cont handler ~body
-      ~free_names_of_body:(Known free_names_of_body)
+    Let_cont.create_non_recursive cont
+      (Continuation_handler.to_continuation_handler handler)
+      ~body ~free_names_of_body:(Known free_names_of_body)
 
 let create_non_recursive_let_cont' are_rebuilding cont handler ~body
     ~num_free_occurrences_of_cont_in_body ~is_applied_with_traps =
   if ART.do_not_rebuild_terms are_rebuilding
   then term_not_rebuilt
   else
-    Let_cont.create_non_recursive' ~cont handler ~body
+    Let_cont.create_non_recursive' ~cont
+      (Continuation_handler.to_continuation_handler handler)
+      ~body
       ~num_free_occurrences_of_cont_in_body:
         (Known num_free_occurrences_of_cont_in_body) ~is_applied_with_traps
 
@@ -133,12 +156,19 @@ let create_non_recursive_let_cont_without_free_names are_rebuilding cont handler
   if ART.do_not_rebuild_terms are_rebuilding
   then term_not_rebuilt
   else
-    Let_cont.create_non_recursive cont handler ~body ~free_names_of_body:Unknown
+    Let_cont.create_non_recursive cont
+      (Continuation_handler.to_continuation_handler handler)
+      ~body ~free_names_of_body:Unknown
 
 let create_recursive_let_cont are_rebuilding ~invariant_params handlers ~body =
   if ART.do_not_rebuild_terms are_rebuilding
   then term_not_rebuilt
-  else Let_cont.create_recursive ~invariant_params handlers ~body
+  else
+    let handlers =
+      Continuation.Lmap.map Continuation_handler.to_continuation_handler
+        handlers
+    in
+    Let_cont.create_recursive ~invariant_params handlers ~body
 
 let create_switch are_rebuilding switch =
   if ART.do_not_rebuild_terms are_rebuilding

@@ -92,7 +92,6 @@ val create_switch :
 type new_let_cont =
   { cont : Continuation.t;
     handler : Rebuilt_expr.Continuation_handler.t;
-    free_names_of_handler : Name_occurrences.t;
     cost_metrics_of_handler : Cost_metrics.t
   }
 
