@@ -17,6 +17,25 @@ module Type : sig
   type (_, _) eq = Equal : ('a, 'a) eq
 end
 
+type _ result_repr
+
+val unit_repr : unit result_repr
+
+val result_repr_print : 'v result_repr -> Format.formatter -> 'v -> unit
+
+val result_repr_union_trie :
+  'v result_repr -> ('t, 'k, 'v) Trie.is_trie -> 't -> 't -> 't
+
+val result_repr_diff_trie_or_null :
+  'v result_repr -> ('t, 'k, 'v) Trie.is_trie -> 't -> 't -> 't Or_null.t
+
+val result_repr_singleton :
+  'v result_repr ->
+  ('t, 'k, 'v) Trie.is_trie ->
+  'k Heterogenous_list.Constant.hlist ->
+  'v ->
+  't
+
 module Id : sig
   type (!'t, !'k, !'v) t
 
@@ -46,6 +65,8 @@ module Id : sig
 
   val columns : ('t, 'k, 'v) t -> ('t, 'k, 'v) Column.hlist
 
+  val result_repr : ('t, 'k, 'v) t -> 'v result_repr
+
   val default_value : ('t, 'k, 'v) t -> 'v
 
   val is_trie : ('t, 'k, 'v) t -> ('t, 'k, 'v) Trie.is_trie
@@ -58,7 +79,7 @@ module Id : sig
     provenance:bool ->
     name:string ->
     columns:('t, 'k, 'v) Column.hlist ->
-    default_value:'v ->
+    result_repr:'v result_repr ->
     ('t, 'k, 'v) t
 end
 
