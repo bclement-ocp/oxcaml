@@ -100,17 +100,35 @@ let rec remove0 : type t k r v.
 let remove : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> t =
  fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> remove0 w k ks t
 
-let rec union : type t k v.
-    (t, k, v) is_trie -> (v -> v -> v option) -> t -> t -> t =
+let rec union_total : type t k v.
+    (t, k, v) is_trie -> (v -> v -> v) -> t -> t -> t =
  fun w f t1 t2 ->
   match w with
-  | Map_is_trie -> Int.Map.union (fun _ left right -> f left right) t1 t2
+  | Map_is_trie -> Int.Map.union_total (fun _ left right -> f left right) t1 t2
   | Nested_trie w' ->
-    Int.Map.union
+    Int.Map.union_total (fun _ left right -> union_total w' f left right) t1 t2
+
+let rec diff_or_null : type t k v.
+    (t, k, v) is_trie -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
+ fun w f t1 t2 ->
+  let[@local] nonempty_or_null t =
+    if Int.Map.is_empty t then Or_null.null else Or_null.this t
+  in
+  match w with
+  | Map_is_trie ->
+    Int.Map.diff_sharing
       (fun _ left right ->
-        let s = union w' f left right in
-        if is_empty w' s then None else Some s)
+        match f left right with Null -> None | This datum -> Some datum)
       t1 t2
+    |> nonempty_or_null
+  | Nested_trie w' ->
+    Int.Map.diff_sharing
+      (fun _ left right ->
+        match diff_or_null w' f left right with
+        | Null -> None
+        | This datum -> Some datum)
+      t1 t2
+    |> nonempty_or_null
 
 let rec iter : type t k v.
     (t, k, v) is_trie -> (k Constant.hlist -> v -> unit) -> t -> unit =

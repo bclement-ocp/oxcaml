@@ -51,7 +51,39 @@ module Type = struct
 end
 
 let concat is_trie ~earlier:t1 ~later:t2 =
-  Trie.union is_trie (fun _ v -> Some v) t1 t2
+  Trie.union_total is_trie (fun _ v -> v) t1 t2
+
+type _ result_repr = Unit_repr : unit result_repr
+
+let unit_repr = Unit_repr
+
+let result_repr_default_value (type t) (repr : t result_repr) : t =
+  match repr with Unit_repr -> ()
+
+let result_repr_print (type t) (repr : t result_repr) :
+    Format.formatter -> t -> unit =
+  let Unit_repr = repr in
+  fun ppf () -> Format.fprintf ppf "()"
+
+let result_repr_union_trie (type t k v) (repr : v result_repr)
+    (is_trie : (t, k, v) Trie.is_trie) : t -> t -> t =
+  let Unit_repr = repr in
+  fun t1 t2 -> Trie.union_total is_trie (fun _ _ -> ()) t1 t2
+[@@inline]
+
+let result_repr_diff_trie_or_null (type t k v) (repr : v result_repr) :
+    (t, k, v) Trie.is_trie -> t -> t -> t Or_null.t =
+  let Unit_repr = repr in
+  fun is_trie t1 t2 ->
+    Trie.diff_or_null is_trie (fun () () -> Or_null.null) t1 t2
+[@@inline]
+
+let result_repr_singleton (type t k v) (repr : v result_repr)
+    (is_trie : (t, k, v) Trie.is_trie) :
+    k Heterogenous_list.Constant.hlist -> v -> t =
+  let Unit_repr = repr in
+  fun keys () -> Trie.singleton is_trie keys ()
+[@@inline]
 
 module Id = struct
   type (!'t, !'k, !'v) t =
@@ -59,7 +91,7 @@ module Id = struct
       name : string;
       is_trie : ('t, 'k, 'v) Trie.is_trie;
       columns : ('t, 'k, 'v) Column.hlist;
-      default_value : 'v;
+      result_repr : 'v result_repr;
       provenance : bool
     }
 
@@ -90,18 +122,21 @@ module Id = struct
   let compare { id = id1; _ } { id = id2; _ } =
     compare (Type.Id.uid id1) (Type.Id.uid id2)
 
-  let create ~provenance ~name ~columns ~default_value =
+  let create ~provenance ~name ~columns ~result_repr =
     (* Store the [is_trie] value in order to avoid a double loop to create it
        when it is used. *)
     (* CR bclement: most iterations on [is_trie] could probably be replaced with
        iterations on [columns] instead, at which point we could get rid of
        [is_trie] entirely. *)
     let is_trie = Column.is_trie columns in
-    { id = Type.Id.make (); name; is_trie; columns; default_value; provenance }
+    { id = Type.Id.make (); name; is_trie; columns; result_repr; provenance }
 
   let has_provenance { provenance; _ } = provenance
 
-  let[@inline] default_value { default_value; _ } = default_value
+  let[@inline] result_repr { result_repr; _ } = result_repr
+
+  let[@inline] default_value { result_repr; _ } =
+    result_repr_default_value result_repr
 
   let[@inline] columns { columns; _ } = columns
 
