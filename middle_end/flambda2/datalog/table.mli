@@ -92,9 +92,11 @@ module Map : sig
 
   val is_empty : t -> bool
 
-  val get : ('t, 'k, 'v) Id.t -> t -> 't
+  val get_or_null : ('t, 'k, 'v) Id.t -> t -> 't Or_null.t
 
-  val set : ('t, 'k, 'v) Id.t -> 't -> t -> t
+  val set_non_empty : ('t, 'k, 'v) Id.t -> 't -> t -> t
+
+  val set_or_null : ('t, 'k, 'v) Id.t -> 't Or_null.t -> t -> t
 
   val concat : earlier:t -> later:t -> t
 

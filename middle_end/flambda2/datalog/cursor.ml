@@ -38,9 +38,9 @@ let print ppf { executor; original_rule; _ } =
     Lang.print_rule original_rule Executor.print executor
 
 let bind_table (Bind_table (id, handler)) database =
-  let table = Table.Map.get id database in
-  Channel.send_or_null handler (Or_null.this table);
-  not (Trie.is_empty (Table.Id.is_trie id) table)
+  let table = Table.Map.get_or_null id database in
+  Channel.send_or_null handler table;
+  Or_null.is_this table
 
 let bind_table_list binders database =
   List.iter (fun binder -> ignore @@ bind_table binder database) binders
@@ -98,18 +98,27 @@ let[@inline] seminaive_run cursor ~previous ~diff ~current ~output ~added =
             let diff_trie_or_null =
               Table.result_repr_diff_trie_or_null result_repr is_trie
             in
-            let current_table = Table.Map.get tid output in
-            match diff_trie_or_null output_table current_table with
+            let current_table = Table.Map.get_or_null tid output in
+            let output_table =
+              match current_table with
+              | Null -> Or_null.this output_table
+              | This current_table ->
+                diff_trie_or_null output_table current_table
+            in
+            match output_table with
             | Null -> ~output, ~added
             | This output_table ->
-              let union_trie =
-                Table.result_repr_union_trie result_repr is_trie
+              let union_trie left right =
+                match left with
+                | Or_null.Null -> right
+                | Or_null.This left ->
+                  Table.result_repr_union_trie result_repr is_trie left right
               in
               let current_table = union_trie current_table output_table in
-              let diff_table = Table.Map.get tid added in
+              let diff_table = Table.Map.get_or_null tid added in
               let diff_table = union_trie diff_table output_table in
-              let output = Table.Map.set tid current_table output in
-              let added = Table.Map.set tid diff_table added in
+              let output = Table.Map.set_non_empty tid current_table output in
+              let added = Table.Map.set_non_empty tid diff_table added in
               ~output, ~added))
         (~output, ~added) outputs
     in

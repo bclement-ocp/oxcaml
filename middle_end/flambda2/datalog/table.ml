@@ -190,13 +190,24 @@ module Map = struct
       tables;
     Format.fprintf ppf "@]"
 
-  let get (type t k v) (id : (t, k, v) Id.t) tables : t =
+  let get_or_null (type t k v) (id : (t, k, v) Id.t) tables : t Or_null.t =
     match Int.Map.find_opt (Id.uid id) tables with
-    | Some (Binding (existing_id, table)) -> Id.cast_exn existing_id id table
-    | None -> Trie.empty (Id.is_trie id)
+    | Some (Binding (existing_id, table)) ->
+      Or_null.this (Id.cast_exn existing_id id table)
+    | None -> Or_null.null
 
-  let set (type t k v) (id : (t, k, v) Id.t) (table : t) tables =
+  let set_non_empty (type t k v) (id : (t, k, v) Id.t) (table : t) tables =
     Int.Map.add (Id.uid id) (Binding (id, table)) tables
+
+  let set_or_null (type t k v) (id : (t, k, v) Id.t) (table : t Or_null.t)
+      tables =
+    match table with
+    | Null -> Int.Map.remove (Id.uid id) tables
+    | This table ->
+      (* Never store empty tries *)
+      if Trie.is_empty (Id.is_trie id) table
+      then Int.Map.remove (Id.uid id) tables
+      else set_non_empty id table tables
 
   let empty = Int.Map.empty
 

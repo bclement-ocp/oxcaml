@@ -32,15 +32,14 @@ val patricia_tree_of_trie :
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
-val empty : ('t, 'k, 'v) is_trie -> 't
+(* Returns [Null] for a nullary trie.*)
+val empty_or_null : ('t, 'k, 'v) is_trie -> 't Or_null.t
 
 val is_empty : ('t, 'k, 'v) is_trie -> 't -> bool
 
 val singleton : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 'v -> 't
 
 val add_or_replace : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 'v -> 't -> 't
-
-val remove : ('t, 'k, 'v) is_trie -> 'k Constant.hlist -> 't -> 't
 
 val union_total : ('t, 'k, 'v) is_trie -> ('v -> 'v -> 'v) -> 't -> 't -> 't
 
