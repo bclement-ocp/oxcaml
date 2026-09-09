@@ -23,129 +23,85 @@ module Int = struct
 end
 
 type (_, _, _) is_trie =
-  | Map_is_trie : ('v Int.Map.t, int -> nil, 'v) is_trie
-  | Nested_trie : ('s, 'b, 'v) is_trie -> ('s Int.Map.t, int -> 'b, 'v) is_trie
+  | Nil : ('v, nil, 'v) is_trie
+  | Cons : ('s, 'b, 'v) is_trie -> ('s Int.Map.t, int -> 'b, 'v) is_trie
 
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
-let patricia_tree_is_trie = Map_is_trie
+let patricia_tree_is_trie = Cons Nil
 
-let patricia_tree_of_trie is_trie = Nested_trie is_trie
+let patricia_tree_of_trie is_trie = Cons is_trie
 
-let empty : type t k v. (t, k, v) is_trie -> t = function
-  | Map_is_trie -> Int.Map.empty
-  | Nested_trie _ -> Int.Map.empty
+let empty_or_null : type t k v. (t, k, v) is_trie -> t Or_null.t =
+ fun w ->
+  match w with Nil -> Or_null.null | Cons _ -> Or_null.this Int.Map.empty
 
 let is_empty : type t k v. (t, k, v) is_trie -> t -> bool = function
-  | Map_is_trie -> Int.Map.is_empty
-  | Nested_trie _ -> Int.Map.is_empty
+  | Nil -> fun _ -> false
+  | Cons _ -> Int.Map.is_empty
 
-let rec find0 : type t k r v.
-    (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> v Or_null.t =
- fun w k ks t ->
-  match ks, w with
-  | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.find_or_null k t
-  | k' :: ks', Nested_trie w' -> (
+let rec find_or_null : type t k v.
+    (t, k, v) is_trie -> k Constant.hlist -> t -> v Or_null.t =
+ fun w k t ->
+  match k, w with
+  | [], Nil -> Or_null.this t
+  | k :: ks, Cons w' -> (
     match Int.Map.find_or_null k t with
     | Null -> Or_null.null
-    | This datum -> find0 w' k' ks' datum)
-
-let find_or_null : type t k v.
-    (t, k, v) is_trie -> k Constant.hlist -> t -> v Or_null.t =
- fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> find0 w k ks t
+    | This datum -> find_or_null w' ks datum)
 
 let find_opt w k t = Or_null.to_option (find_or_null w k t)
 
-let rec singleton0 : type t k r v.
-    (t, k -> r, v) is_trie -> k -> r Constant.hlist -> v -> t =
- fun w k ks v ->
-  match ks, w with
-  | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.singleton k v
-  | k' :: ks', Nested_trie w' -> Int.Map.singleton k (singleton0 w' k' ks' v)
-
-let singleton : type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t =
- fun w k v -> match k, w with [], _ -> . | k :: ks, _ -> singleton0 w k ks v
-
-let rec add0 : type t k r v.
-    (t, k -> r, v) is_trie -> k -> r Constant.hlist -> v -> t -> t =
- fun w k ks v t ->
-  match ks, w with
-  | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.add k v t
-  | k' :: ks', Nested_trie w' -> (
-    match Int.Map.find_or_null k t with
-    | This m -> Int.Map.add k (add0 w' k' ks' v m) t
-    | Null -> Int.Map.add k (singleton0 w' k' ks' v) t)
-
-let add_or_replace : type t k v.
-    (t, k, v) is_trie -> k Constant.hlist -> v -> t -> t =
- fun w k v t -> match k, w with [], _ -> . | k :: ks, _ -> add0 w k ks v t
-
-let rec remove0 : type t k r v.
-    (t, k -> r, v) is_trie -> k -> r Constant.hlist -> t -> t =
- fun w k ks t ->
-  match ks, w with
-  | [], Nested_trie _ -> .
-  | [], Map_is_trie -> Int.Map.remove k t
-  | k' :: ks', Nested_trie w' -> (
-    match Int.Map.find_or_null k t with
-    | Null -> t
-    | This m ->
-      let m' = remove0 w' k' ks' m in
-      if is_empty w' m' then Int.Map.remove k t else Int.Map.add k m' t)
-
-let remove : type t k v. (t, k, v) is_trie -> k Constant.hlist -> t -> t =
- fun w k t -> match k, w with [], _ -> . | k :: ks, _ -> remove0 w k ks t
+let rec singleton : type t k v. (t, k, v) is_trie -> k Constant.hlist -> v -> t
+    =
+ fun w k v ->
+  match k, w with
+  | [], Nil -> v
+  | k :: ks, Cons w' -> Int.Map.singleton k (singleton w' ks v)
 
 let rec union_total : type t k v.
     (t, k, v) is_trie -> (v -> v -> v) -> t -> t -> t =
  fun w f t1 t2 ->
   match w with
-  | Map_is_trie -> Int.Map.union_total (fun _ left right -> f left right) t1 t2
-  | Nested_trie w' ->
+  | Nil -> f t1 t2
+  | Cons w' ->
     Int.Map.union_total (fun _ left right -> union_total w' f left right) t1 t2
+
+let add_or_replace w ks v t = union_total w (fun _ v -> v) t (singleton w ks v)
 
 let rec diff_or_null : type t k v.
     (t, k, v) is_trie -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
  fun w f t1 t2 ->
-  let[@local] nonempty_or_null t =
-    if Int.Map.is_empty t then Or_null.null else Or_null.this t
-  in
   match w with
-  | Map_is_trie ->
-    Int.Map.diff_sharing
-      (fun _ left right ->
-        match f left right with Null -> None | This datum -> Some datum)
-      t1 t2
-    |> nonempty_or_null
-  | Nested_trie w' ->
-    Int.Map.diff_sharing
-      (fun _ left right ->
-        match diff_or_null w' f left right with
-        | Null -> None
-        | This datum -> Some datum)
-      t1 t2
-    |> nonempty_or_null
+  | Nil -> f t1 t2
+  | Cons w' ->
+    let t =
+      Int.Map.diff_sharing
+        (fun _ left right ->
+          match diff_or_null w' f left right with
+          | Null -> None
+          | This datum -> Some datum)
+        t1 t2
+    in
+    if Int.Map.is_empty t then Or_null.null else Or_null.this t
 
 let rec iter : type t k v.
     (t, k, v) is_trie -> (k Constant.hlist -> v -> unit) -> t -> unit =
- fun is_trie f t ->
-  match is_trie with
-  | Map_is_trie -> Int.Map.iter (fun k v -> f [k] v) t
-  | Nested_trie is_trie' ->
-    Int.Map.iter (fun k t' -> iter is_trie' (fun ks v -> f (k :: ks) v) t') t
+ fun w f t ->
+  match w with
+  | Nil -> f [] t
+  | Cons w' ->
+    Int.Map.iter (fun k t' -> iter w' (fun ks v -> f (k :: ks) v) t') t
 
 let rec fold : type t k v.
     (t, k, v) is_trie -> (k Constant.hlist -> v -> 'a -> 'a) -> t -> 'a -> 'a =
  fun is_trie f t acc ->
   match is_trie with
-  | Map_is_trie -> Int.Map.fold (fun k v acc -> f [k] v acc) t acc
-  | Nested_trie is_trie' ->
+  | Nil -> f [] t acc
+  | Cons w' ->
     Int.Map.fold
-      (fun k t' acc -> fold is_trie' (fun ks v acc -> f (k :: ks) v acc) t' acc)
+      (fun k t' acc -> fold w' (fun ks v acc -> f (k :: ks) v acc) t' acc)
       t acc
 
 module Iterator = struct
@@ -156,5 +112,5 @@ module Iterator = struct
       m Channel.or_null_receiver ->
       v Channel.or_null_sender ->
       k t =
-   fun Map_is_trie -> create
+   fun (Cons Nil) -> create
 end

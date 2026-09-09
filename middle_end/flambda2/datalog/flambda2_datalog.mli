@@ -177,7 +177,16 @@ module Datalog : sig
 
   val get_table : ('t, 'k, 'v) table -> database -> 't
 
+  val get_table_or_null : ('t, 'k, 'v) table -> database -> 't Or_null.t
+
+  val get_table_opt : ('t, 'k, 'v) table -> database -> 't option
+
   val set_table : ('t, 'k, 'v) table -> 't -> database -> database
+
+  val set_table_or_null :
+    ('t, 'k, 'v) table -> 't Or_null.t -> database -> database
+
+  val set_table_opt : ('t, 'k, 'v) table -> 't option -> database -> database
 
   (** [add_fact rel args db] records a fact into the database [db].
 
@@ -530,8 +539,6 @@ module Datalog : sig
       val singleton : keys Constant.hlist -> value -> t
 
       val add_or_replace : keys Constant.hlist -> value -> t -> t
-
-      val remove : keys Constant.hlist -> t -> t
 
       val find_opt : keys Constant.hlist -> t -> value option
     end

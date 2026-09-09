@@ -60,8 +60,6 @@ module Datalog = struct
       let add_or_replace keys value trie =
         Trie.add_or_replace C.is_trie keys value trie
 
-      let remove keys trie = Trie.remove C.is_trie keys trie
-
       let find_opt keys trie = Trie.find_opt C.is_trie keys trie
     end
   end
@@ -105,8 +103,6 @@ module Datalog = struct
       val singleton : keys Constant.hlist -> value -> t
 
       val add_or_replace : keys Constant.hlist -> value -> t -> t
-
-      val remove : keys Constant.hlist -> t -> t
 
       val find_opt : keys Constant.hlist -> t -> value option
     end
@@ -160,17 +156,39 @@ module Datalog = struct
   end
 
   let add_fact id args db =
-    Table.Map.set id
-      (Trie.add_or_replace (Table.Id.is_trie id) args () (Table.Map.get id db))
-      db
+    let table =
+      match Table.Map.get_or_null id db with
+      | Null -> Trie.singleton (Table.Id.is_trie id) args ()
+      | This table -> Trie.add_or_replace (Table.Id.is_trie id) args () table
+    in
+    Table.Map.set_non_empty id table db
 
   type database = Table.Map.t
 
   let empty = Table.Map.empty
 
-  let get_table = Table.Map.get
+  let get_table id db =
+    match Table.Map.get_or_null id db with
+    | Null -> (
+      let is_trie = Table.Id.is_trie id in
+      match Trie.empty_or_null is_trie with
+      | This empty_trie -> empty_trie
+      | Null ->
+        Misc.fatal_error
+          "[get_table] cannot return an empty table of arity 0; use \
+           [get_table_or_null] or [get_table_opt] instead.")
+    | This table -> table
 
-  let set_table = Table.Map.set
+  let get_table_or_null id db = Table.Map.get_or_null id db
+
+  let get_table_opt id db = Or_null.to_option (get_table_or_null id db)
+
+  let set_table_or_null id table db = Table.Map.set_or_null id table db
+
+  let set_table_opt id table db =
+    set_table_or_null id (Or_null.of_option table) db
+
+  let set_table id table db = set_table_or_null id (Or_null.this table) db
 
   let print = Table.Map.print
 
