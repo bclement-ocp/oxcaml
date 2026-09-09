@@ -103,11 +103,12 @@ module Make (Iterator : Leapfrog.Iterator) : sig
     assembler
 
   val union :
+    ('s, _, 'v) Trie.is_trie ->
     'v Table.result_repr ->
-    ('t, 'k, 'v) Trie.is_trie ->
+    ('t, 'k, 's) Trie.is_trie ->
     't output_ref with_name ->
     'k Or_null_receiver.hlist with_names ->
-    'v Or_null_receiver.t with_name ->
+    's Or_null_receiver.t with_name ->
     assembler
 
   val ( ++ ) : assembler -> assembler -> assembler

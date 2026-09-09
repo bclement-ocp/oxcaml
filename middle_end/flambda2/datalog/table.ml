@@ -57,6 +57,9 @@ type _ result_repr = Unit_repr : unit result_repr
 
 let unit_repr = Unit_repr
 
+let provably_unit_repr : type t. t result_repr -> (t, unit) Type.eq option =
+ fun Unit_repr -> Some Equal
+
 let result_repr_default_value (type t) (repr : t result_repr) : t =
   match repr with Unit_repr -> ()
 

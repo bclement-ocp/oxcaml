@@ -120,13 +120,14 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         * string list
         -> code
     | Union :
-        'v Table.result_repr
-        * ('t, 'k, 'v) Trie.is_trie
+        ('s, _, 'v) Trie.is_trie
+        * 'v Table.result_repr
+        * ('t, 'k, 's) Trie.is_trie
         * 't output_ref
         * string
         * 'k Or_null_receiver.hlist
         * string list
-        * 'v Or_null_receiver.t
+        * 's Or_null_receiver.t
         * string
         -> code
 
@@ -171,7 +172,7 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         (print_label digits) if_false
     | Call_with_bindings (_, name, _, _, names) ->
       Format.fprintf ppf "call@ %s,@ [@[%a]@]" name print_list names
-    | Union (_, _, _, name, _, names, _, value_name) ->
+    | Union (_, _, _, _, name, _, names, _, value_name) ->
       Format.fprintf ppf "union@ %s,@ @[{[@[%a]@] ->@;<1 2>%s}@]" name
         print_list names value_name
 
@@ -330,9 +331,11 @@ module Make (Iterator : Leapfrog.Iterator) = struct
   let call_with_bindings { value = fn; name } { values = args; names } st =
     emit (Call_with_bindings (fn, name, st.bindings, args, names)) st
 
-  let union repr is_trie { value = table; name } { values = args; names }
-      { value; name = value_name } =
-    emit (Union (repr, is_trie, table, name, args, names, value, value_name))
+  let union inner_trie repr is_trie { value = table; name }
+      { values = args; names } { value; name = value_name } =
+    emit
+      (Union
+         (inner_trie, repr, is_trie, table, name, args, names, value, value_name))
 
   (* Use a [private] type from an anonymous module to ensure that we only ever
      construct bytecode that satisfies the requirements of [exec] below (namely,
@@ -433,9 +436,12 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         next ()
       | This _ | Null -> goto if_not_in)
     | Absent (is_trie, table, _name, args, _names, if_mem) -> (
-      match Trie.find_or_null is_trie (read_hlist args) (read table) with
-      | This _ -> goto if_mem
-      | Null -> next ())
+      match Channel.recv_or_null table with
+      | Null -> next ()
+      | This table -> (
+        match Trie.find_or_null is_trie (read_hlist args) table with
+        | This _ -> goto if_mem
+        | Null -> next ()))
     | Distinct (column, key1, _name1, key2, _name2, if_equal) ->
       if Column.equal_key column (read key1) (read key2)
       then goto if_equal
@@ -445,13 +451,15 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     | Call_with_bindings (func, _name, bindings, args, _names) ->
       func bindings (read_hlist args);
       next ()
-    | Union (repr, is_trie, table, _, args, _, value, _) ->
-      let singleton = Table.result_repr_singleton repr is_trie in
-      let entry = singleton (read_hlist args) (read value) in
+    | Union (inner_trie, repr, is_trie, table, _, args, _, value, _) ->
+      let entry = Trie.singleton is_trie (read_hlist args) (read value) in
       (match table.contents with
       | Null -> table.contents <- Or_null.this entry
       | This contents ->
-        let union_trie = Table.result_repr_union_trie repr is_trie in
+        let union_trie =
+          Trie.union_total is_trie
+            (Table.result_repr_union_trie repr inner_trie)
+        in
         table.contents <- Or_null.this (union_trie contents entry));
       next ()
 
