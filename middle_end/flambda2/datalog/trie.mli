@@ -19,6 +19,8 @@ open Heterogenous_list
     of type ['k Constant.hlist] to values of type ['v]. *)
 type ('t, 'k, 'v) is_trie
 
+val nil : ('t, nil, 't) is_trie
+
 val patricia_tree_is_trie : ('v Patricia_tree.map, int -> nil, 'v) is_trie
 
 val patricia_tree_of_trie :

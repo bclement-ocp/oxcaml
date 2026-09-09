@@ -38,6 +38,10 @@ type ('t, 'k, 'v) id =
     repr : ('t, 'k, 'v) repr
   }
 
+let provably_equal : type t s k v.
+    (t, k, v) id -> (s, k, v) id -> (t, s) Type.eq =
+ fun { repr = Patricia_tree_repr; _ } { repr = Patricia_tree_repr; _ } -> Equal
+
 let singleton : type t k v. (t, k, v) id -> k -> v -> t =
  fun { repr; _ } key value ->
   let Patricia_tree_repr = repr in
@@ -72,7 +76,7 @@ let rec print_keys : type t k v.
    in the future. *)
 let rec is_trie : type t k v. (t, k, v) hlist -> (t, k, v) Trie.is_trie =
   function
-  | [] -> Misc.fatal_error "Cannot create relation with no arguments"
+  | [] -> Trie.nil
   | [{ repr = Patricia_tree_repr; _ }] -> Trie.patricia_tree_is_trie
   | { repr = Patricia_tree_repr; _ } :: (_ :: _ as columns) ->
     Trie.patricia_tree_of_trie (is_trie columns)

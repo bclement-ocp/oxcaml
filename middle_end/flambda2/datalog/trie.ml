@@ -29,6 +29,8 @@ type (_, _, _) is_trie =
 type ('k, 'v) is_any_trie =
   | Is_trie : ('t, 'k, 'v) is_trie -> ('k, 'v) is_any_trie
 
+let nil = Nil
+
 let patricia_tree_is_trie = Cons Nil
 
 let patricia_tree_of_trie is_trie = Cons is_trie
