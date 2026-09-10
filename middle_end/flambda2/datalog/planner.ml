@@ -464,24 +464,18 @@ let plan_rule ?(callback = ref ignore) parameters vars { head; body } =
   let env = Variable.Id.Tbl.create 0 in
   let rec optimizozor index =
     if index < 0
-    then ~num_existentials:0, ~num_vars:0
+    then 0
     else
       let (Any last_var : Variable.t_) = Iarray.get vars index in
       let last_vid = Variable.uid last_var in
       match Variable.Id.Tbl.find_opt var_to_head_atoms last_vid with
-      | None ->
-        let num_existentials =
-          if index = Iarray.length vars - 1
-          then compute_existentials ~num_existentials:0 index
-          else 0
-        in
-        ~num_existentials, ~num_vars:(index + 1)
+      | None -> index + 1
       | Some output_atoms -> (
         match Variable.Id.Tbl.find_opt var_to_body_atoms last_vid with
         | Some [input_atom_id] -> (
           let input_atom = Iarray.get body_layout input_atom_id in
           match last_layer_of_atom_if_unique_key last_var input_atom with
-          | None -> ~num_existentials:0, ~num_vars:(index + 1)
+          | None -> index + 1
           | Some (Table_layers input_layers, last_layer_of_input_atom) ->
             let new_output_values =
               List.filter_map
@@ -517,11 +511,20 @@ let plan_rule ?(callback = ref ignore) parameters vars { head; body } =
                   update_atom (Iarray.get head_atoms output_id) table_value)
                 output_atoms new_output_values;
               optimizozor (index - 1))
-            else ~num_existentials:0, ~num_vars:(index + 1))
-        | _ -> ~num_existentials:0, ~num_vars:(index + 1))
+            else index + 1)
+        | _ -> index + 1)
   in
-  let ~num_existentials, ~num_vars = optimizozor (Iarray.length vars - 1) in
-  let vars = Iarray.sub vars ~pos:0 ~len:num_vars in
+  let num_existentials =
+    compute_existentials ~num_existentials:0 (Iarray.length vars - 1)
+  in
+  let len = optimizozor (Iarray.length vars - 1 - num_existentials) in
+  let vars =
+    Iarray.append
+      (Iarray.sub vars ~pos:0 ~len)
+      (Iarray.sub vars
+         ~pos:(Iarray.length vars - num_existentials)
+         ~len:num_existentials)
+  in
   let stages = Dynarray.create () in
   (* Constant stage: place any stage that does not involve variables. *)
   Iarray.iter
