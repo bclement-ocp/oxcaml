@@ -345,11 +345,8 @@ module Datalog_schedule = struct
 
   let ( let$$ ) x f = with_priority 1 x f
 
-  let make_schedule l =
-    Schedule.fixpoint
-      (List.init 2 (fun i ->
-           Schedule.saturate
-             (List.filter_map (fun (p, r) -> if i = p then Some r else None) l)))
+  (* PR#7099 *)
+  let make_schedule l = Schedule.saturate (List.map snd l)
 
   let reverse_rules =
     (* Reverse relations, because datalog does not implement a more efficient
