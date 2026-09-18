@@ -63,8 +63,6 @@ module Id : sig
 
   val default_value : ('t, 'k, 'v) t -> 'v
 
-  val is_trie : ('t, 'k, 'v) t -> ('t, 'k, 'v) Trie.is_trie
-
   val has_provenance : ('t, 'k, 'v) t -> bool
 
   type ('k, 'v) poly = Id : ('t, 'k, 'v) t -> ('k, 'v) poly
@@ -86,7 +84,9 @@ module Map : sig
 
   val is_empty : t -> bool
 
-  val get : ('t, 'k, 'v) Id.t -> t -> 't
+  val get_or_null : ('t, 'k, 'v) Id.t -> t -> 't Or_null.t
+
+  val set_or_null : ('t, 'k, 'v) Id.t -> 't Or_null.t -> t -> t
 
   val set : ('t, 'k, 'v) Id.t -> 't -> t -> t
 

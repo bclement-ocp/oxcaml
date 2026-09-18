@@ -1,3 +1,4 @@
+open Flambda2_algorithms
 open Flambda2_datalog.Datalog
 
 (* Create a column with an abstract type.
@@ -125,13 +126,55 @@ let () =
       Format.eprintf "- %a@ " Node.print n);
   Format.eprintf "@]@."
 
-let mark_successors_rule =
+let () =
+  let mark_successors_rule =
+    compile ["X"; "Y"] (fun [x; y] ->
+        where [edge [x; y]; marked [x]] (deduce (marked [y])))
+  in
+  let schedule = Schedule.saturate [mark_successors_rule] in
+  let db = Schedule.run schedule db in
+  Format.eprintf "@[<v 2>Database after schedule:@ @[<v>%a@]@]@.@." print db
+
+let mark_successors_flag_table : (unit, nil, unit) table =
+  create_table ~name:"mark_predecessors" ~result_repr:unit_repr []
+
+let mark_successors_flag = atom mark_successors_flag_table []
+
+let mark_successors_conditional_rule =
   compile ["X"; "Y"] (fun [x; y] ->
-      where [edge [x; y]; marked [x]] (deduce (marked [y])))
+      where
+        [mark_successors_flag; edge [x; y]; marked [x]]
+        (deduce (marked [y])))
 
-let schedule = Schedule.saturate [mark_successors_rule]
-
-let db = Schedule.run schedule db
+let schedule = Schedule.saturate [mark_successors_conditional_rule]
 
 let () =
-  Format.eprintf "@[<v 2>Database after schedule:@ @[<v>%a@]@]@.@." print db
+  let db = add_fact mark_successors_flag_table [] db in
+  let db = Schedule.run schedule db in
+  Format.eprintf
+    "@[<v 2>Database after conditional schedule (enabled):@ @[<v>%a@]@]@.@."
+    print db
+
+let mark_successors_flag_rule =
+  compile [] (fun [] -> deduce mark_successors_flag)
+
+let () =
+  let schedule =
+    Schedule.saturate
+      [mark_successors_conditional_rule; mark_successors_flag_rule]
+  in
+  assert (Or_null.is_null (get_table_or_null mark_successors_flag_table db));
+  let db = Schedule.run schedule db in
+  assert (Or_null.is_this (get_table_or_null mark_successors_flag_table db));
+  Format.eprintf
+    "@[<v 2>Database after conditional schedule (enabled by rule):@ \
+     @[<v>%a@]@]@.@."
+    print db
+
+let () =
+  assert (Or_null.is_null (get_table_or_null mark_successors_flag_table db));
+  let db = Schedule.run schedule db in
+  assert (Or_null.is_null (get_table_or_null mark_successors_flag_table db));
+  Format.eprintf
+    "@[<v 2>Database after conditional schedule (disabled):@ @[<v>%a@]@]@.@."
+    print db

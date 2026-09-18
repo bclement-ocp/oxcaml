@@ -146,16 +146,48 @@ let compile_rule ?with_provenance ~rule_id vars rule =
   in
   Rule_executor { cursor }
 
+(* This is a hack needed due to our implementation of [Cursor.seminaive_run],
+   which never runs rules when all their input tables are empty. In particular,
+   [Cursor.seminaive_run] never run rules that have no input tables.
+
+   We explicitly add a fake table to such rules and enable it in the database
+   when calling [run], so that such rules are actually evaluated during the
+   first seminaive step.
+
+   CR bclement: use a proper seminaive implementation with a separate first
+   step, which would remove the need for this hack. *)
+let init_table =
+  Table.Id.create ~provenance:false ~name:"init" ~columns:[]
+    ~result_repr:Table.unit_repr
+
 let create_rule variables rule =
   let rule_id = fresh_rule_id () in
+  let has_input_table =
+    Iarray.exists
+      (fun (Lang.Atom (relation, _, _)) ->
+        match relation with
+        | Table _ -> true
+        | Unless _ | Filter _ | Callback_with_bindings _ | Distinct _ -> false)
+      rule.Lang.body
+  in
+  let rule =
+    if has_input_table
+    then rule
+    else
+      let init_atom = Lang.table init_table [] in
+      { rule with Lang.body = Iarray.append [| init_atom |] rule.Lang.body }
+  in
   let executor = compile_rule ~rule_id variables rule in
   Rule { rule_id; variables; rule; executor }
 
 let provenance_from_db db =
   Table.Map.fold db ~init:FactMap.empty ~f:(fun (Binding (tid, _)) provenance ->
-      Trie.fold (Table.Id.is_trie tid)
-        (fun keys _ provenance -> add_if_not_exists provenance tid keys Input)
-        (Table.Map.get tid db) provenance)
+      match Table.Map.get_or_null tid db with
+      | Null -> provenance
+      | This table ->
+        Column.fold_hlist (Table.Id.columns tid)
+          (fun keys _ provenance -> add_if_not_exists provenance tid keys Input)
+          table provenance)
 
 let create_stats ?(with_provenance = false) db =
   let provenance =
@@ -469,8 +501,9 @@ let rec run_incremental ?stats schedule ~previous ~diff ~current =
 
 let run ?stats schedule db =
   let schedule = maybe_recompile_with_provenance ?stats schedule in
+  let db = Table.Map.set_or_null init_table (Or_null.this ()) db in
   let ~output, ~added:_ =
     run_incremental ?stats schedule ~previous:Table.Map.empty ~diff:db
       ~current:db
   in
-  output
+  Table.Map.set_or_null init_table Or_null.null output
