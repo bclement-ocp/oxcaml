@@ -47,7 +47,59 @@ type bindings_ref =
 [@@unboxed]
 
 module Make (Iterator : Leapfrog.Iterator) = struct
-  module Join_iterator = Leapfrog.Join (Iterator)
+  module rec Any_iterator : sig
+    include Leapfrog.Iterator
+
+    val join : 'a Iterator.t list -> 'a t
+  end = struct
+    type 'a t =
+      | Iterator of 'a Iterator.t
+      | Join_iterator of 'a Join_iterator.t
+
+    let join = function
+      | [it] -> Iterator it
+      | its -> Join_iterator (Join_iterator.create its)
+
+    let current = function
+      | Iterator it -> Iterator.current it
+      | Join_iterator join_iterator -> Join_iterator.current join_iterator
+
+    let advance = function
+      | Iterator it -> Iterator.advance it
+      | Join_iterator join_iterator -> Join_iterator.advance join_iterator
+
+    let seek it k =
+      match it with
+      | Iterator it -> Iterator.seek it k
+      | Join_iterator join_iterator -> Join_iterator.seek join_iterator k
+
+    let init it =
+      match it with
+      | Iterator it -> Iterator.init it
+      | Join_iterator join_iterator -> Join_iterator.init join_iterator
+
+    let accept it =
+      match it with
+      | Iterator it -> Iterator.accept it
+      | Join_iterator join_iterator -> Join_iterator.accept join_iterator
+
+    let equal_key it =
+      match it with
+      | Iterator it -> Iterator.equal_key it
+      | Join_iterator join_iterator -> Join_iterator.equal_key join_iterator
+
+    let compare_key it =
+      match it with
+      | Iterator it -> Iterator.compare_key it
+      | Join_iterator join_iterator -> Join_iterator.compare_key join_iterator
+  end
+
+  and Join_iterator : sig
+    include Leapfrog.Iterator
+
+    val create : 'a Iterator.t list -> 'a t
+  end =
+    Leapfrog.Join (Iterator)
 
   type label = Label of int [@@unboxed]
 
@@ -77,10 +129,10 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     | Exit
     | Goto : label -> code
     | Init :
-        'k Or_null_sender.t * string * 'k Join_iterator.t * string list * label
+        'k Or_null_sender.t * string * 'k Any_iterator.t * string list * label
         -> code
     | Advance :
-        'k Or_null_sender.t * string * 'k Join_iterator.t * string list * label
+        'k Or_null_sender.t * string * 'k Any_iterator.t * string list * label
         -> code
     | Absent :
         ('t, 'k, 'v) Trie.is_trie
@@ -99,11 +151,7 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         * label
         -> code
     | Seek :
-        'k Join_iterator.t
-        * string list
-        * 'k Or_null_receiver.t
-        * string
-        * label
+        'k Any_iterator.t * string list * 'k Or_null_receiver.t * string * label
         -> code
     | Filter :
         ('k Constant.hlist -> bool)
@@ -328,7 +376,7 @@ module Make (Iterator : Leapfrog.Iterator) = struct
 
   let for_in repr iterators body =
     let iterator =
-      { iterators with values = Join_iterator.create iterators.values }
+      { iterators with values = Any_iterator.join iterators.values }
     in
     let* start_of_body = lab in
     let* after_loop = lab in
@@ -347,7 +395,7 @@ module Make (Iterator : Leapfrog.Iterator) = struct
 
   let if_in key iterators body =
     let iterator =
-      { iterators with values = Join_iterator.create iterators.values }
+      { iterators with values = Any_iterator.join iterators.values }
     in
     if_template (seek iterator key) body
 
@@ -459,29 +507,28 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     | Exit -> Explicit_exit
     | Goto lab -> goto lab
     | Init (key_out, _name, iterator, _names, if_empty) -> (
-      Join_iterator.init iterator;
-      match Join_iterator.current iterator with
+      Any_iterator.init iterator;
+      match Any_iterator.current iterator with
       | Null -> goto if_empty
       | This current_key ->
-        Join_iterator.accept iterator;
+        Any_iterator.accept iterator;
         write key_out current_key;
         next ())
     | Advance (key_out, _name, iterator, _names, if_not_empty) -> (
-      Join_iterator.advance iterator;
-      match Join_iterator.current iterator with
+      Any_iterator.advance iterator;
+      match Any_iterator.current iterator with
       | Null -> next ()
       | This current_key ->
-        Join_iterator.accept iterator;
+        Any_iterator.accept iterator;
         write key_out current_key;
         goto if_not_empty)
     | Seek (iterator, _names, key_in, _name, if_not_in) -> (
       let key = read key_in in
-      Join_iterator.init iterator;
-      Join_iterator.seek iterator key;
-      match Join_iterator.current iterator with
-      | This current_key when Join_iterator.equal_key iterator current_key key
-        ->
-        Join_iterator.accept iterator;
+      Any_iterator.init iterator;
+      Any_iterator.seek iterator key;
+      match Any_iterator.current iterator with
+      | This current_key when Any_iterator.equal_key iterator current_key key ->
+        Any_iterator.accept iterator;
         next ()
       | This _ | Null -> goto if_not_in)
     | Absent (is_trie, table, _name, args, _names, if_mem) -> (
