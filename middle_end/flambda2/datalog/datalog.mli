@@ -21,12 +21,13 @@ open Heterogenous_list
     queries. *)
 
 module Term : sig
-  include Heterogenous_list.S
+  include
+    Heterogenous_list.S
+      with type 'a t = 'a Lang.Term.t
+       and type 'a hlist = 'a Lang.Term.hlist
 
   val constant : 'a -> 'a t
 end
-
-type atom = Atom : ('t, 'k, unit) Table.Id.t * 'k Term.hlist -> atom
 
 module String : sig
   include Heterogenous_list.S with type 'a t := string
@@ -50,39 +51,8 @@ val compile_with_parameters :
 val foreach :
   'a String.hlist -> ('a Term.hlist -> ('p, 'b) program) -> ('p, 'b) program
 
-val where_atom :
-  ('t, 'k, 'v) Table.Id.t ->
-  'k Term.hlist ->
-  ('p, 'a) program ->
-  ('p, 'a) program
-
-val unless_atom :
-  ('t, 'k, 'v) Table.Id.t ->
-  'k Term.hlist ->
-  ('p, 'a) program ->
-  ('p, 'a) program
-
-val unless_eq :
-  (_, 'k, _) Column.id ->
-  'k Term.t ->
-  'k Term.t ->
-  ('p, 'a) program ->
-  ('p, 'a) program
-
-val filter :
-  ('k Constant.hlist -> bool) ->
-  'k Term.hlist ->
-  ('p, 'a) program ->
-  ('p, 'a) program
-
-type callback
-
-val create_callback_with_bindings :
-  (Bytecode.bindings_ref -> 'a Constant.hlist -> unit) ->
-  name:string ->
-  'a Term.hlist ->
-  callback
+val where_atom : Lang.atom -> ('p, 'a) program -> ('p, 'a) program
 
 val yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.With_parameters.t) program
 
-val deduce : atom list -> (nil, Schedule.rule) program
+val deduce : Lang.atom list -> (nil, Schedule.rule) program

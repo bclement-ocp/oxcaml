@@ -34,10 +34,17 @@ type 'k column_iterator =
       ('t, 'k, 'v) Column.id * 't variable * 'v variable
       -> 'k column_iterator
 
+type _ defining_expr =
+  | Term : 'v term -> 'v defining_expr
+  | Join : 'v term * 'v term -> 'v defining_expr
+
 type stage =
   | Join_stage : 'k variable * 'k column_iterator list -> stage
   | Seek_stage : 'k term * 'k column_iterator list -> stage
   | Check_stage : atom -> stage
+  | Let_value_stage :
+      'v Table.result_repr * 'v variable * 'v defining_expr
+      -> stage
 
 type bound_table =
   | Bound_table : ('t, 'k, 'v) Table.Id.t * 't variable -> bound_table

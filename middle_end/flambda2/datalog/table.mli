@@ -21,9 +21,19 @@ type _ result_repr
 
 val unit_repr : unit result_repr
 
+val custom_repr :
+  print:(Format.formatter -> 'a -> unit) ->
+  meet:('a -> 'a -> 'a) ->
+  join_or_null:('a -> 'a -> 'a Or_null.t) ->
+  ?diff_or_null:('a -> 'a -> 'a Or_null.t) ->
+  unit ->
+  'a result_repr
+
+val provably_unit_repr : 'a result_repr -> ('a, unit) Type.eq option
+
 val result_repr_print : 'v result_repr -> Format.formatter -> 'v -> unit
 
-val result_repr_union : 'v result_repr -> 'v -> 'v -> 'v
+val result_repr_join_or_null : 'v result_repr -> 'v -> 'v -> 'v Or_null.t
 
 val union : ('t, 'k, 'v) Column.hlist -> 'v result_repr -> 't -> 't -> 't
 
@@ -60,8 +70,6 @@ module Id : sig
   val columns : ('t, 'k, 'v) t -> ('t, 'k, 'v) Column.hlist
 
   val result_repr : ('t, 'k, 'v) t -> 'v result_repr
-
-  val default_value : ('t, 'k, 'v) t -> 'v
 
   val has_provenance : ('t, 'k, 'v) t -> bool
 

@@ -129,6 +129,16 @@ module Make (Iterator : Leapfrog.Iterator) = struct
         * 'v Or_null_receiver.t
         * string
         -> code
+    | Join :
+        'v Table.result_repr
+        * 'v Or_null_sender.t
+        * 'v Or_null_receiver.t
+        * 'v Or_null_receiver.t
+        * label
+        * string
+        * string
+        * string
+        -> code
 
   let labels = function
     | Exit | Union _ | Call_with_bindings _ -> []
@@ -138,7 +148,8 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     | Absent (_, _, _, _, _, lab)
     | Distinct (_, _, _, _, _, lab)
     | Seek (_, _, _, _, lab)
-    | Filter (_, _, _, _, lab) ->
+    | Filter (_, _, _, _, lab)
+    | Join (_, _, _, _, lab, _, _, _) ->
       [lab]
 
   let print_list =
@@ -174,6 +185,9 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     | Union (_, _, _, name, _, names, _, value_name) ->
       Format.fprintf ppf "union@ %s,@ @[{[@[%a]@] ->@;<1 2>%s}@]" name
         print_list names value_name
+    | Join (_, _, _, _, if_empty, dst, src1, src2) ->
+      Format.fprintf ppf "join@ %s,@ %s,@ %s,@ %a" dst src1 src2
+        (print_label digits) if_empty
 
   let print_code_iarray ppf code =
     let length = Iarray.length code in
@@ -317,6 +331,18 @@ module Make (Iterator : Leapfrog.Iterator) = struct
   let filter { value = fn; name } { values = args; names } label =
     emit_with_label label (fun label -> Filter (fn, name, args, names, label))
 
+  let join repr dst src1 src2 label =
+    emit_with_label label (fun label ->
+        Join
+          ( repr,
+            dst.value,
+            src1.value,
+            src2.value,
+            label,
+            dst.name,
+            src1.name,
+            src2.name ))
+
   let ( ++ ) fn1 fn2 code =
     fn1 code;
     fn2 code
@@ -358,6 +384,12 @@ module Make (Iterator : Leapfrog.Iterator) = struct
     if_template (distinct column arg1 arg2) body
 
   let if_ fn args body = if_template (filter fn args) body
+
+  let if_let_join repr src1 src2 body =
+    let sender, receiver = Channel.create_or_null Or_null.null in
+    if_template
+      (join repr.value { repr with value = sender } src1 src2)
+      (body { repr with value = receiver })
 
   let call_with_bindings { value = fn; name } { values = args; names } st =
     emit (Call_with_bindings (fn, name, st.bindings, args, names)) st
@@ -519,6 +551,13 @@ module Make (Iterator : Leapfrog.Iterator) = struct
       | This contents ->
         table.contents <- Or_null.this (Table.union columns repr contents entry));
       next ()
+    | Join (repr, dst, src1, src2, if_empty, _, _, _) -> (
+      let src1 = read src1 and src2 = read src2 in
+      match Table.result_repr_join_or_null repr src1 src2 with
+      | Null -> goto if_empty
+      | This value ->
+        write dst value;
+        next ())
 
   let run t =
     let Explicit_exit = exec t.code 0 in

@@ -142,7 +142,9 @@ module From_plan = struct
 
   module Env = struct
     type bound_var =
-      | Bound_var : 'a variable * 'a Channel.or_null_receiver -> bound_var
+      | Bound_var :
+          'a variable * 'a Channel.or_null_receiver with_name
+          -> bound_var
 
     type naive_table =
       | Naive_table :
@@ -172,7 +174,17 @@ module From_plan = struct
     let get_output_tables t =
       Int.Tbl.fold (fun _ output acc -> output :: acc) t.output_tables []
 
-    let bind_var env var receiver =
+    let must_be_bound (type a) env (var : a variable) :
+        a Channel.or_null_receiver with_name =
+      match Variable.Id.Map.find (Variable.uid var) env.bound_vars with
+      | exception Not_found ->
+        Misc.fatal_errorf "Datalog variable not bound in this context: %a"
+          Variable.print var
+      | Bound_var (var', receiver) ->
+        let Equal = Variable.must_be_equal var var' in
+        receiver
+
+    let bind_var0 env var receiver =
       if Variable.Id.Map.mem (Variable.uid var) env.bound_vars
       then
         Misc.fatal_errorf
@@ -186,25 +198,21 @@ module From_plan = struct
       in
       { env with bound_vars }
 
-    let must_be_bound (type a) env (var : a variable) :
-        a Channel.or_null_receiver with_name =
-      match Variable.Id.Map.find (Variable.uid var) env.bound_vars with
-      | exception Not_found ->
-        Misc.fatal_errorf "Datalog variable not bound in this context: %a"
-          Variable.print var
-      | Bound_var (var', receiver) ->
-        let Equal = Variable.must_be_equal var var' in
-        { value = receiver; name = Variable.name var' }
+    let bind_var env var receiver =
+      bind_var0 env var { value = receiver; name = Variable.name var }
 
-    let lit_to_string ?column lit =
+    let lit_to_string ?column ?repr lit =
       match column with
       | Some column -> Format.asprintf "%a" (Column.print_key column) lit
-      | None -> "<cst>"
+      | None -> (
+        match repr with
+        | None -> "<cst>"
+        | Some repr -> Format.asprintf "%a" (Table.result_repr_print repr) lit)
 
-    let must_be_bound_term ?column env = function
+    let must_be_bound_term ?column ?repr env = function
       | Literal lit ->
         { value = Channel.create_or_null (Or_null.this lit) |> snd;
-          name = lit_to_string ?column lit
+          name = lit_to_string ?column ?repr lit
         }
       | Variable var -> must_be_bound env var
 
@@ -264,29 +272,43 @@ module From_plan = struct
       ( inner_env,
         { values = iterator :: values; names = outer_receiver.name :: names } )
 
+  let _, unit_receiver = Channel.create_or_null (Or_null.this ())
+
   let rec build_stages env plan index =
     if index >= Iarray.length plan.input_stages
     then
       Iarray.fold_right
-        (fun (Atom (relation, terms)) body ->
+        (fun (Atom (relation, terms, result_opt)) body ->
           match relation with
           | Unless _ | Distinct _ | Filter _ ->
             Misc.fatal_error "not supported in the head"
           | Table tid ->
             let repr = Table.Id.result_repr tid in
             let columns = Table.Id.columns tid in
-            let value = Table.Id.default_value tid in
-            let _, value_receiver =
-              Channel.create_or_null (Or_null.this value)
+            let value =
+              let get_value : type k.
+                  k Table.result_repr ->
+                  k variable option ->
+                  k Or_null_receiver.t with_name =
+               fun repr result_opt ->
+                match result_opt with
+                | None -> (
+                  match Table.provably_unit_repr repr with
+                  | Some Equal -> { value = unit_receiver; name = "()" }
+                  | None ->
+                    Misc.fatal_error
+                      "Non-unit table assignments must have an explicit value")
+                | Some var -> Env.must_be_bound env var
+              in
+              get_value repr result_opt
             in
-            let value_name =
-              Format.asprintf "%a" (Table.result_repr_print repr) value
-            in
-            let value = { value = value_receiver; name = value_name } in
             let table = Env.get_output env tid in
             let args = Env.must_be_bound_term_hlist env terms in
             Executor.list [Executor.union repr columns table args value; body]
           | Callback_with_bindings (fn, name) ->
+            if Option.is_some result_opt
+            then
+              Misc.fatal_error "Value assignments not supported for callbacks@.";
             let args = Env.must_be_bound_term_hlist env terms in
             Executor.list
               [Executor.call_with_bindings { value = fn; name } args; body])
@@ -305,24 +327,41 @@ module From_plan = struct
         let (Column column) = column_for_join columns in
         let receiver = Env.must_be_bound_term ~column env term in
         Executor.if_in receiver iterators @@ build_stages env plan (index + 1)
-      | Check_stage (Atom (relation, terms)) ->
-        (match relation with
-          | Table _ ->
-            Misc.fatal_error "*BUG*: Should have been planned as a trie"
-          | Unless tid ->
-            Executor.if_not_in (Table.Id.columns tid) (Env.get_table env tid)
-              (Env.must_be_bound_term_hlist env terms)
-          | Distinct column ->
-            let [term1; term2] = terms in
-            Executor.if_not_equal column
-              (Env.must_be_bound_term ~column env term1)
-              (Env.must_be_bound_term ~column env term2)
-          | Filter (fn, name) ->
-            Executor.if_ { value = fn; name }
-              (Env.must_be_bound_term_hlist env terms)
-          | Callback_with_bindings _ ->
-            Misc.fatal_error "Callback with bindings cannot be used in the body")
-        @@ build_stages env plan (index + 1)
+      | Check_stage (Atom (relation, terms, result_opt)) -> (
+        let[@inline] bind_unit_var result_opt =
+          match result_opt with
+          | None -> env
+          | Some result_var -> Env.bind_var env result_var unit_receiver
+        in
+        match relation with
+        | Table _ ->
+          Misc.fatal_error "*BUG*: Should have been planned as a trie"
+        | Unless tid ->
+          Executor.if_not_in (Table.Id.columns tid) (Env.get_table env tid)
+            (Env.must_be_bound_term_hlist env terms)
+            (build_stages (bind_unit_var result_opt) plan (index + 1))
+        | Distinct column ->
+          let [term1; term2] = terms in
+          Executor.if_not_equal column
+            (Env.must_be_bound_term ~column env term1)
+            (Env.must_be_bound_term ~column env term2)
+            (build_stages (bind_unit_var result_opt) plan (index + 1))
+        | Filter (fn, name) ->
+          Executor.if_ { value = fn; name }
+            (Env.must_be_bound_term_hlist env terms)
+            (build_stages (bind_unit_var result_opt) plan (index + 1))
+        | Callback_with_bindings _ ->
+          Misc.fatal_error "Callback with bindings cannot be used in the body")
+      | Let_value_stage (repr, dst, Term src) ->
+        let src = Env.must_be_bound_term ~repr env src in
+        build_stages (Env.bind_var0 env dst src) plan (index + 1)
+      | Let_value_stage (repr, dst, Join (src1, src2)) ->
+        Executor.if_let_join
+          { value = repr; name = Variable.name dst }
+          (Env.must_be_bound_term env src1)
+          (Env.must_be_bound_term env src2)
+          (fun receiver ->
+            build_stages (Env.bind_var0 env dst receiver) plan (index + 1))
 
   let create_from_plan_with_parameters ~original_rule
       ({ tables;

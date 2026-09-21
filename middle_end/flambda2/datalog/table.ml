@@ -50,39 +50,82 @@ module Type = struct
   end
 end
 
-type _ result_repr = Unit_repr : unit result_repr
+type _ result_repr =
+  | Unit_repr : unit result_repr
+  | Custom_repr :
+      { print : Format.formatter -> 'a -> unit;
+        meet : 'a -> 'a -> 'a;
+        join_or_null : 'a -> 'a -> 'a Or_null.t;
+        diff_or_null : 'a -> 'a -> 'a Or_null.t
+      }
+      -> 'a result_repr
 
 let unit_repr = Unit_repr
 
+let custom_repr ~print ~meet ~join_or_null ?diff_or_null () =
+  let diff_or_null =
+    match diff_or_null with
+    | Some diff_or_null -> diff_or_null
+    | None -> fun v1 v2 -> if v1 == v2 then Or_null.null else Or_null.this v1
+  in
+  Custom_repr { print; meet; join_or_null; diff_or_null }
+[@@inline]
+
+let provably_unit_repr : type t. t result_repr -> (t, unit) Type.eq option =
+  function
+  | Unit_repr -> Some Equal
+  | Custom_repr _ -> None
+
 let result_repr_print (type t) (repr : t result_repr) :
     Format.formatter -> t -> unit =
-  let Unit_repr = repr in
-  fun ppf () -> Format.fprintf ppf "()"
+  match repr with
+  | Unit_repr -> fun ppf () -> Format.fprintf ppf "()"
+  | Custom_repr { print; _ } -> print
 
-let result_repr_default_value (type t) (repr : t result_repr) : t =
-  match repr with Unit_repr -> ()
-
-let result_repr_union (type t) (repr : t result_repr) : t -> t -> t =
-  match repr with Unit_repr -> fun () () -> ()
-
-let result_repr_diff_or_null (type t) (repr : t result_repr) :
+let result_repr_join_or_null (type t) (repr : t result_repr) :
     t -> t -> t Or_null.t =
-  match repr with Unit_repr -> fun () () -> Or_null.null
+  match repr with
+  | Unit_repr -> fun () () -> Or_null.this ()
+  | Custom_repr { join_or_null; _ } -> join_or_null
 
-let rec union : type t k v.
-    (t, k, v) Column.hlist -> v result_repr -> t -> t -> t =
- fun columns repr t1 t2 ->
-  match columns with
-  | [] -> result_repr_union repr t1 t2
-  | column :: columns -> Column.union_total column (union columns repr) t1 t2
+let union_total0 : type t k v.
+    (t, k, v) Column.hlist -> (v -> v -> v) -> t -> t -> t =
+ fun columns union_total_result t1 t2 ->
+  let rec union_total : type t k. (t, k, v) Column.hlist -> t -> t -> t =
+   fun columns t1 t2 ->
+    match columns with
+    | [] -> (union_total_result [@inlined hint]) t1 t2
+    | column :: columns -> Column.union_total column (union_total columns) t1 t2
+  in
+  union_total columns t1 t2
 
-let rec diff_or_null : type t k v.
+let union : type t k v. (t, k, v) Column.hlist -> v result_repr -> t -> t -> t =
+ fun columns repr ->
+  match repr with
+  | Unit_repr -> union_total0 columns (fun () () -> ())
+  | Custom_repr { meet = union_total_result; _ } ->
+    union_total0 columns union_total_result
+
+let diff_or_null0 : type t k v.
+    (t, k, v) Column.hlist -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
+ fun columns diff_or_null_result t1 t2 ->
+  let rec diff_or_null : type t k.
+      (t, k, v) Column.hlist -> t -> t -> t Or_null.t =
+   fun columns t1 t2 ->
+    match columns with
+    | [] -> (diff_or_null_result [@inlined hint]) t1 t2
+    | column :: columns ->
+      Column.diff_or_null column (diff_or_null columns) t1 t2
+  in
+  diff_or_null columns t1 t2
+
+let diff_or_null : type t k v.
     (t, k, v) Column.hlist -> v result_repr -> t -> t -> t Or_null.t =
- fun columns repr t1 t2 ->
-  match columns with
-  | [] -> result_repr_diff_or_null repr t1 t2
-  | column :: columns ->
-    Column.diff_or_null column (diff_or_null columns repr) t1 t2
+ fun columns repr ->
+  match repr with
+  | Unit_repr -> diff_or_null0 columns (fun () () -> Or_null.null)
+  | Custom_repr { diff_or_null = diff_or_null_result; _ } ->
+    diff_or_null0 columns diff_or_null_result
 
 let rec concat : type t k v. (t, k, v) Column.hlist -> earlier:t -> later:t -> t
     =
@@ -135,9 +178,6 @@ module Id = struct
 
   let[@inline] result_repr { result_repr; _ } = result_repr
 
-  let[@inline] default_value { result_repr; _ } =
-    result_repr_default_value result_repr
-
   let[@inline] columns { columns; _ } = columns
 
   let[@inline] uid { id; _ } = Type.Id.uid id
@@ -161,12 +201,19 @@ let print id ?(pp_sep = Format.pp_print_cut) pp_row ppf table =
       pp_row keys value)
     table
 
+let print_equals_value (type v) (repr : v result_repr) ppf v =
+  match provably_unit_repr repr with
+  | Some Equal -> ()
+  | None -> Format.fprintf ppf " = @[%a@]" (result_repr_print repr) v
+
 let print_table (id : (_, _, _) Id.t) ppf table =
   Format.fprintf ppf "@[<v>%a@]"
-    (print id (fun keys _ ->
-         Format.fprintf ppf "@[%a(%a).@]" Id.print id
+    (print id (fun keys value ->
+         Format.fprintf ppf "@[%a(%a)%a.@]" Id.print id
            (Column.print_keys id.columns)
-           keys))
+           keys
+           (print_equals_value (Id.result_repr id))
+           value))
     table
 
 let print id ppf table =

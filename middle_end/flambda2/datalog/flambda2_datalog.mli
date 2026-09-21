@@ -77,6 +77,56 @@ module Datalog : sig
 
   type (!'t, !'k, !'v) table
 
+  type 'v result_repr
+
+  val unit_repr : unit result_repr
+
+  (** Custom result representation in a user-defined semi-lattice, extended with
+      a greatest element [Null].
+
+      [join_or_null] should return [Null] for elements that do not have a join
+      in the user-defined semi-lattice (i.e. whose join in the extended lattice
+      is [Null]).
+
+      [diff_or_null v1 v2] must satisfy the equation:
+
+      [meet v2 (diff_or_null v1 v2) = meet v2 v1]
+
+      i.e. it returns some representation of the "extra" information provided by
+      [v1] on top of [v2]. The Datalog engine uses [Null] results from
+      [diff_or_null] to detect fixpoints ([Null] is the greatest element of the
+      extended lattice, so [meet x Null = x]).
+
+      The default implementation for [diff_or_null v1 v2] is:
+
+      [if v1 == v2 then Or_null.null else Or_null.this v1]
+
+      i.e. it will only detect fixpoints for values that are *physically*
+      unchanged. *)
+  val custom_repr :
+    print:(Format.formatter -> 'a -> unit) ->
+    meet:('a -> 'a -> 'a) ->
+    join_or_null:('a -> 'a -> 'a Or_null.t) ->
+    ?diff_or_null:('a -> 'a -> 'a Or_null.t) ->
+    unit ->
+    'a result_repr
+
+  (** Simpler interface for custom value representation of tables that are only
+      read, never written.
+
+      Trying to [deduce] facts about tables with an [input_repr] representation
+      will result in a runtime error. *)
+  val input_repr : print:(Format.formatter -> 'a -> unit) -> 'a result_repr
+
+  (** [table]s are relations with non-unit values; see the documentation for
+      [create_relation]. *)
+  val create_table :
+    ?provenance:bool ->
+    name:string ->
+    result_repr:'v result_repr ->
+    ('t, 'k, 'v) Column.hlist ->
+    ('t, 'k, 'v) table
+
   val columns : ('t, 'k, 'v) table -> ('t, 'k, 'v) Column.hlist
 
   type ('t, 'k) relation = ('t, 'k, unit) table
@@ -140,14 +190,14 @@ module Datalog : sig
 
   type atom
 
-  type equality
+  type comparison
 
   type filter
 
   type hypothesis =
     [ `Atom of atom
     | `Not_atom of atom
-    | `Distinct of equality
+    | `Less_than_or_equal of comparison
     | `Filter of filter ]
 
   (** [atom rel args] represents the application of relation [rel] to the
@@ -168,10 +218,16 @@ module Datalog : sig
   val not : [< `Atom of atom] -> [> `Not_atom of atom]
 
   val distinct :
-    (_, 'k, _) Column.id -> 'k Term.t -> 'k Term.t -> [> `Distinct of equality]
+    (_, 'k, _) Column.id -> 'k Term.t -> 'k Term.t -> [> `Filter of filter]
 
   val filter :
     ('k Constant.hlist -> bool) -> 'k Term.hlist -> [> `Filter of filter]
+
+  val less_than_or_equal :
+    (_, 'k, 'v) table ->
+    'k Term.hlist ->
+    'v Term.t ->
+    [> `Less_than_or_equal of comparison]
 
   type database
 
@@ -513,6 +569,7 @@ module Datalog : sig
 
   type deduction =
     [ `Atom of atom
+    | `Less_than_or_equal of comparison
     | `And of deduction list ]
 
   val and_ : 'a list -> [> `And of 'a list]

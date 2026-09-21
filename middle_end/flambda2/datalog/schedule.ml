@@ -107,7 +107,7 @@ type stats =
   }
 
 let extra_atoms_for_provenance ~stats ~rule_id atom =
-  let (Lang.Atom (relation, args)) = atom in
+  let (Lang.Atom (relation, args, _)) = atom in
   match relation with
   | Table tid when Table.Id.has_provenance tid ->
     let provenance_fn bindings keys =
@@ -164,7 +164,7 @@ let create_rule variables rule =
   let rule_id = fresh_rule_id () in
   let has_input_table =
     Iarray.exists
-      (fun (Lang.Atom (relation, _)) ->
+      (fun (Lang.Atom (relation, _, _)) ->
         match relation with
         | Table _ -> true
         | Unless _ | Filter _ | Callback_with_bindings _ | Distinct _ -> false)

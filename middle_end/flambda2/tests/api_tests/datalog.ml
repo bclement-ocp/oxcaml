@@ -178,3 +178,79 @@ let () =
   Format.eprintf
     "@[<v 2>Database after conditional schedule (disabled):@ @[<v>%a@]@]@.@."
     print db
+
+let int_max_repr =
+  custom_repr () ~print:Format.pp_print_int ~meet:max
+    ~join_or_null:(fun n1 n2 -> Or_null.this (min n1 n2))
+    ~diff_or_null:(fun n1 n2 ->
+      if n1 > n2 then Or_null.this n1 else Or_null.null)
+
+let count_table = create_table ~name:"count" ~result_repr:int_max_repr [node]
+
+let count n c = less_than_or_equal count_table [n] c
+
+let marked_with_count_less_than_4_rel =
+  create_relation ~name:"marked_with_count_less_than_4" [node]
+
+let marked_with_count_less_than_4 n = atom marked_with_count_less_than_4_rel [n]
+
+let count_marked_rule =
+  compile ["X"; "C"] (fun [x; c] ->
+      where
+        [marked [x]; count x c; filter (fun [c] -> c < 4) [c]]
+        (deduce (marked_with_count_less_than_4 x)))
+
+let max_marked_with_count_less_than_4_table =
+  create_table ~name:"max_marked_with_count_less_than_4"
+    ~result_repr:int_max_repr []
+
+let max_marked_with_count_less_than_4_rule =
+  compile ["X"; "C"] (fun [x; c] ->
+      where
+        [marked_with_count_less_than_4 x; count x c]
+        (deduce
+           (less_than_or_equal max_marked_with_count_less_than_4_table [] c)))
+
+let () =
+  let db =
+    set_table count_table
+      (Node.Map.of_list [n1, 1; n2, 2; n3, 3; n4, 4; n5, 5])
+      db
+  in
+  let schedule =
+    Schedule.saturate
+      [ mark_successors_conditional_rule;
+        mark_successors_flag_rule;
+        count_marked_rule;
+        max_marked_with_count_less_than_4_rule ]
+  in
+  let db = Schedule.run schedule db in
+  Format.eprintf "@[<v 2>Database after marked count:@ @[<v>%a@]@]@.@." print db
+
+let () =
+  let min_count_table =
+    create_table ~name:"min_count" ~result_repr:int_max_repr [node; node]
+  in
+  let min_count_rule =
+    compile ["X"; "Y"; "C"] (fun [x; y; c] ->
+        where
+          [ distinct node x y;
+            marked [x];
+            marked [y];
+            less_than_or_equal count_table [x] c;
+            less_than_or_equal count_table [y] c ]
+          (deduce (less_than_or_equal min_count_table [x; y] c)))
+  in
+  let db =
+    set_table count_table
+      (Node.Map.of_list [n1, 1; n2, 2; n3, 3; n4, 4; n5, 5])
+      db
+  in
+  let schedule =
+    Schedule.saturate
+      [ mark_successors_conditional_rule;
+        mark_successors_flag_rule;
+        min_count_rule ]
+  in
+  let db = Schedule.run schedule db in
+  Format.eprintf "@[<v 2>Database after min count:@ @[<v>%a@]@]@.@." print db

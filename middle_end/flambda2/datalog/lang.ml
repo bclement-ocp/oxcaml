@@ -53,7 +53,8 @@ module Variable = struct
     type nonrec 'a t = 'a t
   end)
 
-  let print ppf { name; tid = _ } = Format.fprintf ppf "%s" name
+  let print ppf { name; tid } =
+    Format.fprintf ppf "%s/%d" name (Type.Id.uid tid)
 
   let create name = { name; tid = Type.Id.make () }
 
@@ -134,19 +135,23 @@ module Relation = struct
     | Callback_with_bindings (_fn, name) -> Format.fprintf ppf "not %s" name
 end
 
-type atom = Atom : ('k, 'v) relation * 'k Term.hlist -> atom
+type atom =
+  | Atom : ('k, 'v) relation * 'k Term.hlist * 'v variable option -> atom
 
-let print_atom ppf (Atom (relation, terms)) =
-  Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])@]" Relation.print relation
+let print_atom ppf (Atom (relation, terms, var_opt)) =
+  Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])%a@]" Relation.print relation
     (Term.print_hlist ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ "))
     terms
+    (Format.pp_print_option (fun ppf var ->
+         Format.fprintf ppf " <= %a" Variable.print var))
+    var_opt
 
-let print_neg_atom ppf (Atom (relation, terms)) =
+let print_neg_atom ppf (Atom (relation, terms, _)) =
   Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])@]" Relation.print_neg relation
     (Term.print_hlist ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ "))
     terms
 
-let atom relation terms = Atom (relation, terms)
+let atom relation terms = Atom (relation, terms, None)
 
 let table tid args = atom (Table tid) args
 
@@ -158,6 +163,8 @@ let filter ?(name = "<filter>") fn args = atom (Filter (fn, name)) args
 
 let callback_with_bindings ~name fn args =
   atom (Callback_with_bindings (fn, name)) args
+
+let less_than_or_equal tid args value = Atom (Table tid, args, Some value)
 
 type rule =
   { head : atom iarray;

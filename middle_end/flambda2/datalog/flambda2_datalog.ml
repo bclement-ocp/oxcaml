@@ -43,6 +43,24 @@ module Datalog = struct
 
   type (!'t, !'k, !'v) table = ('t, 'k, 'v) Table.Id.t
 
+  type 'v result_repr = 'v Table.result_repr
+
+  let unit_repr = Table.unit_repr
+
+  let custom_repr = Table.custom_repr
+
+  let input_repr ~print =
+    custom_repr () ~print
+      ~meet:(fun x y ->
+        if x == y
+        then x
+        else
+          Misc.fatal_errorf
+            "Unexpected meet of distinct values with input representation:@ \
+             @[%a@]@ and@ @[%a@]"
+            print x print y)
+      ~join_or_null:(fun x y -> if x == y then Or_null.this x else Or_null.null)
+
   let create_table ?(provenance = true) ~name ~result_repr columns =
     Table.Id.create ~provenance ~name ~columns ~result_repr
 
@@ -167,54 +185,61 @@ module Datalog = struct
 
   module Schedule = Schedule
 
+  type atom = Atom : ('t, 'k, unit) Table.Id.t * 'k Lang.Term.hlist -> atom
+
   type rule = Schedule.rule
 
   type deduction =
     [ `Atom of atom
+    | `Less_than_or_equal of Lang.atom
     | `And of deduction list ]
 
   let and_ atoms = `And atoms
 
+  let less_than_or_equal tid args term =
+    match (term : _ Lang.Term.t) with
+    | Literal _ ->
+      Misc.fatal_error "Datalog: comparison with constants are not supported"
+    | Variable var -> `Less_than_or_equal (Lang.less_than_or_equal tid args var)
+
   let rec flatten atoms acc =
     match atoms with
-    | `Atom atom -> atom :: acc
+    | `Atom (Atom (id, args)) -> Lang.table id args :: acc
+    | `Less_than_or_equal atom -> atom :: acc
     | `And atoms ->
       List.fold_left (fun acc atoms -> flatten atoms acc) acc atoms
 
   let deduce deduction = Datalog.deduce (flatten deduction [])
 
-  type equality =
-    | Equality : (_, 'k, _) Column.id * 'k Term.t * 'k Term.t -> equality
+  type comparison = Lang.atom
 
-  type filter = Filter : ('k Constant.hlist -> bool) * 'k Term.hlist -> filter
+  type filter = Lang.atom
 
   type hypothesis =
     [ `Atom of atom
     | `Not_atom of atom
-    | `Distinct of equality
-    | `Filter of filter ]
+    | `Less_than_or_equal of Lang.atom
+    | `Filter of Lang.atom ]
 
   let atom id args = `Atom (Atom (id, args))
 
   let not (`Atom atom) = `Not_atom atom
 
-  let distinct c x y = `Distinct (Equality (c, x, y))
+  let distinct c x y = `Filter (Lang.distinct c x y)
 
-  let filter f args = `Filter (Filter (f, args))
+  let filter f args = `Filter (Lang.filter f args)
 
   let where predicates f =
     List.fold_left
       (fun f predicate ->
         match predicate with
-        | `Atom (Atom (id, args)) -> where_atom id args f
-        | `Not_atom (Atom (id, args)) -> unless_atom id args f
-        | `Distinct (Equality (column, t1, t2)) -> unless_eq column t1 t2 f
-        | `Filter (Filter (p, args)) -> Datalog.filter p args f)
+        | `Atom (Atom (id, args)) -> where_atom (Lang.table id args) f
+        | `Not_atom (Atom (id, args)) -> where_atom (Lang.unless id args) f
+        | `Less_than_or_equal atom | `Filter atom -> where_atom atom f)
       f predicates
 
   module Cursor = struct
     type ('p, 'v) with_parameters = ('p, 'v) Cursor.With_parameters.t
-    (* ('p, (action, 'v Constant.hlist, nil) Cursor0.instruction) cursor *)
 
     type 'v t = (nil, 'v) with_parameters
 

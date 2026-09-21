@@ -32,7 +32,7 @@ module Syntax : sig
   val ( ==> ) :
     ([< `And of 'a
      | `Atom of atom
-     | `Distinct of equality
+     | `Less_than_or_equal of comparison
      | `Filter of filter
      | `Not_atom of atom
      | `Only_if of 'a * hypothesis ]
@@ -47,7 +47,7 @@ module Syntax : sig
   val ( =>? ) :
     ([< `And of 'a
      | `Atom of atom
-     | `Distinct of equality
+     | `Less_than_or_equal of comparison
      | `Filter of filter
      | `Not_atom of atom
      | `Only_if of 'a * hypothesis ]
@@ -76,7 +76,7 @@ module Syntax : sig
     ('a Term.hlist * 'b Term.hlist ->
     ([< `And of 'c
      | `Atom of atom
-     | `Distinct of equality
+     | `Less_than_or_equal of comparison
      | `Filter of filter
      | `Not_atom of atom
      | `Only_if of 'c * hypothesis ]

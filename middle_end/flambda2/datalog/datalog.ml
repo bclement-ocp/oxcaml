@@ -45,17 +45,9 @@ module Term = struct
   let constant = Lang.lit
 end
 
-(* CR-soon bclement: we should just use [Lang.atom]. *)
-type atom = Atom : ('t, 'k, unit) Table.Id.t * 'k Term.hlist -> atom
-
-type callback = Lang.atom
-
-let create_callback_with_bindings func ~name args =
-  Lang.callback_with_bindings ~name func args
-
-type (_, _) terminator =
-  | Yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.With_parameters.t) terminator
-  | Deduce : atom list -> (Heterogenous_list.nil, Schedule.rule) terminator
+type (_, _) head =
+  | Yield : 'v Term.hlist -> ('p, ('p, 'v) Cursor.With_parameters.t) head
+  | Deduce : Lang.atom list -> (Heterogenous_list.nil, Schedule.rule) head
 
 type levels = Levels : 'a Variable.hlist -> levels
 
@@ -68,42 +60,16 @@ let rec prepend_vars : type a. a Variable.hlist -> levels -> levels =
     Levels (var :: vars')
 
 type ('p, 'a) program =
-  { conditions : Lang.atom list;
-    filters : Lang.atom list;
-    callbacks : Lang.atom list;
-    terminator : ('p, 'a) terminator;
+  { body : Lang.atom list;
+    head : ('p, 'a) head;
     levels : levels
   }
 
-let add_condition condition program =
-  { program with conditions = condition :: program.conditions }
+let where_atom atom program = { program with body = atom :: program.body }
 
-let add_filter filter program =
-  { program with filters = filter :: program.filters }
+let yield args = { body = []; head = Yield args; levels = Levels [] }
 
-let where_atom tid args body = add_condition (Lang.table tid args) body
-
-let unless_atom tid args body = add_filter (Lang.unless tid args) body
-
-let unless_eq repr x y body = add_filter (Lang.distinct repr x y) body
-
-let filter fn args body = add_filter (Lang.filter fn args) body
-
-let yield args =
-  { conditions = [];
-    filters = [];
-    callbacks = [];
-    terminator = Yield args;
-    levels = Levels []
-  }
-
-let deduce head =
-  { conditions = [];
-    filters = [];
-    callbacks = [];
-    terminator = Deduce head;
-    levels = Levels []
-  }
+let deduce head = { body = []; head = Deduce head; levels = Levels [] }
 
 let foreach : type a p b.
     a String.hlist -> (a Term.hlist -> (p, b) program) -> (p, b) program =
@@ -112,42 +78,32 @@ let foreach : type a p b.
   let prog = f (Term.variables vars) in
   { prog with levels = prepend_vars vars prog.levels }
 
-let compile_terminator : type p a.
+let compile_rule : type p a.
     parameters:p Lang.Variable.hlist ->
     variables:_ ->
-    head:_ ->
     body:_ ->
-    (p, a) terminator ->
+    (p, a) head ->
     a =
- fun ~parameters ~variables ~head ~body -> function
+ fun ~parameters ~variables ~body -> function
   | Yield args ->
     let callback = ref ignore in
     let yield =
-      create_callback_with_bindings ~name:"yield"
+      Lang.callback_with_bindings ~name:"yield"
         (fun _ args -> !callback args)
         args
     in
     let variables = Lang.Variable.hlist_to_list variables in
     Cursor.With_parameters.create_from_rule ~callback parameters variables
-      (Lang.rule ~head:(yield :: head) ~body)
-  | Deduce deductions ->
+      (Lang.rule ~head:[yield] ~body)
+  | Deduce head ->
     let [] = parameters in
-    let head =
-      List.rev_append
-        (List.rev_map
-           (fun (Atom (table, args)) -> Lang.table table args)
-           deductions)
-        head
-    in
     Schedule.create_rule
       (Lang.Variable.hlist_to_list variables)
       (Lang.rule ~head ~body)
 
-let compile_program parameters
-    { conditions; filters; callbacks; terminator; levels } =
+let compile_program parameters { body; head; levels } =
   let (Levels variables) = levels in
-  compile_terminator ~parameters ~variables ~head:callbacks
-    ~body:(filters @ conditions) terminator
+  compile_rule ~parameters ~variables ~body head
 
 let compile_with_parameters0 ps f =
   let ps = Parameter.list ps in
