@@ -98,6 +98,7 @@ let union_total0 : type t k v.
     | column :: columns -> Column.union_total column (union_total columns) t1 t2
   in
   union_total columns t1 t2
+[@@inline]
 
 let union : type t k v. (t, k, v) Column.hlist -> v result_repr -> t -> t -> t =
  fun columns repr ->
@@ -118,6 +119,7 @@ let diff_or_null0 : type t k v.
       Column.diff_or_null column (diff_or_null columns) t1 t2
   in
   diff_or_null columns t1 t2
+[@@inline]
 
 let diff_or_null : type t k v.
     (t, k, v) Column.hlist -> v result_repr -> t -> t -> t Or_null.t =
