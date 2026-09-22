@@ -294,7 +294,7 @@ module Relations = struct
     Datalog.create_relation ~name:"field_of_constructor_is_used" Cols.[n; f]
 
   let field_of_constructor_is_used constr field =
-    field_of_constructor_is_used_tbl % [constr; field]
+    atom field_of_constructor_is_used_tbl [constr; field]
 
   let field_of_constructor_is_used_top =
     rel2 "field_of_constructor_is_used_top" Cols.[n; f]
@@ -567,9 +567,7 @@ let add_usages_through_function_slots :
     follow_known_arity_calls:bool -> Datalog.database -> usages -> usages =
   let open! Fixit in
   let stmt =
-    let@ follow_known_arity_calls =
-      paramc "follow_known_arity_calls" One.cols One.of_bool
-    in
+    let@ follow_known_arity_calls = paramb "follow_known_arity_calls" in
     let@ in_ = param "in_" Cols.[n] in
     let@ out = fix1' in_ in
     [ (let$ [x; apply_witness; call_witness; code_id; my_closure_of_code_id; y] =
@@ -580,7 +578,7 @@ let add_usages_through_function_slots :
            "my_closure_of_code_id";
            "y" ]
        in
-       [ One.flag follow_known_arity_calls;
+       [ follow_known_arity_calls % [];
          out % [x];
          rev_accessor ~base:x
            !!Field.known_arity_call_witness
@@ -612,7 +610,7 @@ let compute_usages_by_function_slots_not_following_known_arity_calls :
   let open! Fixit in
   let stmt =
     let@ in_ = param "in_" Cols.[f; n] in
-    let@ [out; top] = fix' [in_; empty One.cols] in
+    let@ [out; top] = fix' [in_; false_] in
     [ (let$ [fs; x; field; y; z] = ["fs"; "x"; "field"; "y"; "z"] in
        [ out % [fs; x];
          rev_accessor ~base:x field ~to_:y;
@@ -621,14 +619,14 @@ let compute_usages_by_function_slots_not_following_known_arity_calls :
          has_usage z ]
        ==> out % [field; z]);
       (let$ [fs; x] = ["fs"; "x"] in
-       [out % [fs; x]; any_usage x] ==> One.flag top) ]
+       [out % [fs; x]; any_usage x] ==> top % []) ]
   in
   fun db (Usages s) current_function_slot ->
     let table =
       Field.Map.singleton (Field.function_slot current_function_slot) s
     in
     let [r; top] = run stmt db table in
-    if One.to_bool top
+    if top
     then Or_unknown.Unknown
     else
       Or_unknown.Known
@@ -658,24 +656,22 @@ let get_one_field_usage :
     (let@ in_field = param1s "in_field" Cols.f in
      let@ in_ = paramc "in_" Cols.[n] (fun (Usages s) -> s) in
      let+ [used_as_top; used_as_vars] =
-       let@ [used_as_top; used_as_vars] =
-         seq' [empty One.cols; empty Cols.[n]]
-       in
+       let@ [used_as_top; used_as_vars] = seq' [false_; empty Cols.[n]] in
        [ (let$ [x; field; y] = ["x"; "field"; "y"] in
           [ in_ % [x];
             in_field % [field];
             rev_accessor ~base:x field ~to_:y;
             any_usage y ]
-          ==> One.flag used_as_top);
+          ==> used_as_top % []);
          (let$ [x; field; y] = ["x"; "field"; "y"] in
-          [ ~~(One.flag used_as_top);
+          [ ~~(used_as_top % []);
             in_ % [x];
             in_field % [field];
             rev_accessor ~base:x field ~to_:y;
             has_usage y ]
           ==> used_as_vars % [y]) ]
      in
-     if One.to_bool used_as_top
+     if used_as_top
      then Or_unknown_or_bottom.Unknown
      else if Code_id_or_name.Map.is_empty used_as_vars
      then Or_unknown_or_bottom.Bottom
@@ -729,18 +725,18 @@ let get_one_field_usage_of_constructors :
     (let@ in_ = param "in_" Cols.[n] in
      let@ fieldt = param1s "field" Cols.f in
      let+ [out1; out2] =
-       let@ [out1; out2] = seq' [empty One.cols; empty Cols.[n]] in
+       let@ [out1; out2] = seq' [false_; empty Cols.[n]] in
        [ (let$ [x; field] = ["x"; "field"] in
           [in_ % [x]; fieldt % [field]; field_of_constructor_is_used_top x field]
-          ==> One.flag out1);
+          ==> out1 % []);
          (let$ [x; field; y] = ["x"; "field"; "y"] in
           [ in_ % [x];
             fieldt % [field];
             field_of_constructor_is_used_as x field y;
-            ~~(One.flag out1) ]
+            ~~(out1 % []) ]
           ==> out2 % [y]) ]
      in
-     if One.to_bool out1
+     if out1
      then Or_unknown_or_bottom.Unknown
      else if Code_id_or_name.Map.is_empty out2
      then Or_unknown_or_bottom.Bottom
@@ -1059,14 +1055,13 @@ let get_direct_sources :
   run
     (let@ in_ = param "in_" Cols.[n] in
      let+ [any; out] =
-       let@ [any; out] = fix' [empty One.cols; empty Cols.[n]] in
+       let@ [any; out] = fix' [false_; empty Cols.[n]] in
        [ (let$ [x] = ["x"] in
-          [in_ % [x]; any_source x] ==> One.flag any);
+          [in_ % [x]; any_source x] ==> any % []);
          (let$ [x; y] = ["x"; "y"] in
-          [~~(One.flag any); in_ % [x]; sources x y; has_source y] ==> out % [y])
-       ]
+          [~~(any % []); in_ % [x]; sources x y; has_source y] ==> out % [y]) ]
      in
-     if One.to_bool any then Any_source else Sources out)
+     if any then Any_source else Sources out)
 
 let get_field_sources :
     Datalog.database -> unit Code_id_or_name.Map.t -> Field.t -> sources =
@@ -1075,16 +1070,16 @@ let get_field_sources :
     (let@ in_ = param "in_" Cols.[n] in
      let@ in_field = param1s "in_field" Cols.f in
      let+ [any; out] =
-       let@ [any; out] = fix' [empty One.cols; empty Cols.[n]] in
+       let@ [any; out] = fix' [false_; empty Cols.[n]] in
        [ (let$ [x; field; y] = ["x"; "field"; "y"] in
-          [ ~~(One.flag any);
+          [ ~~(any % []);
             in_ % [x];
             in_field % [field];
             constructor ~base:x field ~from:y;
             any_source y ]
-          ==> One.flag any);
+          ==> any % []);
          (let$ [x; field; y; z] = ["x"; "field"; "y"; "z"] in
-          [ ~~(One.flag any);
+          [ ~~(any % []);
             in_ % [x];
             in_field % [field];
             constructor ~base:x field ~from:y;
@@ -1092,7 +1087,7 @@ let get_field_sources :
             has_source z ]
           ==> out % [z]) ]
      in
-     if One.to_bool any then Any_source else Sources out)
+     if any then Any_source else Sources out)
 
 let cofield_has_use :
     Datalog.database -> unit Code_id_or_name.Map.t -> Cofield.t -> bool =
@@ -1101,15 +1096,15 @@ let cofield_has_use :
     (let@ in_ = param "in_" Cols.[n] in
      let@ in_field = param1s "in_field" Cols.cf in
      let+ out =
-       let@ out = fix1' (empty One.cols) in
+       let@ out = fix1' false_ in
        [ (let$ [x; field; y] = ["x"; "field"; "y"] in
           [ in_ % [x];
             in_field % [field];
             parameter ~base:x field ~to_:y;
             has_usage y ]
-          ==> One.flag out) ]
+          ==> out % []) ]
      in
-     One.to_bool out)
+     out)
 
 let rec arguments_used_by_call db ep callee_sources grouped_args =
   match grouped_args with

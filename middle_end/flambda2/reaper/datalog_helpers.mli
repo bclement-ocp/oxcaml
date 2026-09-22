@@ -18,6 +18,8 @@ module Syntax : sig
     include Datalog
   end
 
+  type (!'t, !'k) rel
+
   val query : 'a -> 'a
 
   val ( let$ ) : 'a String.hlist -> ('a Term.hlist -> (nil, 'b) program) -> 'b
@@ -63,7 +65,7 @@ module Syntax : sig
 
   val not : bool -> bool
 
-  val ( % ) : ('a, 'b) relation -> 'b Term.hlist -> [> `Atom of atom]
+  val ( % ) : ('a, 'b) rel -> 'b Term.hlist -> [> `Atom of atom]
 
   val when1 : ('a -> bool) -> 'a Term.t -> [> `Filter of filter]
 
@@ -94,8 +96,7 @@ module Cols : sig
   val cf : ('a Cofield.Map.t, Cofield.t, 'a) Syntax.Column.id
 end
 
-val nrel :
-  string -> ('a, 'b, unit) Syntax.Column.hlist -> ('a, 'b) Datalog.relation
+val nrel : string -> ('a, 'b, unit) Syntax.Column.hlist -> ('a, 'b) Syntax.rel
 
 val rel1 :
   string ->
@@ -128,25 +129,32 @@ module Fixit : sig
 
   val run : ('a, 'a, 'b) stmt -> Syntax.database -> 'b
 
-  val empty : ('t, 'k, unit) Syntax.Column.hlist -> ('t, 'k, unit) Syntax.table
+  val empty : ('t, 'k, unit) Syntax.Column.hlist -> ('t, 'k) Syntax.rel
+
+  val false_ : (bool, Syntax.nil) Syntax.rel
 
   val param :
     string ->
     ('a, 'b, unit) Syntax.Column.hlist ->
-    (('a, 'b, unit) Syntax.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b) Syntax.rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'a -> 'd) stmt
 
   val paramc :
     string ->
     ('a, 'b, unit) Syntax.Column.hlist ->
     ('e -> 'a) ->
-    (('a, 'b, unit) Syntax.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b) Syntax.rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'e -> 'd) stmt
+
+  val paramb :
+    string ->
+    ((bool, Syntax.nil) Syntax.rel -> ('x, 'y, 'd) stmt) ->
+    ('x, 'y, bool -> 'd) stmt
 
   val param1s :
     string ->
     ('a, 'b, unit) Syntax.Column.id ->
-    (('a, 'b -> Syntax.nil, unit) Syntax.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b -> Syntax.nil) Syntax.rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'b -> 'd) stmt
 
   val param0 :
@@ -157,18 +165,18 @@ module Fixit : sig
   val local0 :
     ('a, 'b, unit) Syntax.Column.hlist ->
     ('a, 'c, 'c) stmt ->
-    (('a, 'b, unit) Syntax.table -> ('d, 'c, 'c) stmt) ->
+    (('a, 'b) Syntax.rel -> ('d, 'c, 'c) stmt) ->
     ('d, 'c, 'c) stmt
 
   module Table : sig
     type (_, _) hlist =
       | [] : (Syntax.nil, Syntax.nil) hlist
       | ( :: ) :
-          ('t, 'k, unit) Syntax.table * ('ts, 'xs) hlist
-          -> ('t -> 'ts, ('t, 'k, unit) Syntax.table -> 'xs) hlist
+          ('t, 'k) Syntax.rel * ('ts, 'xs) hlist
+          -> ('t -> 'ts, ('t, 'k) Syntax.rel -> 'xs) hlist
   end
 
-  val return : ('a, 'b, unit) Syntax.table -> ('a, 'c, 'c) stmt
+  val return : ('a, 'b) Syntax.rel -> ('a, 'c, 'c) stmt
 
   val fix :
     ('a, 'b) Table.hlist ->
@@ -183,9 +191,9 @@ module Fixit : sig
     ('x, 'y, 'd) stmt
 
   val fix1 :
-    ('t, 'k, unit) Syntax.table ->
-    (('t, 'k, unit) Syntax.table -> Syntax.rule list) ->
-    (('t, 'k, unit) Syntax.table -> ('x, 'y, 'd) stmt) ->
+    ('t, 'k) Syntax.rel ->
+    (('t, 'k) Syntax.rel -> Syntax.rule list) ->
+    (('t, 'k) Syntax.rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'd) stmt
 
   val fix' :
@@ -199,32 +207,9 @@ module Fixit : sig
     ('a Syntax.Constant.hlist, 'c, 'c) stmt
 
   val fix1' :
-    ('t, 'k, unit) Syntax.table ->
-    (('t, 'k, unit) Syntax.table -> Syntax.rule list) ->
+    ('t, 'k) Syntax.rel ->
+    (('t, 'k) Syntax.rel -> Syntax.rule list) ->
     ('t, 'c, 'c) stmt
 
   val ( let@ ) : ('a -> 'b) -> 'a -> 'b
-end
-
-module One : sig
-  type t
-
-  val print : Format.formatter -> t -> unit
-
-  module Set : Container_types.Set with type elt = t
-
-  module Map : Container_types.Map_plus_iterator with type key = t
-
-  val datalog_column_id : ('a Map.t, t, 'a) Syntax.Column.id
-
-  val top : t
-
-  val flag :
-    (unit Map.t, t -> Syntax.nil, unit) Syntax.table -> [> `Atom of Syntax.atom]
-
-  val to_bool : unit Map.t -> bool
-
-  val of_bool : bool -> unit Map.t
-
-  val cols : (unit Map.t, t -> Syntax.nil, unit) Syntax.Column.hlist
 end

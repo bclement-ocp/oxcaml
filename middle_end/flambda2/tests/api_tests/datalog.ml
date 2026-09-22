@@ -135,8 +135,8 @@ let () =
   let db = Schedule.run schedule db in
   Format.eprintf "@[<v 2>Database after schedule:@ @[<v>%a@]@]@.@." print db
 
-let mark_successors_flag_table : (unit, nil, unit) table =
-  create_table ~name:"mark_predecessors" ~result_repr:unit_repr []
+let mark_successors_flag_table : (unit, nil) relation =
+  create_relation ~name:"mark_predecessors" []
 
 let mark_successors_flag = atom mark_successors_flag_table []
 

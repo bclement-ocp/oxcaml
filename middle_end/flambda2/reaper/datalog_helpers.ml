@@ -30,6 +30,32 @@
 module Syntax = struct
   include Datalog
 
+  (* CR-someday bclement: the datalog engine itself should provide a similar
+     functionality and hide the concrete type of the tables. *)
+
+  type (_, _) iso =
+    | Bool : (bool, unit) iso
+    | Column : ('t, 'k, 'v) Datalog.Column.id -> ('t, 't) iso
+
+  let inj : type t s. (t, s) iso -> t -> s Or_null.t = function
+    | Bool -> fun b -> if b then Or_null.this () else Or_null.null
+    | Column head ->
+      fun t -> if Column.is_empty head t then Or_null.null else Or_null.this t
+
+  let proj : type t s. (t, s) iso -> s Or_null.t -> t = function
+    | Bool -> Or_null.is_this
+    | Column head -> (
+      fun t -> match t with Null -> Column.empty head | This t -> t)
+
+  type (!_, !_) rel =
+    | Rel : ('s, 'k, unit) table * ('t, 's) iso -> ('t, 'k) rel
+
+  let get_rel (Rel (table, iso)) db =
+    Datalog.get_table_or_null table db |> proj iso
+
+  let set_rel (Rel (table, iso)) value db =
+    Datalog.set_table_or_null table (inj iso value) db
+
   let query q = q
 
   let ( let$ ) xs f = compile xs f
@@ -61,7 +87,8 @@ module Syntax = struct
   (* Prevent shadowing [not] *)
   let not = Stdlib.not
 
-  let ( % ) = atom
+  let ( % ) (type t k) (rel : (t, k) rel) (args : k Term.hlist) =
+    match rel with Rel (table, _) -> atom table args
 
   let when1 f x = filter (fun [x] -> f x) [x]
 
@@ -87,18 +114,24 @@ end
 
 open! Syntax
 
-let nrel name schema = Datalog.create_relation ~provenance:false ~name schema
+let bool_ name = Rel (Datalog.create_relation ~provenance:false ~name [], Bool)
+
+let nrel (type t k) name (schema : (t, k, unit) Column.hlist) : (t, k) rel =
+  match schema with
+  | [] -> Misc.fatal_error "Cannot create nullary table (hint: use bool_)"
+  | head :: _ ->
+    Rel (Datalog.create_relation ~provenance:false ~name schema, Column head)
 
 let rel1 name schema =
-  let tbl = Datalog.create_relation ~name schema in
+  let tbl = nrel name schema in
   fun x -> tbl % [x]
 
 let rel2 name schema =
-  let tbl = Datalog.create_relation ~name schema in
+  let tbl = nrel name schema in
   fun x y -> tbl % [x; y]
 
 let rel3 name schema =
-  let tbl = Datalog.create_relation ~name schema in
+  let tbl = nrel name schema in
   fun x y z -> tbl % [x; y; z]
 
 module Fixit : sig
@@ -112,26 +145,33 @@ module Fixit : sig
   val run : ('a, 'a, 'b) stmt -> Datalog.database -> 'b
 
   (* Don't try to write to this one ;) *)
-  val empty :
-    ('t, 'k, unit) Datalog.Column.hlist -> ('t, 'k, unit) Datalog.table
+  val empty : ('t, 'k, unit) Datalog.Column.hlist -> ('t, 'k) rel
+
+  (* Or to this one! *)
+  val false_ : (bool, nil) rel
 
   val param :
     string ->
     ('a, 'b, unit) Datalog.Column.hlist ->
-    (('a, 'b, unit) Datalog.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b) rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'a -> 'd) stmt
 
   val paramc :
     string ->
     ('a, 'b, unit) Datalog.Column.hlist ->
     ('e -> 'a) ->
-    (('a, 'b, unit) Datalog.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b) rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'e -> 'd) stmt
+
+  val paramb :
+    string ->
+    ((bool, Syntax.nil) rel -> ('x, 'y, 'd) stmt) ->
+    ('x, 'y, bool -> 'd) stmt
 
   val param1s :
     string ->
     ('a, 'b, unit) Datalog.Column.id ->
-    (('a, 'b -> nil, unit) Datalog.table -> ('x, 'y, 'd) stmt) ->
+    (('a, 'b -> nil) rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'b -> 'd) stmt
 
   val param0 :
@@ -142,18 +182,18 @@ module Fixit : sig
   val local0 :
     ('a, 'b, unit) Datalog.Column.hlist ->
     ('a, 'c, 'c) stmt ->
-    (('a, 'b, unit) Datalog.table -> ('d, 'c, 'c) stmt) ->
+    (('a, 'b) rel -> ('d, 'c, 'c) stmt) ->
     ('d, 'c, 'c) stmt
 
   module Table : sig
     type (_, _) hlist =
       | [] : (Datalog.nil, Datalog.nil) hlist
       | ( :: ) :
-          ('t, 'k, unit) Datalog.table * ('ts, 'xs) hlist
-          -> ('t -> 'ts, ('t, 'k, unit) Datalog.table -> 'xs) hlist
+          ('t, 'k) rel * ('ts, 'xs) hlist
+          -> ('t -> 'ts, ('t, 'k) rel -> 'xs) hlist
   end
 
-  val return : ('a, 'b, unit) Datalog.table -> ('a, 'c, 'c) stmt
+  val return : ('a, 'b) rel -> ('a, 'c, 'c) stmt
 
   val fix :
     ('a, 'b) Table.hlist ->
@@ -168,9 +208,9 @@ module Fixit : sig
     ('x, 'y, 'd) stmt
 
   val fix1 :
-    ('t, 'k, unit) Datalog.table ->
-    (('t, 'k, unit) Datalog.table -> Datalog.rule list) ->
-    (('t, 'k, unit) Datalog.table -> ('x, 'y, 'd) stmt) ->
+    ('t, 'k) rel ->
+    (('t, 'k) rel -> Datalog.rule list) ->
+    (('t, 'k) rel -> ('x, 'y, 'd) stmt) ->
     ('x, 'y, 'd) stmt
 
   val fix' :
@@ -184,30 +224,27 @@ module Fixit : sig
     ('a Datalog.Constant.hlist, 'c, 'c) stmt
 
   val fix1' :
-    ('t, 'k, unit) Datalog.table ->
-    (('t, 'k, unit) Datalog.table -> Datalog.rule list) ->
-    ('t, 'c, 'c) stmt
+    ('t, 'k) rel -> (('t, 'k) rel -> Datalog.rule list) -> ('t, 'c, 'c) stmt
 
   val ( let@ ) : ('a -> 'b) -> 'a -> 'b
 end = struct
-  let empty columns = Datalog.create_relation ~name:"empty" columns
+  let empty columns = nrel "empty" columns
 
-  let local name columns = Datalog.create_relation ~name columns
+  let false_ = bool_ "false"
+
+  let local name (Rel (table, iso)) =
+    Rel (Datalog.create_relation ~name (Datalog.columns table), iso)
 
   module Table = struct
-    type ('t, 'k, 'v) t = ('t, 'k, 'v) Datalog.table
-
     type (_, _) hlist =
       | [] : (Datalog.nil, Datalog.nil) hlist
       | ( :: ) :
-          ('t, 'k, unit) t * ('ts, 'xs) hlist
-          -> ('t -> 'ts, ('t, 'k, unit) Datalog.table -> 'xs) hlist
+          ('t, 'k) rel * ('ts, 'xs) hlist
+          -> ('t -> 'ts, ('t, 'k) rel -> 'xs) hlist
 
     let rec locals : type a b. (a, b) hlist -> (a, b) hlist = function
       | [] -> []
-      | table :: tables ->
-        let columns = Datalog.columns table in
-        local "fix" columns :: locals tables
+      | table :: tables -> local "fix" table :: locals tables
 
     let rec copy : type a b.
         (a, b) hlist -> (a, b) hlist -> Datalog.database -> Datalog.database =
@@ -215,11 +252,7 @@ end = struct
       match from_tables, to_tables with
       | [], [] -> db
       | from_table :: from_tables, to_table :: to_tables ->
-        let db =
-          Datalog.set_table_or_null to_table
-            (Datalog.get_table_or_null from_table db)
-            db
-        in
+        let db = set_rel to_table (get_rel from_table db) db in
         copy from_tables to_tables db
 
     let rec get : type a b.
@@ -227,7 +260,7 @@ end = struct
      fun tables db ->
       match tables with
       | [] -> []
-      | table :: tables -> Datalog.get_table table db :: get tables db
+      | table :: tables -> get_rel table db :: get tables db
   end
 
   (* In [('s, 'r, 'f) stmt] the type variables have the following meaning:
@@ -245,7 +278,7 @@ end = struct
      ['r], but with the parameters introduced by the [param*] family of
      functions. *)
   type (_, _, _) stmt =
-    | Return : ('t, 'k, unit) Datalog.table -> ('t, 'c, 'c) stmt
+    | Return : ('t, 'k) rel -> ('t, 'c, 'c) stmt
     | Value : 'a option ref -> ('a, 'c, 'c) stmt
     | Run : Datalog.Schedule.t -> (unit, 'c, 'c) stmt
     | Seq : (unit, 'c, 'c) stmt * ('a, 'b, 'c) stmt -> ('a, 'b, 'c) stmt
@@ -268,7 +301,7 @@ end = struct
       (d, f, e) stmt -> (Datalog.database -> d -> f) -> Datalog.database -> e =
    fun stmt k db ->
     match stmt with
-    | Return table -> k db (Datalog.get_table table db)
+    | Return table -> k db (get_rel table db)
     | Value v -> k db (Option.get !v)
     | Call (stmt_f, stmt_arg) ->
       run stmt_arg (fun db arg -> run stmt_f k db arg) db
@@ -310,19 +343,23 @@ end = struct
         fun _db _value -> cell := None )
 
   let param name columns f =
-    let table = local name columns in
-    Input (f table, fun db x -> Datalog.set_table table x db)
+    let table = nrel name columns in
+    Input (f table, fun db x -> set_rel table x db)
 
   let paramc name columns g f =
-    let table = local name columns in
-    Input (f table, fun db x -> Datalog.set_table table (g x) db)
+    let table = nrel name columns in
+    Input (f table, fun db x -> set_rel table (g x) db)
+
+  let paramb name f =
+    let table = bool_ name in
+    Input (f table, fun db b -> set_rel table b db)
 
   let param1s name column f =
     paramc name [column] (fun key -> Column.singleton column key ()) f
 
   let local0 columns body f =
-    let table = local "local" columns in
-    Call (Input (f table, fun db x -> Datalog.set_table table x db), body)
+    let table = nrel "local" columns in
+    Call (Input (f table, fun db x -> set_rel table x db), body)
 
   let fix x f g =
     let y = Table.locals x in
@@ -342,13 +379,10 @@ end = struct
     Now (go, fun db -> Table.copy x y db)
 
   let fix1 x f g =
-    let y = local "fix" (Datalog.columns x) in
+    let y = local "fix" x in
     let schedule = Datalog.Schedule.saturate (f y) in
     let body = g y in
-    Now
-      ( Seq (Run schedule, body),
-        fun db ->
-          Datalog.set_table_or_null y (Datalog.get_table_or_null x db) db )
+    Now (Seq (Run schedule, body), fun db -> set_rel y (get_rel x db) db)
 
   let fix' x f =
     let y = Table.locals x in
@@ -371,48 +405,11 @@ end = struct
     Now (Map (go, fun db () -> Table.get y db), fun db -> Table.copy x y db)
 
   let fix1' x f =
-    let y = local "fix" (Datalog.columns x) in
+    let y = local "fix" x in
     let schedule = Datalog.Schedule.saturate (f y) in
     Now
-      ( Map (Run schedule, fun db () -> Datalog.get_table y db),
-        fun db ->
-          Datalog.set_table_or_null y (Datalog.get_table_or_null x db) db )
+      ( Map (Run schedule, fun db () -> get_rel y db),
+        fun db -> set_rel y (get_rel x db) db )
 
   let ( let@ ) f x = f x
-end
-
-module One : sig
-  type t
-
-  include Datalog.Column.S with type t := t
-
-  val top : t
-
-  val flag :
-    (unit Map.t, t -> Datalog.nil, unit) Datalog.table ->
-    [> `Atom of Datalog.atom]
-
-  val to_bool : unit Map.t -> bool
-
-  val of_bool : bool -> unit Map.t
-
-  val cols : (unit Map.t, t -> Datalog.nil, unit) Datalog.Column.hlist
-end = struct
-  include Datalog.Column.Make (struct
-    let name = "one"
-
-    let print ppf _ = Format.fprintf ppf "T"
-  end)
-
-  let top = 0
-
-  let flag tbl = Datalog.atom tbl [Datalog.Term.constant top]
-
-  let to_bool m = not (Map.is_empty m)
-
-  let of_bool b = if b then Map.singleton top () else Map.empty
-
-  let cols =
-    let open! Datalog.Column in
-    [datalog_column_id]
 end

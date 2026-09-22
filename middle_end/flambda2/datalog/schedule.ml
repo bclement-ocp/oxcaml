@@ -164,7 +164,7 @@ let create_rule variables rule =
   let rule_id = fresh_rule_id () in
   let has_input_table =
     Iarray.exists
-      (fun (Lang.Atom (relation, _, _)) ->
+      (fun (Lang.Atom (relation, _)) ->
         match relation with
         | Table _ -> true
         | Unless _ | Filter _ | Callback_with_bindings _ | Distinct _ -> false)
