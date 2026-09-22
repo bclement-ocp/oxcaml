@@ -41,10 +41,6 @@ module Datalog : sig
         that is part of a schema. *)
     type ('t, 'k, 'v) id
 
-    val empty : ('t, 'k, 'v) id -> 't
-
-    val is_empty : ('t, 'k, 'v) id -> 't -> bool
-
     val singleton : ('t, 'k, 'v) id -> 'k -> 'v -> 't
 
     type (_, _, _) hlist =

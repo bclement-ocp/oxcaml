@@ -231,18 +231,18 @@ let cannot_change_representation = rel1 "cannot_change_representation" Cols.[n]
 
 let cannot_unbox0_tbl = Datalog.create_relation ~name:"cannot_unbox0" Cols.[n]
 
-let cannot_unbox0 x = atom cannot_unbox0_tbl [x]
+let cannot_unbox0 x = cannot_unbox0_tbl % [x]
 
 let cannot_unbox = rel1 "cannot_unbox" Cols.[n]
 
 let to_unbox_tbl = Datalog.create_relation ~name:"to_unbox" Cols.[n]
 
-let to_unbox x = atom to_unbox_tbl [x]
+let to_unbox x = to_unbox_tbl % [x]
 
 let to_change_representation_tbl =
   Datalog.create_relation ~name:"to_change_representation" Cols.[n]
 
-let to_change_representation x = atom to_change_representation_tbl [x]
+let to_change_representation x = to_change_representation_tbl % [x]
 
 let lambda_lifting =
   Oxcaml_args.Extra_options.bool __LOC__ "reaper-lambda-lifting"
