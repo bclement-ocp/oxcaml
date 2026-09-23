@@ -31,14 +31,6 @@ open Heterogenous_list
 
 type ('t, 'k, 'v) id
 
-val singleton : ('t, 'k, 'v) id -> 'k -> 'v -> 't
-
-val union_total : ('t, 'k, 'v) id -> ('v -> 'v -> 'v) -> 't -> 't -> 't
-
-(* The returned [diff] is guaranteed to be non-empty if not null. *)
-val diff_or_null :
-  ('t, 'k, 'v) id -> ('v -> 'v -> 'v Or_null.t) -> 't -> 't -> 't Or_null.t
-
 type (_, _, _) hlist =
   | [] : ('v, nil, 'v) hlist
   | ( :: ) : ('t, 'k, 's) id * ('s, 'ks, 'v) hlist -> ('t, 'k -> 'ks, 'v) hlist
@@ -61,7 +53,20 @@ val is_empty : ('t, 'k, 'v) id -> 't -> bool
 
 val is_empty_hlist : ('t, 'k, 'v) hlist -> 't -> bool
 
+val singleton : ('t, 'k, 'v) id -> 'k -> 'v -> 't
+
 val singleton_hlist : ('t, 'k, 'v) hlist -> 'k Constant.hlist -> 'v -> 't
+
+val union_total : ('t, 'k, 'v) id -> ('v -> 'v -> 'v) -> 't -> 't -> 't
+
+val union_total_hlist : ('t, 'k, 'v) hlist -> ('v -> 'v -> 'v) -> 't -> 't -> 't
+
+(* The returned [diff] is guaranteed to be non-empty if not null. *)
+val diff_or_null :
+  ('t, 'k, 'v) id -> ('v -> 'v -> 'v Or_null.t) -> 't -> 't -> 't Or_null.t
+
+val diff_or_null_hlist :
+  ('t, 'k, 'v) hlist -> ('v -> 'v -> 'v Or_null.t) -> 't -> 't -> 't Or_null.t
 
 val add_or_replace_hlist :
   ('t, 'k, 'v) hlist -> 'k Constant.hlist -> 'v -> 't -> 't

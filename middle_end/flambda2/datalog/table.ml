@@ -88,46 +88,20 @@ let result_repr_join_or_null (type t) (repr : t result_repr) :
   | Unit_repr -> fun () () -> Or_null.this ()
   | Custom_repr { join_or_null; _ } -> join_or_null
 
-let union_total0 : type t k v.
-    (t, k, v) Column.hlist -> (v -> v -> v) -> t -> t -> t =
- fun columns union_total_result t1 t2 ->
-  let rec union_total : type t k. (t, k, v) Column.hlist -> t -> t -> t =
-   fun columns t1 t2 ->
-    match columns with
-    | [] -> (union_total_result [@inlined hint]) t1 t2
-    | column :: columns -> Column.union_total column (union_total columns) t1 t2
-  in
-  union_total columns t1 t2
-[@@inline]
-
 let union : type t k v. (t, k, v) Column.hlist -> v result_repr -> t -> t -> t =
  fun columns repr ->
   match repr with
-  | Unit_repr -> union_total0 columns (fun () () -> ())
+  | Unit_repr -> Column.union_total_hlist columns (fun () () -> ())
   | Custom_repr { meet = union_total_result; _ } ->
-    union_total0 columns union_total_result
-
-let diff_or_null0 : type t k v.
-    (t, k, v) Column.hlist -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
- fun columns diff_or_null_result t1 t2 ->
-  let rec diff_or_null : type t k.
-      (t, k, v) Column.hlist -> t -> t -> t Or_null.t =
-   fun columns t1 t2 ->
-    match columns with
-    | [] -> (diff_or_null_result [@inlined hint]) t1 t2
-    | column :: columns ->
-      Column.diff_or_null column (diff_or_null columns) t1 t2
-  in
-  diff_or_null columns t1 t2
-[@@inline]
+    Column.union_total_hlist columns union_total_result
 
 let diff_or_null : type t k v.
     (t, k, v) Column.hlist -> v result_repr -> t -> t -> t Or_null.t =
  fun columns repr ->
   match repr with
-  | Unit_repr -> diff_or_null0 columns (fun () () -> Or_null.null)
+  | Unit_repr -> Column.diff_or_null_hlist columns (fun () () -> Or_null.null)
   | Custom_repr { diff_or_null = diff_or_null_result; _ } ->
-    diff_or_null0 columns diff_or_null_result
+    Column.diff_or_null_hlist columns diff_or_null_result
 
 let rec concat : type t k v. (t, k, v) Column.hlist -> earlier:t -> later:t -> t
     =

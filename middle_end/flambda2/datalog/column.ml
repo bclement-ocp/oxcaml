@@ -27,6 +27,8 @@
  * DEALINGS IN THE SOFTWARE.                                                  *
  ******************************************************************************)
 
+[@@@ocaml.flambda_o4]
+
 open Heterogenous_list
 
 module Int = struct
@@ -49,24 +51,6 @@ let singleton : type t k v. (t, k, v) id -> k -> v -> t =
  fun { repr; _ } key value ->
   let Patricia_tree_repr = repr in
   Int.Map.singleton key value
-
-let union_total : type t k v. (t, k, v) id -> (v -> v -> v) -> t -> t -> t =
- fun { repr; _ } f t1 t2 ->
-  let Patricia_tree_repr = repr in
-  Int.Map.union_total (fun _ v1 v2 -> f v1 v2) t1 t2
-
-let diff_or_null : type t k v.
-    (t, k, v) id -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
- fun { repr; _ } f t1 t2 ->
-  let Patricia_tree_repr = repr in
-  let t =
-    Int.Map.diff_sharing
-      (fun _ v1 v2 ->
-        match f v1 v2 with Null -> None | This datum -> Some datum)
-      t1 t2
-  in
-  (* Never build empty tries! *)
-  if Int.Map.is_empty t then Or_null.null else Or_null.this t
 
 let equal_key : type t k v. (t, k, v) id -> k -> k -> bool =
  fun { repr = Patricia_tree_repr; _ } -> Int.equal
@@ -107,6 +91,54 @@ let rec singleton_hlist : type t k v.
   | [], [] -> value
   | arg :: args, column :: columns ->
     singleton column arg (singleton_hlist columns args value)
+
+let union_total : type t k v. (t, k, v) id -> (v -> v -> v) -> t -> t -> t =
+ fun { repr; _ } f t1 t2 ->
+  let Patricia_tree_repr = repr in
+  Int.Map.union_total (fun _ v1 v2 -> f v1 v2) t1 t2
+[@@inline]
+
+let union_total_hlist (type v) columns (f : v -> v -> v) t1 t2 =
+  (* Cautious changing this function -- it is used in hot loops in the datalog
+     interpreter and its performance is very sensitive. It is written in such a
+     way as to minimize allocations and wrappers, while allowing specialization
+     over specific instances of [f] (important in the common case where [v] is
+     [unit]). *)
+  let rec union_total_hlist : type t k. (t, k, v) hlist -> t -> t -> t =
+   fun columns t1 t2 ->
+    match columns with
+    | [] -> (f [@inlined hint]) t1 t2
+    | column :: columns -> union_total column (union_total_hlist columns) t1 t2
+  in
+  union_total_hlist columns t1 t2
+[@@inline]
+
+let diff_or_null : type t k v.
+    (t, k, v) id -> (v -> v -> v Or_null.t) -> t -> t -> t Or_null.t =
+ fun { repr; _ } f t1 t2 ->
+  let Patricia_tree_repr = repr in
+  let t =
+    Int.Map.diff_sharing
+      (fun _ v1 v2 ->
+        match f v1 v2 with Null -> None | This datum -> Some datum)
+      t1 t2
+  in
+  (* Never build empty tries! *)
+  if Int.Map.is_empty t then Or_null.null else Or_null.this t
+[@@inline]
+
+let diff_or_null_hlist (type v) columns (f : v -> v -> v Or_null.t) t1 t2 =
+  (* Cautious changing this function -- see [union_total_hlist] *)
+  let rec diff_or_null_hlist : type t k.
+      (t, k, v) hlist -> t -> t -> t Or_null.t =
+   fun columns t1 t2 ->
+    match columns with
+    | [] -> (f [@inlined hint]) t1 t2
+    | column :: columns ->
+      diff_or_null column (diff_or_null_hlist columns) t1 t2
+  in
+  diff_or_null_hlist columns t1 t2
+[@@inline]
 
 let iter : type t k v. (t, k, v) id -> (k -> v -> unit) -> t -> unit =
  fun { repr; _ } f t ->
