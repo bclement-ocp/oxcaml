@@ -17,6 +17,9 @@ open! Flambda.Import
 module Env = struct
   type t = { defined_symbols : Symbol.Set.t }
 
+  let print ppf { defined_symbols } =
+    Format.fprintf ppf "(defined_symbols %a)" Symbol.Set.print defined_symbols
+
   let empty = { defined_symbols = Symbol.Set.empty }
 
   let check_uses env free_names =
@@ -24,11 +27,18 @@ module Env = struct
     let symbols_used_but_not_defined =
       Symbol.Set.diff used_symbols env.defined_symbols
     in
+    let is_from_current_compilation_unit =
+      match Env.get_current_unit () with
+      | None -> Misc.fatal_errorf "No current compilation unit is set !"
+      | Some unit ->
+        let cu = Unit_info.modname unit in
+        fun symbol -> Compilation_unit.equal cu (Symbol.compilation_unit symbol)
+    in
     Symbol.Set.iter
       (fun symbol ->
         (* Symbols from other compilation units (or external symbols, or predef
            symbols) will not have their definition seen *)
-        if Compilation_unit.is_current (Symbol.compilation_unit symbol)
+        if is_from_current_compilation_unit symbol
         then
           Misc.fatal_errorf "The following symbol is used but not defined:@ %a"
             Symbol.print symbol)
@@ -97,6 +107,12 @@ module Check = struct
         (* check the defining expr after, see comment above *)
         let defining_expr = Let.defining_expr e in
         let uses_of_defining_expr = Named.free_names defining_expr in
+        if Flambda_features.debug_flambda2 ()
+        then
+          Format.eprintf
+            "SYMBOL CHECK for %a@\nexpr:%a@\nfree_names: %a@\nenv: %a@."
+            Bound_pattern.print bound_pattern Named.print defining_expr
+            Name_occurrences.print uses_of_defining_expr Env.print env;
         Env.check_uses env uses_of_defining_expr;
         expr env res body)
 
