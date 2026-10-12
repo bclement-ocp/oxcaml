@@ -48,7 +48,6 @@ and simplified_lets_and_let_conts =
 
 and simplified_defining_expr =
   { bindings_to_place : Simplified_named.binding_to_place list;
-    removed_operations : Removed_operations.t;
     lifted_constants_from_defining_expr : LCS.t;
     at_unit_toplevel : bool;
     closure_info : Closure_info.t;
@@ -127,14 +126,12 @@ let notify_removed ~operation t =
 
 let mark_as_cold t = if t.is_cold then t else { t with is_cold = true }
 
-let simplified_let ~bindings_to_place ~removed_operations
-    ~lifted_constants_from_defining_expr ~at_unit_toplevel ~closure_info
-    ~rewrite_id t =
+let simplified_let ~bindings_to_place ~lifted_constants_from_defining_expr
+    ~at_unit_toplevel ~closure_info ~rewrite_id t =
   { t with
     simplified_lets_and_let_conts =
       Simplified_let
         ( { bindings_to_place;
-            removed_operations;
             lifted_constants_from_defining_expr;
             at_unit_toplevel;
             closure_info;

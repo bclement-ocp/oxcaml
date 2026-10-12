@@ -44,12 +44,10 @@ and simplified_lets_and_let_conts = private
 and simplified_defining_expr =
   private
   (* CR-soon bclement: it seems like some fields don't actually have their place
-     here. [removed_operations] could be accumulated in the basic block
-     directly, and [at_unit_toplevel] and [closure_info] could be stored there
-     as well (something went very wrong if these change in the middle of a basic
-     block). *)
+     here. [at_unit_toplevel] and [closure_info] could be stored in the basic
+     block directly (something went very wrong if these change in the middle of
+     a basic block). *)
   { bindings_to_place : Simplified_named.binding_to_place list;
-    removed_operations : Removed_operations.t;
     lifted_constants_from_defining_expr : Lifted_constant_state.t;
     at_unit_toplevel : bool;
     closure_info : Closure_info.t;
@@ -127,7 +125,6 @@ val mark_as_cold : t -> t
 
 val simplified_let :
   bindings_to_place:Simplified_named.binding_to_place list ->
-  removed_operations:Removed_operations.t ->
   lifted_constants_from_defining_expr:Lifted_constant_state.t ->
   at_unit_toplevel:bool ->
   closure_info:Closure_info.t ->

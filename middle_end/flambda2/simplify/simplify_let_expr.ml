@@ -39,7 +39,6 @@ let keep_lifted_constant_only_if_used uacc acc lifted_constant =
 
 let rebuild_let
     ( { SE.bindings_to_place;
-        removed_operations;
         lifted_constants_from_defining_expr;
         at_unit_toplevel;
         closure_info;
@@ -79,7 +78,6 @@ let rebuild_let
     no_constants_from_defining_expr && UA.no_lifted_constants uacc
   in
   let put_bindings_around_body uacc ~body =
-    let uacc = UA.notify_removed ~operation:removed_operations uacc in
     let bindings =
       List.map
         (fun (binding : Simplified_named.binding_to_place) :
@@ -447,8 +445,9 @@ let simplify_let0 ~simplify_expr ~simplify_function_body dacc let_expr
           (SE.simplified_let
              ~bindings_to_place:
                (Simplify_named_result.bindings_to_place simplify_named_result)
-             ~removed_operations ~lifted_constants_from_defining_expr
-             ~at_unit_toplevel ~closure_info ~rewrite_id simplified_body)
+             ~lifted_constants_from_defining_expr ~at_unit_toplevel
+             ~closure_info ~rewrite_id simplified_body
+          |> SE.notify_removed ~operation:removed_operations)
       in
       simplify_expr dacc body ~down_to_up)
 
