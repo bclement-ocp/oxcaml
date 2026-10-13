@@ -48,9 +48,6 @@ and simplified_defining_expr =
      block directly (something went very wrong if these change in the middle of
      a basic block). *)
   { bindings_to_place : Simplified_named.binding_to_place list;
-    lifted_constants_from_defining_expr : Lifted_constant_state.t;
-    at_unit_toplevel : bool;
-    closure_info : Closure_info.t;
     rewrite_id : Named_rewrite_id.t
   }
 
@@ -99,7 +96,6 @@ and simplified_terminator = private
 
 and simplified_apply_cont = private
   { apply_cont : Apply_cont.t;
-    args : Simple.t list;
     rewrite_id : Apply_cont_rewrite_id.t
   }
 
@@ -125,9 +121,6 @@ val mark_as_cold : t -> t
 
 val simplified_let :
   bindings_to_place:Simplified_named.binding_to_place list ->
-  lifted_constants_from_defining_expr:Lifted_constant_state.t ->
-  at_unit_toplevel:bool ->
-  closure_info:Closure_info.t ->
   rewrite_id:Named_rewrite_id.t ->
   t ->
   t
@@ -143,7 +136,7 @@ val simplified_apply :
   t
 
 val simplified_apply_cont :
-  Apply_cont.t -> args:Simple.t list -> rewrite_id:Apply_cont_rewrite_id.t -> t
+  Apply_cont.t -> rewrite_id:Apply_cont_rewrite_id.t -> t
 
 val simplified_switch :
   arms:

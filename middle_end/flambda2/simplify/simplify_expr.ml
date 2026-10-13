@@ -21,9 +21,9 @@ let rebuild_terminator (terminator : Simplified_expr.simplified_terminator) uacc
   match terminator with
   | Simplified_apply simplified_apply ->
     Simplify_apply_expr.rebuild_apply simplified_apply uacc ~after_rebuild
-  | Simplified_apply_cont { apply_cont; args; rewrite_id } ->
-    Simplify_apply_cont_expr.rebuild_apply_cont apply_cont ~args ~rewrite_id
-      uacc ~after_rebuild
+  | Simplified_apply_cont { apply_cont; rewrite_id } ->
+    Simplify_apply_cont_expr.rebuild_apply_cont apply_cont ~rewrite_id uacc
+      ~after_rebuild
   | Simplified_switch simplified_switch ->
     Simplify_switch_expr.rebuild_switch simplified_switch uacc ~after_rebuild
   | Simplified_invalid invalid -> EB.rebuild_invalid uacc invalid ~after_rebuild
@@ -142,7 +142,14 @@ let simplify_toplevel_common dacc simplify ~params ~implicit_params
       then UA.set_resimplify uacc
       else uacc
     in
-    rebuild_expr expr uacc ~after_rebuild:(fun expr uacc -> expr, uacc)
+    rebuild_expr expr uacc ~after_rebuild:(fun expr uacc ->
+        (* Place any remaining lifted constants, but only when at toplevel. When
+           inside a closure, constants are accumulated and will be moved to the
+           outer downwards accumulator. *)
+        match UA.lifted_constants uacc with
+        | In_a_closure _ -> expr, uacc
+        | At_toplevel _ ->
+          Simplify_common.place_all_remaining_lifted_constants expr uacc)
   in
   (* We don't check occurrences of variables or symbols here because the check
      required depends on whether we're dealing with a lambda or the whole

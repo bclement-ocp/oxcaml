@@ -31,7 +31,6 @@ module CSE = Common_subexpression_elimination
 module EPA = Continuation_extra_params_and_args
 module T = Flambda2_types
 module TE = T.Typing_env
-module LCS = Lifted_constant_state
 
 type t =
   { simplified_lets_and_let_conts : simplified_lets_and_let_conts;
@@ -48,9 +47,6 @@ and simplified_lets_and_let_conts =
 
 and simplified_defining_expr =
   { bindings_to_place : Simplified_named.binding_to_place list;
-    lifted_constants_from_defining_expr : LCS.t;
-    at_unit_toplevel : bool;
-    closure_info : Closure_info.t;
     rewrite_id : Named_rewrite_id.t
   }
 
@@ -99,7 +95,6 @@ and simplified_terminator =
 
 and simplified_apply_cont =
   { apply_cont : Apply_cont.t;
-    args : Simple.t list;
     rewrite_id : Apply_cont_rewrite_id.t
   }
 
@@ -126,18 +121,11 @@ let notify_removed ~operation t =
 
 let mark_as_cold t = if t.is_cold then t else { t with is_cold = true }
 
-let simplified_let ~bindings_to_place ~lifted_constants_from_defining_expr
-    ~at_unit_toplevel ~closure_info ~rewrite_id t =
+let simplified_let ~bindings_to_place ~rewrite_id t =
   { t with
     simplified_lets_and_let_conts =
       Simplified_let
-        ( { bindings_to_place;
-            lifted_constants_from_defining_expr;
-            at_unit_toplevel;
-            closure_info;
-            rewrite_id
-          },
-          t.simplified_lets_and_let_conts )
+        ({ bindings_to_place; rewrite_id }, t.simplified_lets_and_let_conts)
   }
 
 let simplified_let_cont simplified_handlers t =
@@ -162,8 +150,8 @@ let simplified_apply ?result_arity apply ~use_id ~exn_cont_use_id ~is_cold =
   simplified_terminator
     (Simplified_apply { apply; use_id; exn_cont_use_id; result_arity; is_cold })
 
-let simplified_apply_cont apply_cont ~args ~rewrite_id =
-  simplified_terminator (Simplified_apply_cont { apply_cont; args; rewrite_id })
+let simplified_apply_cont apply_cont ~rewrite_id =
+  simplified_terminator (Simplified_apply_cont { apply_cont; rewrite_id })
 
 let simplified_switch ~arms ~condition_dbg ~scrutinee ~scrutinee_ty
     ~shareable_constants ~typing_env_before_switch ~cse_before_switch =

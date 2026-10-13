@@ -69,7 +69,7 @@ let inline_linearly_used_continuation uacc ~params:params' ~handler
   in
   expr, UA.cost_metrics uacc, UA.name_occurrences uacc
 
-let rebuild_apply_cont ~args ~rewrite_id apply_cont uacc ~after_rebuild =
+let rebuild_apply_cont ~rewrite_id apply_cont uacc ~after_rebuild =
   let uenv = UA.uenv uacc in
   let cont, apply_cont =
     let cont = AC.continuation apply_cont in
@@ -84,7 +84,6 @@ let rebuild_apply_cont ~args ~rewrite_id apply_cont uacc ~after_rebuild =
      shortcuts, so that we don't lose it when following a shortcut from a cold
      to a hot continuation. *)
   let is_cold = UE.is_cold_continuation (UA.uenv uacc) cont in
-  let apply_cont = AC.update_args apply_cont ~args in
   let rewrite = UE.find_apply_cont_rewrite uenv cont in
   let create_apply_cont ~apply_cont_to_expr =
     (* The function returned by this code accepts another function, which will
@@ -196,4 +195,5 @@ let simplify_apply_cont dacc apply_cont ~down_to_up =
   let dbg = AC.debuginfo apply_cont in
   let dbg = DE.add_inlined_debuginfo (DA.denv dacc) dbg in
   let apply_cont = AC.with_debuginfo apply_cont ~dbg in
-  down_to_up dacc (SE.simplified_apply_cont apply_cont ~args ~rewrite_id)
+  let apply_cont = AC.update_args apply_cont ~args in
+  down_to_up dacc (SE.simplified_apply_cont apply_cont ~rewrite_id)
