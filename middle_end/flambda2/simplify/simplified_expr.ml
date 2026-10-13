@@ -44,6 +44,7 @@ and simplified_lets_and_let_conts =
   | Simplified_let of simplified_defining_expr * simplified_lets_and_let_conts
   | Simplified_let_cont of
       simplified_let_cont_handlers * simplified_lets_and_let_conts
+  | Lifted_let_cont of lifted_let_cont * simplified_lets_and_let_conts
 
 and simplified_defining_expr =
   { bindings_to_place : Simplified_named.binding_to_place list;
@@ -78,6 +79,8 @@ and simplified_let_cont_handlers =
     original_invariant_params : Bound_parameters.t;
     invariant_extra_params : Bound_parameters.t
   }
+
+and lifted_let_cont = { original_handlers : Original_handlers.t }
 
 and simplified_apply =
   { apply : Apply.t;
@@ -132,6 +135,12 @@ let simplified_let_cont simplified_handlers t =
   { t with
     simplified_lets_and_let_conts =
       Simplified_let_cont (simplified_handlers, t.simplified_lets_and_let_conts)
+  }
+
+let lifted_let_cont ~original_handlers t =
+  { t with
+    simplified_lets_and_let_conts =
+      Lifted_let_cont ({ original_handlers }, t.simplified_lets_and_let_conts)
   }
 
 let simplified_terminator simplified_terminator =

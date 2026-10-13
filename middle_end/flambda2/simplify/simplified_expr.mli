@@ -40,6 +40,7 @@ and simplified_lets_and_let_conts = private
   | Simplified_let of simplified_defining_expr * simplified_lets_and_let_conts
   | Simplified_let_cont of
       simplified_let_cont_handlers * simplified_lets_and_let_conts
+  | Lifted_let_cont of lifted_let_cont * simplified_lets_and_let_conts
 
 and simplified_defining_expr =
   private
@@ -79,6 +80,8 @@ and simplified_let_cont_handlers =
     original_invariant_params : Bound_parameters.t;
     invariant_extra_params : Bound_parameters.t
   }
+
+and lifted_let_cont = { original_handlers : Original_handlers.t }
 
 and simplified_apply = private
   { apply : Apply.t;
@@ -126,6 +129,8 @@ val simplified_let :
   t
 
 val simplified_let_cont : simplified_let_cont_handlers -> t -> t
+
+val lifted_let_cont : original_handlers:Original_handlers.t -> t -> t
 
 val simplified_apply :
   ?result_arity:[`Unarized] Flambda_arity.t ->

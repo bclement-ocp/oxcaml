@@ -871,6 +871,7 @@ let simplify_arm arm (switch_arm, env_at_use) (arms, dacc) =
     |> Flambda_arity.create_singletons
   in
   let action = Apply_cont.update_args action ~args in
+  let action = DE.add_lifted_params_to_apply_cont denv_at_use action in
   let dbg = AC.debuginfo action in
   let dbg = DE.add_inlined_debuginfo (DA.denv dacc) dbg in
   let action = AC.with_debuginfo action ~dbg in

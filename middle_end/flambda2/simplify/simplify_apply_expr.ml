@@ -1504,7 +1504,7 @@ let simplify_effect_op dacc apply (op : Call_kind.Effect.t) ~down_to_up =
   down_to_up dacc
     (SE.simplified_apply apply ~use_id ~exn_cont_use_id ~is_cold:false)
 
-let simplify_apply ~simplify_expr ~rebuild_expr dacc apply ~down_to_up =
+let simplify_apply0 ~simplify_expr ~rebuild_expr dacc apply ~down_to_up =
   match simplify_apply_shared dacc apply with
   | Invalid args_arity ->
     replace_apply_by_invalid dacc ~down_to_up
@@ -1536,3 +1536,42 @@ let simplify_apply ~simplify_expr ~rebuild_expr dacc apply ~down_to_up =
       simplify_c_call ~simplify_expr dacc apply ~callee_ty ~arg_types
         ~down_to_up
     | Effect op -> simplify_effect_op dacc apply op ~down_to_up)
+
+let simplify_apply ~simplify_expr ~rebuild_expr dacc apply ~down_to_up =
+  match Apply.continuation apply with
+  | Return cont when DE.has_lifted_params (DA.denv dacc) cont ->
+    let params =
+      Flambda_arity.unarized_components (Apply.return_arity apply)
+      |> List.mapi (fun i kind ->
+          Bound_parameter.create
+            (Variable.create (Format.asprintf "res%d" i) (KS.kind kind))
+            kind Flambda_debug_uid.none)
+      |> Bound_parameters.create
+    in
+    let handler =
+      Apply_cont.create cont ~dbg:Debuginfo.none
+        ~args:(Bound_parameters.simples params)
+      |> DE.add_lifted_params_to_apply_cont (DA.denv dacc)
+    in
+    let free_names_of_handler = Apply_cont.free_names handler in
+    let wrapper_handler =
+      Continuation_handler.create params
+        ~handler:(Expr.create_apply_cont handler)
+        ~free_names_of_handler:(Known free_names_of_handler)
+        ~is_exn_handler:false ~is_cold:false
+    in
+    let wrapper_cont = Continuation.rename cont in
+    let apply = Apply.with_continuation apply (Return wrapper_cont) in
+    let expr =
+      Let_cont.create_non_recursive wrapper_cont wrapper_handler
+        ~body:(Expr.create_apply apply)
+        ~free_names_of_body:(Known (Apply.free_names apply))
+    in
+    simplify_expr dacc expr ~down_to_up
+  | Never_returns | Return _ ->
+    let apply =
+      DE.add_lifted_params_to_exn_continuation (DA.denv dacc)
+        (Apply.exn_continuation apply)
+      |> Apply.with_exn_continuation apply
+    in
+    simplify_apply0 ~simplify_expr ~rebuild_expr dacc apply ~down_to_up

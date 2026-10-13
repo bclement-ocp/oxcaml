@@ -251,6 +251,18 @@ val enter_continuation_handler : Lifted_cont_params.t -> t -> t
 val add_lifted_constant_state :
   ?maybe_already_defined:unit -> t -> Lifted_constant_state.t -> t
 
+val bind_lifted_param : t -> Bound_parameter.t -> Variable.t -> t
+
+val define_continuation_lifted_params :
+  t -> Continuation.t -> is_exn_handler:bool -> Bound_parameters.t -> t
+
+val has_lifted_params : t -> Continuation.t -> bool
+
+val add_lifted_params_to_apply_cont : t -> Apply_cont.t -> Apply_cont.t
+
+val add_lifted_params_to_exn_continuation :
+  t -> Exn_continuation.t -> Exn_continuation.t
+
 val variables_defined_in_current_continuation : t -> Lifted_cont_params.t
 
 val cost_of_lifting_continuations_out_of_current_one : t -> int

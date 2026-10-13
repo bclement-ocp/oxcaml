@@ -74,6 +74,9 @@ type t =
     all_code : Code.t Code_id.Map.t;
     inlining_history_tracker : Inlining_history.Tracker.t;
     loopify_state : Loopify_state.t;
+    lifted_params : Variable.t Bound_parameter.Map.t;
+    continuation_lifted_params :
+      (Bound_parameters.t * is_exn_handler:bool) Continuation.Map.t;
     replay_history : Replay_history.t;
         (* Replay history for the current continuation handler (or toplevel) *)
     specialization_cost : Specialization_cost.t;
@@ -134,6 +137,8 @@ let print ppf
       get_imported_code = _;
       inlining_history_tracker = _;
       loopify_state;
+      lifted_params = _;
+      continuation_lifted_params = _;
       replay_history;
       specialization_cost;
       defined_variables_by_scope;
@@ -265,6 +270,8 @@ let create ~round ~machine_width ~(resolver : resolver)
     inlining_history_tracker =
       Inlining_history.Tracker.empty (Current_unit.get_cu_exn ());
     loopify_state = Loopify_state.do_not_loopify;
+    lifted_params = BP.Map.empty;
+    continuation_lifted_params = Continuation.Map.empty;
     replay_history = Replay_history.first_pass;
     specialization_cost = Specialization_cost.cannot_specialize At_toplevel;
     defined_variables_by_scope = [Lifted_cont_params.empty];
@@ -360,6 +367,8 @@ let enter_set_of_closures
       all_code;
       inlining_history_tracker;
       loopify_state = _;
+      lifted_params = _;
+      continuation_lifted_params = _;
       replay_history = _;
       specialization_cost = _;
       defined_variables_by_scope = _;
@@ -391,6 +400,8 @@ let enter_set_of_closures
     all_code;
     inlining_history_tracker;
     loopify_state = Loopify_state.do_not_loopify;
+    lifted_params = BP.Map.empty;
+    continuation_lifted_params = Continuation.Map.empty;
     replay_history = Replay_history.first_pass;
     specialization_cost = Specialization_cost.cannot_specialize At_toplevel;
     join_analysis = None;
@@ -867,6 +878,72 @@ let add_lifting_cost cost t =
         t.cost_of_lifting_continuations_out_of_current_one + cost
     }
 
+let bind_lifted_param t param var =
+  { t with lifted_params = BP.Map.add param var t.lifted_params }
+
+let define_continuation_lifted_params t cont ~is_exn_handler lifted_params =
+  if Bound_parameters.is_empty lifted_params
+  then t
+  else
+    { t with
+      continuation_lifted_params =
+        Continuation.Map.add cont
+          (lifted_params, ~is_exn_handler)
+          t.continuation_lifted_params
+    }
+
+let has_lifted_params t cont =
+  Continuation.Map.mem cont t.continuation_lifted_params
+
+let add_lifted_params_to_apply_cont t apply_cont =
+  match
+    Continuation.Map.find_or_null
+      (Apply_cont.continuation apply_cont)
+      t.continuation_lifted_params
+  with
+  | Null -> apply_cont
+  | This (lifted_params, ~is_exn_handler) ->
+    let extra_args_rev =
+      List.rev_map
+        (fun lifted_param ->
+          match BP.Map.find lifted_param t.lifted_params with
+          | exception Not_found -> Misc.fatal_error "nope"
+          | extra_arg -> Simple.var extra_arg)
+        (Bound_parameters.to_list lifted_params)
+    in
+    let args =
+      if is_exn_handler
+      then
+        List.hd (Apply_cont.args apply_cont)
+        :: List.rev_append extra_args_rev (List.tl (Apply_cont.args apply_cont))
+      else List.rev_append extra_args_rev (Apply_cont.args apply_cont)
+    in
+    Apply_cont.update_args apply_cont ~args
+
+let add_lifted_params_to_exn_continuation t exn_continuation =
+  match
+    Continuation.Map.find_or_null
+      (Exn_continuation.exn_handler exn_continuation)
+      t.continuation_lifted_params
+  with
+  | Null -> exn_continuation
+  | This (lifted_params, ~is_exn_handler) ->
+    if not is_exn_handler
+    then Misc.fatal_error "Exn continuation must be an exn handler";
+    let extra_extra_args_rev =
+      List.rev_map
+        (fun lifted_param ->
+          match BP.Map.find lifted_param t.lifted_params with
+          | exception Not_found -> Misc.fatal_error "nope"
+          | extra_arg -> Simple.var extra_arg, BP.kind lifted_param)
+        (Bound_parameters.to_list lifted_params)
+    in
+    Exn_continuation.create
+      ~exn_handler:(Exn_continuation.exn_handler exn_continuation)
+      ~extra_args:
+        (List.rev_append extra_extra_args_rev
+           (Exn_continuation.extra_args exn_continuation))
+
 let has_seen_a_non_liftable_continuation t =
   t.has_seen_a_non_liftable_continuation
 
@@ -921,6 +998,8 @@ let denv_for_lifted_continuation ~denv_for_join ~denv =
     variables_defined_at_toplevel = denv_for_join.variables_defined_at_toplevel;
     cse = denv_for_join.cse;
     comparison_results = denv_for_join.comparison_results;
+    lifted_params = denv_for_join.lifted_params;
+    continuation_lifted_params = denv_for_join.continuation_lifted_params;
     replay_history = denv_for_join.replay_history;
     specialization_cost = denv_for_join.specialization_cost;
     join_analysis = denv_for_join.join_analysis;

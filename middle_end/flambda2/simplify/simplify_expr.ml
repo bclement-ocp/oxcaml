@@ -57,6 +57,7 @@ let rec rebuild_expr (expr : Simplified_expr.t) uacc ~after_rebuild =
         ~rebuild_body:rebuild_lets_and_let_conts ~rebuild_expr
         (let_cont, simplified_lets_and_let_conts)
         uacc ~after_rebuild
+    | Lifted_let_cont _ -> Misc.fatal_error "Lifted let cont"
   in
   rebuild_lets_and_let_conts simplified_lets_and_let_conts uacc ~after_rebuild
 

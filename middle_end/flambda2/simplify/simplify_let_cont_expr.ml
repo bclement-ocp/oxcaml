@@ -1773,7 +1773,8 @@ and after_downwards_traversal_of_body ~simplify_expr ~down_to_up
         Original_handlers.add_params_to_lift handlers params_to_lift
       in
       let dacc = DA.add_lifted_continuation denv_for_join handlers dacc in
-      down_to_up dacc simplified_body
+      down_to_up dacc
+        (SE.lifted_let_cont ~original_handlers:data.handlers simplified_body)
   | Not_lifting _ | Analyzing _ ->
     simplify_handlers dacc handlers ~simplify_expr ~down_to_up ~denv_for_join
       ~simplified_body
@@ -1801,6 +1802,203 @@ and down_to_up_for_lifted_continuations ~simplify_expr ~denv_for_join
     in
     down_to_up_for_lifted_continuations ~simplify_expr ~denv_for_join
       other_lifted_handlers ~down_to_up
+
+and do_the_liftaroo ~simplify_expr dacc expr =
+  let { SE.simplified_lets_and_let_conts;
+        simplified_terminator;
+        removed_operations = _
+      } =
+    expr
+  in
+  let rec loop denv lifted_constants rev_lifted_conts lifted_params extra_args
+      lifted_cont_extra_args rev_let_bindings
+      (simplified_lets_and_let_conts : SE.simplified_lets_and_let_conts) =
+    match simplified_lets_and_let_conts with
+    | Simplified_terminator ->
+      (* TODO: record the names of the lifted continuations.
+
+         TODO: record the lifted constants somewhere!
+
+         In the terminator, replace all [apply_cont] to lifted continuations by
+         adding the lifted params. *)
+      let rewrite_apply_cont apply_cont =
+        match
+          Continuation.Map.find_or_null
+            (AC.continuation apply_cont)
+            lifted_cont_extra_args
+        with
+        | Null ->
+          (* Note: in case this continuation is not a lifted continuation from
+             this specialized continuation, any other lifted parameters will
+             already have been added during the simplification of the
+             pre-specialization handler. *)
+          apply_cont
+        | This rev_extra_args ->
+          AC.with_continuation_and_args apply_cont
+            (AC.continuation apply_cont)
+            ~args:(List.append rev_extra_args (AC.args apply_cont))
+      in
+      let body =
+        match simplified_terminator with
+        | Simplified_apply { apply; _ } -> Expr.create_apply apply
+        | Simplified_apply_cont { apply_cont; _ } ->
+          Expr.create_apply_cont (rewrite_apply_cont apply_cont)
+        | Simplified_switch { condition_dbg; scrutinee; arms; _ } ->
+          Expr.create_switch
+            (Switch_expr.create ~condition_dbg ~scrutinee
+               ~arms:
+                 (Target_ocaml_int.Map.map
+                    (fun (apply_cont, _, _, _) -> rewrite_apply_cont apply_cont)
+                    arms))
+        | Simplified_invalid invalid -> Expr.create_invalid invalid
+      in
+      let body =
+        List.fold_left
+          (fun body (let_bound, named) ->
+            Let.create let_bound named ~body ~free_names_of_body:Unknown
+            |> Expr.create_let)
+          body rev_let_bindings
+      in
+      (* TODO: specialized versions of [body] *)
+      simplify_expr dacc body ~down_to_up:(fun dacc simplified_body ->
+          (* now we do the simplification of handlers! *)
+          let rec loop dacc simplified_body = function
+            | [] ->
+              (* TODO: restore the lifted constants *)
+              down_to_up dacc simplified_body
+            | (original_handlers, denv_for_join) :: rev_lifted_conts ->
+              simplify_handlers dacc original_handlers ~simplify_expr
+                ~down_to_up:(fun dacc simplified_body ->
+                  loop dacc simplified_body rev_lifted_conts)
+                ~denv_for_join ~prior_lifted_constants:LCS.empty
+                ~simplified_body
+          in
+          loop dacc simplified_body rev_lifted_conts)
+    | Simplified_let
+        ( { bindings_to_place;
+            lifted_constants_from_defining_expr;
+            at_unit_toplevel = _;
+            closure_info = _;
+            rewrite_id = _
+          },
+          body ) ->
+      let lifted_constants =
+        LCS.union lifted_constants lifted_constants_from_defining_expr
+      in
+      let lifted_params, extra_args, rev_let_bindings =
+        List.fold_left
+          (fun (lifted_params, extra_args, rev_let_bindings)
+               (binding_to_place : Simplified_named.binding_to_place) ->
+            match binding_to_place with
+            | Keep_binding
+                { let_bound;
+                  simplified_defining_expr;
+                  original_defining_expr = _
+                } -> (
+              match let_bound with
+              | Bound_pattern.Singleton bound_var ->
+                ( Bound_parameter.create (Bound_var.var bound_var)
+                    (K.With_subkind.anything
+                       (Variable.kind (Bound_var.var bound_var)))
+                    (Bound_var.debug_uid bound_var)
+                  :: lifted_params,
+                  Simple.var (Bound_var.var bound_var) :: extra_args,
+                  ( let_bound,
+                    Simplified_named.to_named simplified_defining_expr.named )
+                  :: rev_let_bindings )
+              | Bound_pattern.Set_of_closures _ -> assert false
+              | Bound_pattern.Static _ -> assert false)
+            | Delete_binding _ -> lifted_params, extra_args, rev_let_bindings)
+          (lifted_params, extra_args, rev_let_bindings)
+          bindings_to_place
+      in
+      loop denv lifted_constants rev_lifted_conts lifted_params extra_args
+        lifted_cont_extra_args rev_let_bindings body
+    | Simplified_let_cont (_, _) -> assert false
+    | Lifted_let_cont ({ original_handlers }, body) ->
+      let cont_uses_env = DA.continuation_uses_env dacc in
+      let fresh_lifted_params =
+        Bound_parameters.rename (Bound_parameters.create lifted_params)
+      in
+      let conts = Original_handlers.bound_continuations original_handlers in
+      let continuation_rev_extra_args =
+        List.fold_left
+          (fun continuation_rev_extra_args cont ->
+            Continuation.Map.add cont extra_args continuation_rev_extra_args)
+          lifted_cont_extra_args conts
+      in
+      let cont_uses_env = List.fold_left CUE.remove cont_uses_env conts in
+      let denv_for_join, denv_for_body, original_handlers =
+        match original_handlers with
+        | Recursive
+            { continuation_handlers;
+              invariant_params;
+              lifted_params = lifted_params0;
+              can_be_lifted
+            } ->
+          let invariant_params =
+            Bound_parameters.append fresh_lifted_params invariant_params
+          in
+          let denv_for_body =
+            Continuation.Lmap.fold
+              (fun cont _ denv_for_join ->
+                DE.define_continuation_lifted_params denv_for_join cont
+                  ~is_exn_handler:false
+                  (Bound_parameters.create lifted_params))
+              continuation_handlers denv
+          in
+          ( denv_for_body,
+            denv_for_body,
+            Original_handlers.create_recursive ~invariant_params
+              ~lifted_params:lifted_params0 ~continuation_handlers
+              ~can_be_lifted )
+        | Non_recursive
+            { cont;
+              params;
+              lifted_params = lifted_params0;
+              is_exn_handler;
+              is_cold;
+              can_be_lifted;
+              handler
+            } ->
+          let params =
+            if is_exn_handler
+            then
+              Bound_parameters.create
+                (List.hd (Bound_parameters.to_list params)
+                 :: Bound_parameters.to_list fresh_lifted_params
+                @ List.tl (Bound_parameters.to_list params))
+            else Bound_parameters.append fresh_lifted_params params
+          in
+          let handler =
+            Non_recursive_handler.create ~cont ~params
+              ~lifted_params:lifted_params0 ~is_exn_handler ~is_cold
+              ~can_be_lifted ~handler
+          in
+          let denv_for_body =
+            DE.define_continuation_lifted_params ~is_exn_handler denv cont
+              (Bound_parameters.create lifted_params)
+          in
+          denv, denv_for_body, Original_handlers.create_non_recursive handler
+      in
+      let denv_for_join =
+        List.fold_left2
+          (fun map param renamed_param ->
+            DE.bind_lifted_param map param (Bound_parameter.var renamed_param))
+          denv_for_join lifted_params
+          (Bound_parameters.to_list fresh_lifted_params)
+      in
+      let rev_lifted_conts =
+        (original_handlers, denv_for_join) :: rev_lifted_conts
+      in
+      loop denv_for_body lifted_constants rev_lifted_conts lifted_params
+        extra_args continuation_rev_extra_args rev_let_bindings body
+  in
+  let expr_to_specialize =
+    loop denv_for_join LCS.empty [] [] [] Continuation.Map.empty []
+      simplified_lets_and_let_conts
+  in
+  assert false
 
 let simplify_let_cont0 ~(simplify_expr : _ Simplify_common.expr_simplifier) dacc
     (data : simplify_let_cont_data) ~down_to_up =
