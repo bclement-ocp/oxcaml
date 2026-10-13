@@ -606,14 +606,11 @@ let add_phantom_params_bindings uacc handler new_phantom_params =
         let simplified_defining_expr =
           Simplified_named.create ~machine_width named
         in
-        Simplified_named.Keep_binding
-          { let_bound;
-            simplified_defining_expr;
-            original_defining_expr = Some named
-          })
+        Simplified_named.Keep_binding { let_bound; simplified_defining_expr })
       (Bound_parameters.to_list new_phantom_params)
   in
-  EB.make_new_let_bindings uacc ~body:handler
+  EB.make_new_let_bindings uacc ~original_defining_expr:(* TODO *) None
+    ~body:handler
     ~bindings_outermost_first:new_phantom_param_bindings_outermost_first
 
 let remove_params params free_names =

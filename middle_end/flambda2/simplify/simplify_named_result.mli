@@ -16,7 +16,12 @@ open! Flambda.Import
 
 type t
 
-val create : Downwards_acc.t -> Simplified_named.binding_to_place -> t
+val create :
+  Downwards_acc.t ->
+  let_bound:Bound_pattern.t ->
+  simplified_defining_expr:Simplified_named.t ->
+  original_defining_expr:Named.t ->
+  t
 
 val create_empty : Downwards_acc.t -> t
 
@@ -33,6 +38,8 @@ val bound_names : t -> Name_occurrences.t
 val bindings_to_place : t -> Simplified_named.binding_to_place list
 
 val no_bindings : t -> bool
+
+val original_defining_expr : t -> Named.t option
 
 val was_lifted_set_of_closures : t -> bool
 

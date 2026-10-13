@@ -160,7 +160,8 @@ let create_coerced_singleton_let uacc var defining_expr
       in
       generate_outer_binding (Bound_var.name_mode var)
 
-let make_new_let_bindings uacc ~bindings_outermost_first ~body =
+let make_new_let_bindings uacc ~original_defining_expr:_
+    ~bindings_outermost_first ~body =
   (* The name occurrences component of [uacc] is expected to be in the state
      described in the comment at the top of [Simplify_let.rebuild_let]. *)
   let notify_removed uacc ~original_defining_expr =

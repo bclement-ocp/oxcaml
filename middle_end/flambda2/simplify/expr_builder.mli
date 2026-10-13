@@ -43,6 +43,7 @@ val create_let_binding :
     names of the [body]. *)
 val make_new_let_bindings :
   Upwards_acc.t ->
+  original_defining_expr:Named.t option ->
   bindings_outermost_first:Simplified_named.binding_to_place list ->
   body:Rebuilt_expr.t ->
   Rebuilt_expr.t * Upwards_acc.t

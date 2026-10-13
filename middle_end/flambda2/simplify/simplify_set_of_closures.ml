@@ -919,15 +919,12 @@ let simplify_non_lifted_set_of_closures0 dacc bound_vars ~closure_bound_vars
         (DE.map_specialization_cost
            ~f:(Specialization_cost.add_set_of_closures set_of_closures))
   in
-  Simplify_named_result.create dacc
-    (Keep_binding
-       { let_bound = bound_vars;
-         simplified_defining_expr = defining_expr;
-         original_defining_expr =
-           Some (Named.create_set_of_closures ~alloc_mode set_of_closures)
-           (* CR ncourant: this is surprising; I suspect accidental shadowing
-              took place here. *)
-       })
+  Simplify_named_result.create dacc ~let_bound:bound_vars
+    ~simplified_defining_expr:defining_expr
+    ~original_defining_expr:
+      (* CR ncourant: this is surprising; I suspect accidental shadowing took
+         place here. *)
+      (Named.create_set_of_closures ~alloc_mode set_of_closures)
 
 type lifting_decision_result =
   { can_lift : bool;

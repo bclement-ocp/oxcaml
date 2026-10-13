@@ -25,12 +25,8 @@ let rebuild_let ({ SE.bindings_to_place; rewrite_id }, body) uacc ~after_rebuild
         (fun (binding : Simplified_named.binding_to_place) :
              Simplified_named.binding_to_place ->
           match binding with
-          | Delete_binding _ -> binding
           | Keep_binding
-              ({ let_bound;
-                 simplified_defining_expr;
-                 original_defining_expr = _
-               } as kept_binding) -> (
+              ({ let_bound; simplified_defining_expr } as kept_binding) -> (
             match simplified_defining_expr.named with
             | Prim (prim, _dbg) -> (
               match Bound_pattern.must_be_singleton_opt let_bound with
@@ -86,12 +82,9 @@ let rebuild_let ({ SE.bindings_to_place; rewrite_id }, body) uacc ~after_rebuild
       List.map
         (fun (binding_to_place : Simplified_named.binding_to_place) ->
           match binding_to_place with
-          | Delete_binding _ -> binding_to_place
           | Keep_binding
-              ({ let_bound = bound_vars;
-                 simplified_defining_expr;
-                 original_defining_expr
-               } as binding) ->
+              ({ let_bound = bound_vars; simplified_defining_expr } as binding)
+            ->
             let greatest_name_mode = compute_greatest_name_mode bound_vars in
             let declared_name_mode = Bound_pattern.name_mode bound_vars in
             let mismatched_modes =
@@ -207,7 +200,6 @@ let rebuild_let ({ SE.bindings_to_place; rewrite_id }, body) uacc ~after_rebuild
         match bindings with
         | [] -> uacc, []
         | _ :: _ :: _ -> assert false
-        | [(Delete_binding _ as binding)] -> uacc, [binding]
         | [Keep_binding binding] -> (
           match rewrite, binding.original_defining_expr with
           | Prim_rewrite prim_rewrite, Some (Prim (original_prim, dbg)) ->

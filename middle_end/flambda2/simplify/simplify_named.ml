@@ -86,12 +86,8 @@ let simplify_named0 dacc (bound_pattern : Bound_pattern.t) (named : Named.t)
         Simplified_named.create ~machine_width (Named.create_simple new_simple)
     in
     ok
-      (Simplify_named_result.create dacc
-         (Keep_binding
-            { let_bound = bound_pattern;
-              simplified_defining_expr = defining_expr;
-              original_defining_expr = Some named
-            }))
+      (Simplify_named_result.create dacc ~let_bound:bound_pattern
+         ~simplified_defining_expr:defining_expr ~original_defining_expr:named)
   | Prim (prim, dbg) -> (
     if not (Name_mode.is_normal (Bound_pattern.name_mode bound_pattern))
     then
@@ -114,13 +110,10 @@ let simplify_named0 dacc (bound_pattern : Bound_pattern.t) (named : Named.t)
             DE.define_variable denv bound_var (P.result_kind' prim))
       in
       ok
-        (Simplify_named_result.create dacc
-           (Keep_binding
-              { let_bound = bound_pattern;
-                simplified_defining_expr =
-                  Simplified_named.create ~machine_width defining_expr;
-                original_defining_expr = Some named
-              }))
+        (Simplify_named_result.create dacc ~let_bound:bound_pattern
+           ~simplified_defining_expr:
+             (Simplified_named.create ~machine_width defining_expr)
+           ~original_defining_expr:named)
     else
       let bound_var = Bound_pattern.must_be_singleton bound_pattern in
       let dacc =
@@ -150,12 +143,9 @@ let simplify_named0 dacc (bound_pattern : Bound_pattern.t) (named : Named.t)
           if not try_reify
           then
             ok
-              (Simplify_named_result.create dacc
-                 (Keep_binding
-                    { let_bound = bound_pattern;
-                      simplified_defining_expr = simplified_named;
-                      original_defining_expr = Some named
-                    }))
+              (Simplify_named_result.create dacc ~let_bound:bound_pattern
+                 ~simplified_defining_expr:simplified_named
+                 ~original_defining_expr:named)
           else
             (* Primitives with generative effects correspond to allocations.
                Without this check, we could end up lifting definitions that have
@@ -175,12 +165,9 @@ let simplify_named0 dacc (bound_pattern : Bound_pattern.t) (named : Named.t)
             in
             let result =
               Or_invalid.map defining_expr ~f:(fun defining_expr ->
-                  Simplify_named_result.create dacc
-                    (Keep_binding
-                       { let_bound = bound_pattern;
-                         simplified_defining_expr = defining_expr;
-                         original_defining_expr = Some named
-                       }))
+                  Simplify_named_result.create dacc ~let_bound:bound_pattern
+                    ~simplified_defining_expr:defining_expr
+                    ~original_defining_expr:named)
             in
             Simplified_named.Simplified result))
   | Set_of_closures (set_of_closures, alloc_mode) ->
@@ -242,12 +229,8 @@ let simplify_named0 dacc (bound_pattern : Bound_pattern.t) (named : Named.t)
           (Named.create_rec_info new_rec_info_expr)
     in
     ok
-      (Simplify_named_result.create dacc
-         (Keep_binding
-            { let_bound = bound_pattern;
-              simplified_defining_expr = defining_expr;
-              original_defining_expr = Some named
-            }))
+      (Simplify_named_result.create dacc ~let_bound:bound_pattern
+         ~simplified_defining_expr:defining_expr ~original_defining_expr:named)
 
 let removed_operations ~min_name_mode ~(original : Named.t) dacc
     (result : _ Or_invalid.t) =
@@ -306,8 +289,7 @@ let removed_operations ~min_name_mode ~(original : Named.t) dacc
                 { simplified_defining_expr =
                     { named = Simple _ | Set_of_closures _ | Rec_info _; _ };
                   _
-                }
-            | Delete_binding _ ->
+                } ->
               false)
           (Simplify_named_result.bindings_to_place result)
       then zero

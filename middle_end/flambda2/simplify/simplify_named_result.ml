@@ -17,6 +17,7 @@ open! Flambda.Import
 type t =
   { dacc : Downwards_acc.t;
     bindings_to_place : Simplified_named.binding_to_place list;
+    original_defining_expr : Named.t option;
     was_lifted_set_of_closures : bool
   }
 
@@ -29,16 +30,21 @@ let bound_names { bindings_to_place; _ } =
 
 let with_dacc ~dacc t = { t with dacc }
 
-let create dacc binding_to_place =
+let create dacc ~let_bound ~simplified_defining_expr ~original_defining_expr =
   (* If [original_defining_expr] was simplified to a new term then the benefit
      of doing so is counted in [simplify_named]. *)
   { dacc;
-    bindings_to_place = [binding_to_place];
+    bindings_to_place = [Keep_binding { let_bound; simplified_defining_expr }];
+    original_defining_expr = Some original_defining_expr;
     was_lifted_set_of_closures = false
   }
 
 let create_empty dacc =
-  { dacc; bindings_to_place = []; was_lifted_set_of_closures = false }
+  { dacc;
+    bindings_to_place = [];
+    original_defining_expr = None;
+    was_lifted_set_of_closures = false
+  }
 
 let create_have_lifted_set_of_closures dacc bound_vars_to_symbols
     ~original_defining_expr =
@@ -46,17 +52,16 @@ let create_have_lifted_set_of_closures dacc bound_vars_to_symbols
   let machine_width = Downwards_env.machine_width (Downwards_acc.denv dacc) in
   { dacc;
     bindings_to_place =
-      List.mapi
-        (fun i (var, sym) ->
+      List.map
+        (fun (var, sym) ->
           Simplified_named.Keep_binding
             { let_bound = Bound_pattern.singleton var;
               simplified_defining_expr =
                 Simplified_named.create ~machine_width
-                  (Named.create_simple (Simple.symbol sym));
-              original_defining_expr =
-                (if i = 0 then Some original_defining_expr else None)
+                  (Named.create_simple (Simple.symbol sym))
             })
         bound_vars_to_symbols;
+    original_defining_expr = Some original_defining_expr;
     was_lifted_set_of_closures = true
   }
 
@@ -66,6 +71,8 @@ let no_bindings t =
   match t.bindings_to_place with [] -> true | _ :: _ -> false
 
 let bindings_to_place t = t.bindings_to_place
+
+let original_defining_expr t = t.original_defining_expr
 
 let was_lifted_set_of_closures t = t.was_lifted_set_of_closures
 

@@ -381,11 +381,11 @@ let ( let$ ) expr k uacc ~shareable_constants ~typing_env_before_switch
         Simplified_named.Keep_binding
           { let_bound = BPt.singleton (BV.create var duid NM.normal);
             simplified_defining_expr =
-              Simplified_named.create ~machine_width named;
-            original_defining_expr = None
+              Simplified_named.create ~machine_width named
           }
       in
-      EB.make_new_let_bindings uacc ~bindings_outermost_first:[binding] ~body)
+      EB.make_new_let_bindings uacc ~original_defining_expr:None
+        ~bindings_outermost_first:[binding] ~body)
 
 let return ~added_code_size ~free_names expr uacc ~shareable_constants:_
     ~typing_env_before_switch:_ ~cse_before_switch:_ ~local_cse:_ =

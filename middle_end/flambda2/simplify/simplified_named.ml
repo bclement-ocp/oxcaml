@@ -94,8 +94,7 @@ type 'a or_rewritten =
 type binding_to_place =
   | Keep_binding of
       { let_bound : Bound_pattern.t;
-        simplified_defining_expr : t;
-        original_defining_expr : Named.t option
+        simplified_defining_expr : t
       }
   | Delete_binding of { original_defining_expr : Named.t option }
 
