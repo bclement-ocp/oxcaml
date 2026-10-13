@@ -74,7 +74,7 @@ type handler_after_downwards_traversal =
   }
 
 type after_downwards_traversal_of_body_and_handlers_data =
-  { after_downwards_traversal_of_body : after_downwards_traversal_of_body_data;
+  { denv_for_join : DE.t;
     cont_uses_env_after_body : CUE.t;
     (* used for specialization *)
     dacc_after_body : DA.t;
@@ -1119,7 +1119,7 @@ let rec compute_specialized_continuation ~replay ~simplify_expr ~original_cont
     let params = original.params in
     let lifted_params = original.lifted_params in
     let is_exn_handler = original.is_exn_handler in
-    let denv = data.after_downwards_traversal_of_body.denv_for_join in
+    let denv = data.denv_for_join in
     let arg_types_by_use_id =
       let uses =
         Continuation_uses.create cont (Bound_parameters.arity params)
@@ -1514,10 +1514,10 @@ and simplify_single_recursive_handler ~simplify_expr cont_uses_env_so_far
         }
         cont_uses_env_so_far)
 
-and simplify_recursive_handlers ~down_to_up ~data ~simplified_body
-    ~dacc_after_body ~denv_for_join ~previous_are_lifting_conts
-    ~cont_uses_env_after_body ~lifted_params ~invariant_params ~invariant_epa
-    ~continuation_handlers ~simplify_expr ~all_conts_set ~common_denv =
+and simplify_recursive_handlers ~down_to_up ~simplified_body ~dacc_after_body
+    ~denv_for_join ~previous_are_lifting_conts ~cont_uses_env_after_body
+    ~lifted_params ~invariant_params ~invariant_epa ~continuation_handlers
+    ~simplify_expr ~all_conts_set ~common_denv =
   let rec loop cont_uses_env_so_far reachable_handlers_to_simplify
       simplified_handlers_set simplified_handlers dacc =
     (* This is the core loop to simplify all handlers defined by a recursive let
@@ -1535,7 +1535,7 @@ and simplify_recursive_handlers ~down_to_up ~data ~simplified_body
         { simplified_body;
           dacc_after_body;
           cont_uses_env_after_body;
-          after_downwards_traversal_of_body = data;
+          denv_for_join;
           cont_uses_env = cont_uses_env_so_far;
           lifted_params;
           invariant_params;
@@ -1572,16 +1572,16 @@ and simplify_recursive_handlers ~down_to_up ~data ~simplified_body
   loop
 
 and simplify_handlers ~simplify_expr ~down_to_up ~denv_for_join ~simplified_body
-    (data : after_downwards_traversal_of_body_data) dacc =
+    dacc (handlers : Original_handlers.t) =
   (* In this case we have decided not to lift the continuation being let-bound
      outside of its context. So the remaining thing to do is setup the dacc, and
      later decide whether to lift the continuations defined inside the
      continuation being currently let-bound. *)
   let dacc_after_body = dacc in
   let body_continuation_uses_env = DA.continuation_uses_env dacc in
-  let denv = data.denv_for_join in
+  let denv = denv_for_join in
   let previous_are_lifting_conts = DA.are_lifting_conts dacc in
-  match data.handlers with
+  match handlers with
   | Non_recursive
       ({ cont;
          params;
@@ -1601,7 +1601,7 @@ and simplify_handlers ~simplify_expr ~down_to_up ~denv_for_join ~simplified_body
         { simplified_body;
           dacc_after_body;
           cont_uses_env_after_body = body_continuation_uses_env;
-          after_downwards_traversal_of_body = data;
+          denv_for_join;
           cont_uses_env = body_continuation_uses_env;
           lifted_params = Lifted_cont_params.empty;
           invariant_params = Bound_parameters.empty;
@@ -1668,7 +1668,7 @@ and simplify_handlers ~simplify_expr ~down_to_up ~denv_for_join ~simplified_body
             { simplified_body;
               dacc_after_body;
               cont_uses_env_after_body = body_continuation_uses_env;
-              after_downwards_traversal_of_body = data;
+              denv_for_join;
               cont_uses_env = cont_uses_env_so_far;
               lifted_params;
               invariant_params = Bound_parameters.empty;
@@ -1739,8 +1739,8 @@ and simplify_handlers ~simplify_expr ~down_to_up ~denv_for_join ~simplified_body
     in
     let common_denv = DA.denv dacc in
     assert (not is_exn_handler);
-    simplify_recursive_handlers ~down_to_up ~data ~denv_for_join
-      ~simplified_body ~dacc_after_body ~previous_are_lifting_conts
+    simplify_recursive_handlers ~down_to_up ~denv_for_join ~simplified_body
+      ~dacc_after_body ~previous_are_lifting_conts
       ~cont_uses_env_after_body:body_continuation_uses_env ~lifted_params
       ~invariant_params ~invariant_epa ~continuation_handlers ~simplify_expr
       ~all_conts_set ~common_denv body_continuation_uses_env
@@ -1750,10 +1750,12 @@ and after_downwards_traversal_of_body ~simplify_expr ~down_to_up
     (data : after_downwards_traversal_of_body_data) dacc simplified_body =
   (* At this point, we have done the downwards traversal of the body, and we
      have two situations wrt to continuation lifting. *)
-  let denv_for_join = data.denv_for_join in
+  let ({ denv_for_join; handlers } : after_downwards_traversal_of_body_data) =
+    data
+  in
   match DA.are_lifting_conts dacc with
   | Lifting_out_of { continuation = _ } ->
-    if not (Original_handlers.can_be_lifted data.handlers)
+    if not (Original_handlers.can_be_lifted handlers)
     then
       (* wrapper continuations are not lifted, and will be duplicated and
          re-simplified for each specialized continuation, so we can just not
@@ -1768,12 +1770,12 @@ and after_downwards_traversal_of_body ~simplify_expr ~down_to_up
         DE.variables_defined_in_current_continuation denv_for_join
       in
       let handlers =
-        Original_handlers.add_params_to_lift data.handlers params_to_lift
+        Original_handlers.add_params_to_lift handlers params_to_lift
       in
-      let dacc = DA.add_lifted_continuation data.denv_for_join handlers dacc in
+      let dacc = DA.add_lifted_continuation denv_for_join handlers dacc in
       down_to_up dacc simplified_body
   | Not_lifting _ | Analyzing _ ->
-    simplify_handlers data dacc ~simplify_expr ~down_to_up ~denv_for_join
+    simplify_handlers dacc handlers ~simplify_expr ~down_to_up ~denv_for_join
       ~simplified_body
 
 and down_to_up_for_lifted_continuations ~simplify_expr ~denv_for_join
