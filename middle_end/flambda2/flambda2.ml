@@ -117,11 +117,17 @@ let finalize_offsets ~free_names slot_offsets =
 
 let run_reaper ~ppf ~prefixname ~machine_width ~cmx_loader ~all_code
     ~final_typing_env ~free_names flambda =
+  let _ =
+    Gc.full_major ();
+    Profile.record_call ~accumulate:true "oldreaper" @@ fun () ->
+    Flambda2_oldreaper.Reaper.run ~cmx_loader ~all_code flambda
+  in
   let { unit;
         exported_code;
         slot_offsets;
         final_typing_env = With_types final_typing_env
       } =
+    Gc.full_major ();
     Profile.record_call ~accumulate:true "reaper" (fun () ->
         Flambda2_reaper.Reaper.run ~machine_width ~cmx_loader ~all_code
           ~final_typing_env:(With_types final_typing_env) ~free_names flambda)

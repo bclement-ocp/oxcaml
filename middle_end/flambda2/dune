@@ -51,4 +51,5 @@
   flambda2_to_cmm
   flambda2_to_jsir
   flambda2_ui
-  flambda2_reaper))
+  flambda2_reaper
+  flambda2_oldreaper))
