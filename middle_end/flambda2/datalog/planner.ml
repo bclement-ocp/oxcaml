@@ -280,6 +280,35 @@ let plan_rule { variables = vars; head; body } =
         ))
       (0, Variable.Id.Map.empty) vars
   in
+  (* Extract existential variables: innermost variables that don't appear in the
+     head. *)
+  let ~vars, ~existentials =
+    let vars = Iarray.of_list vars in
+    let free_vars_head =
+      Iarray.fold_left
+        (fun free_vars (Atom (_, terms)) ->
+          Variable.Id.Set.union free_vars (free_vars_term_hlist terms))
+        Variable.Id.Set.empty head
+    in
+    let num_vars =
+      let rec loop n =
+        if n <= 0
+        then n
+        else
+          let var = Iarray.get vars (n - 1) in
+          let (Variable.Any var) = var in
+          if Variable.Id.Set.mem (Variable.uid var) free_vars_head
+          then n
+          else loop (n - 1)
+      in
+      loop (Iarray.length vars)
+    in
+    let existentials =
+      Iarray.sub vars ~pos:num_vars ~len:(Iarray.length vars - num_vars)
+    in
+    let vars = Iarray.sub vars ~pos:0 ~len:num_vars in
+    ~vars, ~existentials
+  in
   let tables, body_layout =
     Iarray.fold_left_map (layout_atom ~binding_times) [] body
   in
@@ -312,27 +341,28 @@ let plan_rule { variables = vars; head; body } =
   in
   (* Variable stage: this is where we start introducing join stages in a
      top-down way, following the provided ordering. *)
-  List.iter
-    (fun (Variable.Any var) ->
-      match Variable.Id.Tbl.find var_to_atoms (Variable.uid var) with
-      | exception Not_found ->
-        Misc.fatal_errorf "Variable %a is either unused or bound twice"
-          Variable.print var
-      | atom_ids ->
-        Variable.Id.Tbl.remove var_to_atoms (Variable.uid var);
-        let column_iterators =
-          List.fold_left
-            (fun column_iterators aid ->
-              match Iarray.get body_layout aid with
-              | { table_layers = None; _ } -> column_iterators
-              | { table_layers = Some table_layers; _ } ->
-                advance_prefix_and_extract_iterator_on_variable table_layers var
-                  column_iterators)
-            [] atom_ids
-        in
-        add_join_stage stages var column_iterators;
-        place_stages_involving_var var atom_ids)
-    vars;
+  let variable_stage (Variable.Any var) =
+    match Variable.Id.Tbl.find var_to_atoms (Variable.uid var) with
+    | exception Not_found ->
+      Misc.fatal_errorf "Variable %a is either unused or bound twice"
+        Variable.print var
+    | atom_ids ->
+      Variable.Id.Tbl.remove var_to_atoms (Variable.uid var);
+      let column_iterators =
+        List.fold_left
+          (fun column_iterators aid ->
+            match Iarray.get body_layout aid with
+            | { table_layers = None; _ } -> column_iterators
+            | { table_layers = Some table_layers; _ } ->
+              advance_prefix_and_extract_iterator_on_variable table_layers var
+                column_iterators)
+          [] atom_ids
+      in
+      add_join_stage stages var column_iterators;
+      place_stages_involving_var var atom_ids
+  in
+  Iarray.iter variable_stage vars;
+  Iarray.iter variable_stage existentials;
   (* At this point, all the involved variables must have been bound, and all the
      input stages are fixed -- perform some safety checks. *)
   if Variable.Id.Tbl.length var_to_atoms <> 0
@@ -352,26 +382,8 @@ let plan_rule { variables = vars; head; body } =
           atom)
     body_layout;
   let input_stages = Dynarray.to_array stages |> Iarray.of_array in
-  (* Compute the existentials: innermost variables that don't appear in the
-     head. *)
-  let num_existentials =
-    let vars = Iarray.of_list vars in
-    let free_vars_head =
-      Iarray.fold_left
-        (fun free_vars (Atom (_, terms)) ->
-          Variable.Id.Set.union free_vars (free_vars_term_hlist terms))
-        Variable.Id.Set.empty head
-    in
-    let rec loop n =
-      if n >= Iarray.length vars
-      then n
-      else
-        let var = Iarray.get vars (Iarray.length vars - n - 1) in
-        let (Variable.Any var) = var in
-        if Variable.Id.Set.mem (Variable.uid var) free_vars_head
-        then n
-        else loop (n + 1)
-    in
-    loop 0
-  in
-  { tables; input_stages; output_atoms = head; num_existentials }
+  { tables;
+    input_stages;
+    output_atoms = head;
+    num_existentials = Iarray.length existentials
+  }
