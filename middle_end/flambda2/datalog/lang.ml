@@ -39,6 +39,8 @@ module Variable = struct
   module Id = struct
     type t = int
 
+    let print = Format.pp_print_int
+
     let equal = Int.equal
 
     let hash : int -> int = Hashtbl.hash

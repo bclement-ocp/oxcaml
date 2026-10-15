@@ -16,6 +16,8 @@ module Variable : sig
   module Id : sig
     type t
 
+    val print : Format.formatter -> t -> unit
+
     val equal : t -> t -> bool
 
     val hash : t -> int

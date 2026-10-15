@@ -66,15 +66,15 @@ type plan =
 let print_head_atom ppf head_atom =
   match head_atom with
   | Union (tid, columns, args, value, _, _) ->
-    Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])%a@]" Table.Id.print tid
+    Format.fprintf ppf "@[<1>@[%a@](@,@[%a@]) += %a@]" Table.Id.print tid
       (Term.print_columns
          ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
          columns)
       args
       (fun ppf value ->
         match value with
-        | Literal _ -> ()
-        | Variable var -> Format.fprintf ppf " <= %a" Variable.print var)
+        | Literal _ -> Format.fprintf ppf "()"
+        | Variable var -> Format.fprintf ppf "%a" Variable.print var)
       value
   | Callback_with_bindings (fn, args) ->
     Format.fprintf ppf "%s@[<1>(%a)@]" fn.name
@@ -138,20 +138,26 @@ let print_plan ppf { input_stages; output_atoms; num_existentials; _ } =
 
 (* Represent occurrences of variables in table atoms.
 
-   An occurrence is binding and will participate in the join defining the
-   variable if:
+   An occurrence in a body atom is binding and will participate in the join
+   defining the variable if:
 
    - It is the first (outermost) occurrence of the variable in the atom, and
 
    - There is no previous (outer) occurrences of a variable that must be bound
-   earlier ccording to the global variable ordering.
+   earlier according to the global variable ordering.
 
    For instance, the first occurrence of [X] in [P(X, Y, X)] is always binding,
    but the occurrence of [Y] is only binding if [Y] is after [X] in the global
-   variable ordering. *)
+   variable ordering.
+
+   An occurrence in a head atom is binding iff it is the first outermost
+   occurrence of the variable in the atom (the global variable ordering is
+   ignored, because it is not used for the output). *)
 type 'a arg =
   | Bind of 'a variable
   | Check of 'a term
+
+let arg_to_term = function Bind var -> Variable var | Check term -> term
 
 type index_layer =
   | Index_layer :
@@ -163,7 +169,6 @@ type table_layers =
       { table : 't variable;
         columns : index_layer iarray;
         result : 'v variable;
-        result_repr : 'v Table.result_repr;
         (* Updated during planning. *)
         mutable bound_prefix : int
       }
@@ -174,36 +179,19 @@ type atom_layout =
     atom : atom
   }
 
-type head_column =
-  | Head_column :
-      ('t, 'k, 'v) Column.id * 't variable * 'k term * 'v variable
-      -> head_column
+(* Lays out a table atom as a trie of nested tables, represented by an
+   [index_layer] array.
 
-type table_head_atom =
-  | Table_head_atom :
-      { table_id : ('t, _, _) Table.Id.t;
-        table : 't variable;
-        columns : head_column iarray
-      }
-      -> table_head_atom
-
-let innermost_arg_is_binding columns =
-  if Iarray.length columns = 0
-  then None
-  else
-    let (Index_layer (_, _, arg, _)) =
-      Iarray.get columns (Iarray.length columns - 1)
-    in
-    match arg with Check _ -> None | Bind arg -> Some (Variable.Any arg)
-
-let layout_table_atom : type t k v.
+   If [binding_times] are provided, the binding occurrences are restricted to be
+   compatible with the provided global order (see documentation of the [arg]
+   types). *)
+let layout_body_table : type t k v.
     binding_times:_ ->
-    dependent_vars:_ ->
     (t, k, v) Column.hlist ->
     t variable ->
     k Term.hlist ->
-    _ * v variable =
- fun ~binding_times ~dependent_vars columns table args ->
+    index_layer iarray * v variable =
+ fun ~binding_times columns table args ->
   let rec loop : type t k.
       min_binding_time:_ ->
       _ ->
@@ -221,15 +209,9 @@ let layout_table_atom : type t k v.
              (print_term (Column.print_key column))
              arg)
       in
-      Variable.Id.Tbl.add dependent_vars (Variable.uid outer_var)
-        (Variable.uid inner_var);
-      (* Only the first (outermost) position of a variable is binding and can
-         participate in a join defining that variable. *)
       let arg, min_binding_time =
         match arg with
         | Variable var -> (
-          Variable.Id.Tbl.add dependent_vars (Variable.uid var)
-            (Variable.uid inner_var);
           match Variable.Id.Map.find (Variable.uid var) binding_times with
           | var_binding_time when var_binding_time >= min_binding_time ->
             Bind var, var_binding_time + 1
@@ -242,6 +224,43 @@ let layout_table_atom : type t k v.
   in
   loop ~min_binding_time:0 [] columns table args
 
+let layout_head_table : type t k v.
+    binding_times:_ ->
+    (t, k, v) Column.hlist ->
+    t variable ->
+    k Term.hlist ->
+    index_layer iarray * v variable =
+ fun ~binding_times columns table args ->
+  let rec loop : type t k.
+      binding_times:_ ->
+      _ ->
+      (t, k, v) Column.hlist ->
+      t variable ->
+      k Term.hlist ->
+      _ * v variable =
+   fun ~binding_times rev_plan columns outer_var args ->
+    match columns, args with
+    | [], [] -> Iarray.of_list (List.rev rev_plan), outer_var
+    | column :: columns, arg :: args ->
+      let inner_var =
+        Variable.create
+          (Format.asprintf "%a[%a]" Variable.print outer_var
+             (print_term (Column.print_key column))
+             arg)
+      in
+      let arg, binding_times =
+        match arg with
+        | Variable var when Variable.Id.Map.mem (Variable.uid var) binding_times
+          ->
+          Bind var, Variable.Id.Map.remove (Variable.uid var) binding_times
+        | Variable _ | Literal _ -> Check arg, binding_times
+      in
+      loop ~binding_times
+        (Index_layer (column, outer_var, arg, inner_var) :: rev_plan)
+        columns inner_var args
+  in
+  loop ~binding_times [] columns table args
+
 let rec free_vars_term_hlist : type a. a Term.hlist -> Variable.Id.Set.t =
  fun terms ->
   match terms with
@@ -250,53 +269,10 @@ let rec free_vars_term_hlist : type a. a Term.hlist -> Variable.Id.Set.t =
   | Variable v :: terms ->
     Variable.Id.Set.add (Variable.uid v) (free_vars_term_hlist terms)
 
-let layout_table_head_atom : type s.
-    _ -> _ -> (_, _, s) Column.hlist -> _ -> table_head_atom * s variable =
- fun table_id table columns args ->
-  let rec loop : type t k.
-      _ ->
-      (t, k, s) Column.hlist ->
-      t variable ->
-      k Term.hlist ->
-      table_head_atom * s variable =
-   fun rev_plan columns scalar args ->
-    match columns, args with
-    | [], [] ->
-      let columns = Iarray.of_list (List.rev rev_plan) in
-      Table_head_atom { table_id; columns; table }, scalar
-    | column :: columns, arg :: args ->
-      let inner_scalar =
-        Variable.create
-          (Format.asprintf "%a[%a]" Variable.print scalar
-             (print_term (Column.print_key column))
-             arg)
-      in
-      loop
-        (Head_column (column, scalar, arg, inner_scalar) :: rev_plan)
-        columns inner_scalar args
-  in
-  loop [] columns table args
-
-let layout_head_atom (Atom (relation, args)) =
-  match relation with
-  | Unless _ | Distinct _ | Filter _ ->
-    Misc.fatal_error "not supported in the head"
-  | Table tid ->
-    Union
-      ( tid,
-        Table.Id.columns tid,
-        args,
-        lit (Table.Id.default_value tid),
-        [],
-        Table.Id.result_repr tid )
-  | Callback_with_bindings (fn, name) ->
-    Callback_with_bindings ({ value = fn; name }, args)
-
-let rec table_head_atom : type a k t s v.
-    (a, _, _) Table.Id.t ->
-    a variable ->
+let rec table_head_atom : type k t s v.
+    bound_table ->
     len:int ->
-    head_column iarray ->
+    index_layer iarray ->
     t variable ->
     (t, k, s) Column.hlist ->
     k Term.hlist ->
@@ -304,18 +280,21 @@ let rec table_head_atom : type a k t s v.
     (s, _, v) Column.hlist ->
     v Table.result_repr ->
     head_atom =
- fun tid table ~len head_columns current columns args value inner_cols repr ->
+ fun (Bound_table (tid, table)) ~len head_columns current columns args value
+     inner_cols repr ->
   if len = 0
   then
     let Equal = Variable.must_be_equal table current in
     Union (tid, columns, args, value, inner_cols, repr)
   else
-    let (Head_column (column, outer_var, arg, inner_var)) =
+    let (Index_layer (column, outer_var, arg, inner_var)) =
       Iarray.get head_columns (len - 1)
     in
     let Equal = Variable.must_be_equal inner_var current in
-    table_head_atom tid table ~len:(len - 1) head_columns outer_var
-      (column :: columns) (arg :: args) value inner_cols repr
+    table_head_atom
+      (Bound_table (tid, table))
+      ~len:(len - 1) head_columns outer_var (column :: columns)
+      (arg_to_term arg :: args) value inner_cols repr
 
 let add_join_stage stages var columns =
   Dynarray.add_last stages (Join_stage (var, columns))
@@ -393,135 +372,249 @@ let free_vars_atoms ~binding_times atoms =
     atoms;
   free_vars_of_atoms, var_to_atoms
 
-let can_do_the_thing (type v k) (arg : k variable) (body_scalar : v variable)
-    (result_repr : v Table.result_repr) head_atom =
-  let[@local] check_last_arg tid table columns args : (_ * v variable) option =
-    let (Table_head_atom { columns; _ } as result), head_scalar =
-      layout_table_head_atom tid table columns args
+(* Record dependencies introduced by column bindings.
+
+   A dependency from variable [x] to variable [y] means that [y] must be bound
+   strictly before [x].
+
+   When decomposing a body atom [P0(x1, ..., xn)] as:
+
+   [P1 = P0(x1), P2 = P1(x2), ..., Pn = P{n-1}(xn)]
+
+   we record a dependency from [Pi] to [P{i-1}], and also, if [xi] is in binding
+   position, a dependency from [xi] to [Pi] (if [xi] is not in binding position,
+   that dependency is implied transitively). *)
+let record_dependencies ~dependent_vars columns =
+  Iarray.iter
+    (fun (Index_layer (_, outer_var, arg, inner_var)) ->
+      Variable.Id.Tbl.add dependent_vars (Variable.uid outer_var)
+        (Variable.uid inner_var);
+      match arg with
+      | Bind arg ->
+        Variable.Id.Tbl.add dependent_vars (Variable.uid arg)
+          (Variable.uid inner_var)
+      | Check _ -> ())
+    columns
+
+type 'v may_have_implicit_copies =
+  | May_have_implicit_copies :
+      ('t, 'k, 'v) Column.id * 't variable * 'k variable
+      -> 'v may_have_implicit_copies
+  | Cannot_have_implicit_copies
+
+(* Check whether a body atom may be used to detect implicit copies in the head.
+
+   More precisely, this assumes that [body_scalar] is the atom restricted to its
+   first [pos] columns, that is, the atom [P(X1, ..., Xn)] can be decomposed as
+   (taking [p = pos]):
+
+   [P(X1, ..., X_p, ..., Xn) = body_scalar(X1, ..., X_p)(X_{p+1}, ..., Xn)]
+
+   and all [X_i] for [i > p] are in binding position.
+
+   If [X_{pos}] is also in binding position and it has no other occurrence in
+   the body, then any output atom in the head of the form:
+
+   [Q(Y1, ..., Yn, X_p) += body_scalar]
+
+   can be rewritten to use a fused union as:
+
+   [Q(Y1, ..., Yn) += body_table]
+
+   where [body_table] represents the trie [{ X_p -> body_scalar }].
+
+   This function returns the pair [(X_p, body_table)] if the conditions above
+   hold. *)
+let may_have_implicit_copies (type v) ~var_to_body_atoms ~pos ~body_atom_id
+    body_columns (body_scalar : v variable) : v may_have_implicit_copies =
+  if pos < 0 || pos >= Iarray.length body_columns
+  then Cannot_have_implicit_copies
+  else
+    let (Index_layer (body_column, body_table, body_arg, body_scalar')) =
+      Iarray.get body_columns pos
     in
-    if Iarray.length columns = 0
-    then None
-    else
-      let (Head_column (_, _, head_arg, _)) =
-        Iarray.get columns (Iarray.length columns - 1)
-      in
-      match head_arg with
-      | Variable head_arg
-        when Variable.Id.equal (Variable.uid head_arg) (Variable.uid arg) ->
-        Some (result, head_scalar)
-      | Literal _ | Variable _ -> None
-  in
+    match body_arg with
+    | Check _ -> Cannot_have_implicit_copies
+    | Bind body_var -> (
+      match Variable.Id.Tbl.find var_to_body_atoms (Variable.uid body_var) with
+      | (exception Not_found) | [] -> assert false
+      | _ :: _ :: _ -> Cannot_have_implicit_copies
+      | [bid'] ->
+        assert (bid' = body_atom_id);
+        let Equal = Variable.must_be_equal body_scalar body_scalar' in
+        May_have_implicit_copies (body_column, body_table, body_var))
+
+(* Check if the column at position [pos] is a copy column for argument
+   [body_arg].
+
+   Assuming that the head atom can be written as (taking [p = pos]):
+
+   [Q(X1, ..., X_p) += head_scalar]
+
+   we check if [X_p] is equal to [body_arg] and is the single occurrence of
+   [body_arg] in the head.
+
+   If this holds, we return a variable [head_table] representing the trie:
+
+   [head_table = { body_arg -> head_scalar }]
+
+   so that the atom can be rewritten as:
+
+   [Q(X1, ..., X_{p-1}) += head_table]. *)
+let is_implicit_copy (type t k v) ~var_to_head_atoms ~pos ~head_atom_id
+    head_columns (body_column : (t, k, v) Column.id) (body_arg : k variable)
+    (head_scalar : v variable) : t variable option =
+  if pos < 0 || pos >= Iarray.length head_columns
+  then None
+  else
+    let (Index_layer (head_column, head_table, head_arg, head_scalar')) =
+      Iarray.get head_columns pos
+    in
+    match head_arg with
+    | Check _ -> None
+    | Bind head_arg -> (
+      match Variable.provably_equal body_arg head_arg with
+      | None -> None
+      | Some Equal -> (
+        match
+          Variable.Id.Tbl.find var_to_head_atoms (Variable.uid head_arg)
+        with
+        | (exception Not_found) | [] -> assert false
+        | _ :: _ :: _ -> None
+        | [head_atom_id'] ->
+          assert (head_atom_id' = head_atom_id);
+          let Equal = Variable.must_be_equal head_scalar' head_scalar in
+          let Equal = Column.provably_equal_table body_column head_column in
+          Some head_table))
+
+(* Check if the provided [head_atom] is an implicit copy from an atom of the
+   form [body_scalar := P(..., arg) ], where [arg] is a binding occurrence.
+
+   This is the case in one of the two following conditions:
+
+   - The head atom is already of the form [Q(..., arg) += body_scalar] where
+   [arg] is a binding occurrence (i.e. it is the only occurrence of [arg] in the
+   [head_atom]);
+
+   - Or the head atom is of the form [Q(..., arg) += ()] where [arg] is a
+   binding occurrence and [body_scalar] is of type [unit] -- in which case, we
+   can rewrite it to [Q(..., arg) += body_scalar]. *)
+let detect_implicit_copy (type s k v) ~binding_times ~var_to_head_atoms
+    ~head_atom_id head_atom (body_column : (s, k, v) Column.id)
+    (body_arg : k variable) (body_scalar : v variable)
+    (result_repr : v Table.result_repr) :
+    (bound_table * index_layer iarray * s variable) option =
   match head_atom with
   | Callback_with_bindings _ -> None
   | Union (tid, columns, args, head_scalar, inner_cols, head_repr) -> (
+    let[@local] return (columns : (_, _, v) Column.hlist) =
+      let table = Variable.create (Table.Id.name tid) in
+      let head_columns, head_scalar =
+        layout_head_table ~binding_times columns table args
+      in
+      match
+        is_implicit_copy head_columns body_column body_arg head_scalar
+          ~pos:(Iarray.length head_columns - 1)
+          ~var_to_head_atoms ~head_atom_id
+      with
+      | None -> None
+      | Some head_table ->
+        Some (Bound_table (tid, table), head_columns, head_table)
+    in
     match
       ( inner_cols,
         Table.result_repr_is_unit result_repr,
         Table.result_repr_is_unit head_repr )
     with
-    | [], Some Equal, Some Equal ->
-      let table = Variable.create (Table.Id.name tid) in
-      check_last_arg tid table columns args
+    | [], Some Equal, Some Equal -> return columns
     | ([] | _ :: _), (None | Some Equal), _ -> (
       match head_scalar with
       | Literal _ -> None
       | Variable head_scalar -> (
         match Variable.provably_equal head_scalar body_scalar with
         | None -> None
-        | Some Equal ->
-          let table = Variable.create (Table.Id.name tid) in
-          check_last_arg tid table columns args)))
+        | Some Equal -> return columns)))
 
-exception Cannot_introduce_copy
-
-let introduce_copy_into_head_atoms ~var_to_body_atoms ~var_to_head_atoms
-    ~body_atom_id body_columns body_scalar head_atoms head_scalars inner_columns
-    result_repr =
-  let rec loop : type s k.
-      int -> s variable -> s variable list -> (s, k, _) Column.hlist -> _ =
-   fun offset_from_end body_scalar head_scalars inner_columns ->
-    let[@local] cannot_introduce_copy () =
-      assert (
-        not (Variable.Id.Tbl.mem var_to_head_atoms (Variable.uid body_scalar)));
-      Variable.Id.Tbl.replace var_to_head_atoms (Variable.uid body_scalar)
-        (List.map fst head_atoms);
-      let head_results =
-        List.map2
-          (fun (_, Table_head_atom { table_id; table; columns }) head_scalar ->
-            assert (offset_from_end <= Iarray.length columns);
-            table_head_atom table_id table
-              ~len:(Iarray.length columns - offset_from_end)
-              columns head_scalar [] [] (Variable body_scalar) inner_columns
-              result_repr)
-          head_atoms head_scalars
-      in
-      head_results
+let add_var_to_atom free_vars_of_atoms var_to_atoms var atom =
+  if not (Variable.Id.Set.mem (Variable.uid var) free_vars_of_atoms.(atom))
+  then (
+    free_vars_of_atoms.(atom)
+      <- Variable.Id.Set.add (Variable.uid var) free_vars_of_atoms.(atom);
+    let atoms =
+      try Variable.Id.Tbl.find var_to_atoms (Variable.uid var)
+      with Not_found -> []
     in
-    if offset_from_end >= Iarray.length body_columns
-    then cannot_introduce_copy ()
-    else
-      let (Index_layer (body_column, body_table, body_arg, body_scalar')) =
-        Iarray.get body_columns
-          (Iarray.length body_columns - offset_from_end - 1)
+    Variable.Id.Tbl.replace var_to_atoms (Variable.uid var) (atom :: atoms))
+
+let remove_var_from_atom free_vars_of_atoms var_to_atoms var atom_id =
+  free_vars_of_atoms.(atom_id)
+    <- Variable.Id.Set.remove (Variable.uid var) free_vars_of_atoms.(atom_id);
+  match Variable.Id.Tbl.find var_to_atoms (Variable.uid var) with
+  | exception Not_found -> Misc.fatal_error "Inconsistent var_to_atoms"
+  | atom_ids ->
+    let atom_ids = List.filter (fun atom' -> atom' <> atom_id) atom_ids in
+    if List.is_empty atom_ids
+    then Variable.Id.Tbl.remove var_to_atoms (Variable.uid var)
+    else Variable.Id.Tbl.replace var_to_atoms (Variable.uid var) atom_ids
+
+let rewrite_head_atom_into_explicit_copy ~free_vars_of_body_atoms
+    ~var_to_body_atoms ~free_vars_of_head_atoms ~var_to_head_atoms ~body_atom_id
+    body_table body_columns body_scalar ~head_atom_id head_table head_columns
+    head_scalar inner_column result_repr =
+  let rec loop : type s k.
+      offset_from_end:int ->
+      s variable ->
+      s variable ->
+      (s, k, _) Column.hlist ->
+      _ =
+   fun ~offset_from_end body_scalar head_scalar inner_columns ->
+    let[@local] cannot_introduce_copy () =
+      assert (offset_from_end <= Iarray.length body_columns);
+      assert (offset_from_end <= Iarray.length head_columns);
+      add_var_to_atom free_vars_of_head_atoms var_to_head_atoms body_scalar
+        head_atom_id;
+      let body_columns =
+        Iarray.sub body_columns ~pos:0
+          ~len:(Iarray.length body_columns - offset_from_end)
       in
-      let Equal = Variable.must_be_equal body_scalar body_scalar' in
-      match body_arg with
-      | Check _ -> cannot_introduce_copy ()
-      | Bind body_var -> (
-        let vid = Variable.uid body_var in
-        if
-          not
-            (List.equal Int.equal [body_atom_id]
-               (try Variable.Id.Tbl.find var_to_body_atoms vid
-                with Not_found -> []))
-        then cannot_introduce_copy ()
-        else
-          let copy_one_column (type t k) (body_column : (t, k, s) Column.id)
-              (body_var : k variable) =
-            List.map2
-              (fun (_, Table_head_atom { columns; _ })
-                   (head_scalar : s variable) : t variable ->
-                if offset_from_end >= Iarray.length columns
-                then raise_notrace Cannot_introduce_copy;
-                let (Head_column
-                       (head_column, head_table, head_arg, head_scalar')) =
-                  Iarray.get columns
-                    (Iarray.length columns - offset_from_end - 1)
-                in
-                match head_arg with
-                | Literal _ -> raise_notrace Cannot_introduce_copy
-                | Variable head_var -> (
-                  match Variable.provably_equal body_var head_var with
-                  | None -> raise_notrace Cannot_introduce_copy
-                  | Some Equal ->
-                    let Equal =
-                      Variable.must_be_equal head_scalar head_scalar'
-                    in
-                    let Equal =
-                      Column.provably_equal_table body_column head_column
-                    in
-                    head_table))
-              head_atoms head_scalars
-          in
-          match copy_one_column body_column body_var with
-          | exception Cannot_introduce_copy -> cannot_introduce_copy ()
-          | head_tables ->
-            let truc =
-              try Variable.Id.Tbl.find var_to_head_atoms vid
-              with Not_found ->
-                assert (List.is_empty head_atoms);
-                []
-            in
-            let truc =
-              List.filter (fun aid -> not (List.mem_assoc aid head_atoms)) truc
-            in
-            if List.is_empty truc
-            then Variable.Id.Tbl.remove var_to_head_atoms vid
-            else Variable.Id.Tbl.replace var_to_head_atoms vid truc;
-            loop (offset_from_end + 1) body_table head_tables
-              (body_column :: inner_columns))
+      let body_atom =
+        Table_layers
+          { table = body_table;
+            columns = body_columns;
+            result = body_scalar;
+            bound_prefix = 0
+          }
+      in
+      let head_atom =
+        table_head_atom head_table
+          ~len:(Iarray.length head_columns - offset_from_end)
+          head_columns head_scalar [] [] (Variable body_scalar) inner_columns
+          result_repr
+      in
+      body_atom, head_atom
+    in
+    match
+      may_have_implicit_copies ~var_to_body_atoms
+        ~pos:(Iarray.length body_columns - offset_from_end - 1)
+        ~body_atom_id body_columns body_scalar
+    with
+    | Cannot_have_implicit_copies -> cannot_introduce_copy ()
+    | May_have_implicit_copies (body_column, body_table, body_var) -> (
+      match
+        is_implicit_copy head_columns body_column body_var head_scalar
+          ~pos:(Iarray.length head_columns - offset_from_end - 1)
+          ~var_to_head_atoms ~head_atom_id
+      with
+      | None -> cannot_introduce_copy ()
+      | Some head_table ->
+        remove_var_from_atom free_vars_of_body_atoms var_to_body_atoms body_var
+          body_atom_id;
+        remove_var_from_atom free_vars_of_head_atoms var_to_head_atoms body_var
+          head_atom_id;
+        loop ~offset_from_end:(offset_from_end + 1) body_table head_table
+          (body_column :: inner_columns))
   in
-  loop 0 body_scalar head_scalars inner_columns
+  loop ~offset_from_end:1 body_scalar head_scalar [inner_column]
 
 let plan_rule ({ variables = vars; head; body } as rule) =
   let _, binding_times =
@@ -535,106 +628,135 @@ let plan_rule ({ variables = vars; head; body } as rule) =
   let free_vars_of_body_atoms, var_to_body_atoms =
     free_vars_atoms ~binding_times body
   in
-  let _free_vars_of_head_atoms, var_to_head_atoms =
+  let free_vars_of_head_atoms, var_to_head_atoms =
     free_vars_atoms ~binding_times head
   in
-  (* Extract existential variables: innermost variables that don't appear in the
-     head. *)
-  let ~vars, ~existentials =
-    let vars = Iarray.of_list vars in
-    let num_vars =
-      let rec loop n =
-        if n <= 0
-        then n
-        else
-          let var = Iarray.get vars (n - 1) in
-          let (Variable.Any var) = var in
-          if Variable.Id.Tbl.mem var_to_head_atoms (Variable.uid var)
-          then n
-          else loop (n - 1)
-      in
-      loop (Iarray.length vars)
-    in
-    let existentials =
-      Iarray.sub vars ~pos:num_vars ~len:(Iarray.length vars - num_vars)
-    in
-    let vars = Iarray.sub vars ~pos:0 ~len:num_vars in
-    ~vars, ~existentials
+  let head_atoms =
+    Array.init (Iarray.length head) (fun head_atom_id ->
+        let (Atom (relation, args)) = Iarray.get head head_atom_id in
+        match relation with
+        | Unless _ | Distinct _ | Filter _ ->
+          Misc.fatal_error "not supported in the head"
+        | Table tid ->
+          Union
+            ( tid,
+              Table.Id.columns tid,
+              args,
+              lit (Table.Id.default_value tid),
+              [],
+              Table.Id.result_repr tid )
+        | Callback_with_bindings (fn, name) ->
+          Callback_with_bindings ({ value = fn; name }, args))
   in
-  let head_atoms = Iarray.map layout_head_atom head |> Iarray.to_array in
   let dependent_vars = Variable.Id.Tbl.create 0 in
   let rev_tables = ref [] in
   let body_layout =
     Iarray.mapi
-      (fun bid (Atom (relation, args) as body_atom) ->
+      (fun body_atom_id (Atom (relation, args) as body_atom) ->
+        let other_body_atom () = { table_layers = None; atom = body_atom } in
+        let table_body_atom table_layers =
+          { table_layers = Some table_layers; atom = body_atom }
+        in
         match relation with
         | Unless _ | Distinct _ | Filter _ | Callback_with_bindings _ ->
-          { table_layers = None; atom = body_atom }
-        | Table tid ->
+          other_body_atom ()
+        | Table tid -> (
           let body_table = Variable.create (Table.Id.name tid) in
           rev_tables := Bound_table (tid, body_table) :: !rev_tables;
           let body_columns, body_scalar =
-            layout_table_atom ~binding_times ~dependent_vars
-              (Table.Id.columns tid) body_table args
+            layout_body_table ~binding_times (Table.Id.columns tid) body_table
+              args
           in
-          (match innermost_arg_is_binding body_columns with
-          | None -> ()
-          | Some (Any arg) -> (
-            match Variable.Id.Tbl.find var_to_body_atoms (Variable.uid arg) with
-            | (exception Not_found) | [] | _ :: _ :: _ -> ()
-            | [bid'] -> (
-              assert (bid = bid');
-              let head_atom_ids =
-                try Variable.Id.Tbl.find var_to_head_atoms (Variable.uid arg)
-                with Not_found -> []
-              in
-              match
-                List.map
-                  (fun aid ->
-                    match
-                      can_do_the_thing arg body_scalar
-                        (Table.Id.result_repr tid) head_atoms.(aid)
-                    with
-                    | None -> raise_notrace Cannot_introduce_copy
-                    | Some (a, b) -> (aid, a), b)
-                  head_atom_ids
-              with
-              | exception Cannot_introduce_copy -> ()
-              | table_head_atoms ->
-                let table_head_atoms, head_scalars =
-                  List.split table_head_atoms
-                in
-                let copy_head_atoms =
-                  introduce_copy_into_head_atoms ~var_to_body_atoms
-                    ~var_to_head_atoms ~body_atom_id:bid body_columns
-                    body_scalar table_head_atoms head_scalars []
-                    (Table.Id.result_repr tid)
-                in
-                List.iter2
-                  (fun aid head_atom -> head_atoms.(aid) <- head_atom)
-                  head_atom_ids copy_head_atoms)));
-          (* Do not drop the columns from the body atoms: they might still
-             appear in other head atoms. *)
-          let table_layers =
+          record_dependencies ~dependent_vars body_columns;
+          let[@local] no_implicit_copies () =
             Table_layers
               { table = body_table;
                 columns = body_columns;
                 result = body_scalar;
-                result_repr = Table.Id.result_repr tid;
                 bound_prefix = 0
               }
+            |> table_body_atom
           in
-          { table_layers = Some table_layers; atom = body_atom })
+          match
+            may_have_implicit_copies ~var_to_body_atoms
+              ~pos:(Iarray.length body_columns - 1)
+              ~body_atom_id body_columns body_scalar
+          with
+          | Cannot_have_implicit_copies -> no_implicit_copies ()
+          | May_have_implicit_copies
+              (last_body_column, last_body_table, last_body_arg) -> (
+            match
+              Variable.Id.Tbl.find var_to_head_atoms
+                (Variable.uid last_body_arg)
+            with
+            | (exception Not_found) | [] | _ :: _ :: _ -> no_implicit_copies ()
+            | [head_atom_id] -> (
+              match
+                detect_implicit_copy head_atoms.(head_atom_id) last_body_column
+                  last_body_arg body_scalar (Table.Id.result_repr tid)
+                  ~var_to_head_atoms ~head_atom_id ~binding_times
+              with
+              | None -> no_implicit_copies ()
+              | Some (bound_head, head_columns, last_head_table) ->
+                remove_var_from_atom free_vars_of_body_atoms var_to_body_atoms
+                  last_body_arg body_atom_id;
+                remove_var_from_atom free_vars_of_head_atoms var_to_head_atoms
+                  last_body_arg head_atom_id;
+                let body_atom, head_atom =
+                  rewrite_head_atom_into_explicit_copy ~free_vars_of_body_atoms
+                    ~var_to_body_atoms ~free_vars_of_head_atoms
+                    ~var_to_head_atoms ~body_atom_id body_table body_columns
+                    last_body_table ~head_atom_id bound_head head_columns
+                    last_head_table last_body_column (Table.Id.result_repr tid)
+                in
+                head_atoms.(head_atom_id) <- head_atom;
+                table_body_atom body_atom))))
       body
   in
   let tables = Iarray.of_list (List.rev !rev_tables) in
-  (* Second round of existentials *)
-  let rec does_not_occur_in_head_atoms vid =
-    (not (Variable.Id.Tbl.mem var_to_head_atoms vid))
-    && List.for_all does_not_occur_in_head_atoms
-         (Variable.Id.Tbl.find_all dependent_vars vid)
+  let vars =
+    (* Drop variables that do not occur in either the body or the head (this is
+       the case for variables that have been eliminated due to copy
+       optimization). *)
+    vars
+    |> List.filter (fun (Variable.Any var) ->
+        Variable.Id.Tbl.mem var_to_body_atoms (Variable.uid var)
+        || Variable.Id.Tbl.mem var_to_head_atoms (Variable.uid var))
+    |> Iarray.of_list
   in
+  (* Extract existential variables -- innermost variables that don't appear in
+     the head. Once we found once instance of the rule with any value of the
+     existentials, finding another with the same values for the non-existential
+     variables is not useful.
+
+     Note that we need to take into account dependencies: consider the rule
+
+     Q(y) :- P(x, y)
+
+     which we rewrite into:
+
+     (Q += Px) :- (Px := P(x))
+
+     Even though [x] does not occur in the head, [Px], which depends on [x],
+     does and so we can't must iterate on all the values of [x].
+
+     On the other hand, if we have:
+
+     R(z) :- P(x, z), Q(x, y)
+
+     which gets rewritten into:
+
+     (R += Px) :- (Px := P(x)), (Qx := Q(x)), Qx(y)
+
+     neither [y] nor its (transitive) dependencies occur in the head, and so it
+     is fine to treat it as an existential (note that [z] has disappeared from
+     the rule entirely). *)
   let ~vars, ~existentials =
+    let rec does_not_occur_in_head_atoms vid =
+      (not (Variable.Id.Tbl.mem var_to_head_atoms vid))
+      && List.for_all does_not_occur_in_head_atoms
+           (Variable.Id.Tbl.find_all dependent_vars vid)
+    in
     let num_vars =
       let rec loop n =
         if n <= 0
@@ -649,9 +771,7 @@ let plan_rule ({ variables = vars; head; body } as rule) =
       loop (Iarray.length vars)
     in
     let existentials =
-      Iarray.append
-        (Iarray.sub vars ~pos:num_vars ~len:(Iarray.length vars - num_vars))
-        existentials
+      Iarray.sub vars ~pos:num_vars ~len:(Iarray.length vars - num_vars)
     in
     let vars = Iarray.sub vars ~pos:0 ~len:num_vars in
     ~vars, ~existentials
@@ -701,10 +821,25 @@ let plan_rule ({ variables = vars; head; body } as rule) =
   in
   Iarray.iter variable_stage vars;
   Iarray.iter variable_stage existentials;
+  let input_stages = Dynarray.to_array stages |> Iarray.of_array in
   (* At this point, all the involved variables must have been bound, and all the
      input stages are fixed -- perform some safety checks. *)
   if Variable.Id.Tbl.length var_to_body_atoms <> 0
-  then Misc.fatal_error "Free vars in datalog rule";
+  then (
+    Format.eprintf "%a@." print_plan
+      { tables;
+        input_stages;
+        output_atoms = Iarray.of_array head_atoms;
+        num_existentials = Iarray.length existentials
+      };
+    Format.eprintf "%a@." print_rule rule;
+    Variable.Id.Tbl.iter
+      (fun vid _ -> Format.eprintf "%a@ " Variable.Id.print vid)
+      var_to_head_atoms;
+    Format.eprintf "@.";
+    Misc.fatal_errorf "Free vars (body: %b, head: %b) in datalog rule"
+      (Variable.Id.Tbl.length var_to_body_atoms <> 0)
+      (Variable.Id.Tbl.length var_to_head_atoms <> 0));
   Iarray.iteri
     (fun aid { table_layers; atom } ->
       if
@@ -719,20 +854,8 @@ let plan_rule ({ variables = vars; head; body } as rule) =
         Misc.fatal_errorf "*BUG*: Atom was not fully laid out:@ %a" print_atom
           atom)
     body_layout;
-  let input_stages = Dynarray.to_array stages |> Iarray.of_array in
-  let plan =
-    { tables;
-      input_stages;
-      output_atoms = Iarray.of_array head_atoms;
-      num_existentials = Iarray.length existentials
-    }
-  in
-  if Flambda_features.debug_flambda2 ()
-  then (
-    Format.eprintf
-      "================================================================================@.";
-    Format.eprintf "%a@." print_rule rule;
-    Format.eprintf "%a@." print_plan plan;
-    Format.eprintf
-      "================================================================================@.");
-  plan
+  { tables;
+    input_stages;
+    output_atoms = Iarray.of_array head_atoms;
+    num_existentials = Iarray.length existentials
+  }
