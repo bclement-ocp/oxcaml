@@ -23,6 +23,8 @@ val result_repr_union : 'v result_repr -> 'v -> 'v -> 'v
 
 val result_repr_diff_or_null : 'v result_repr -> 'v -> 'v -> 'v Or_null.t
 
+val result_repr_is_unit : 'v result_repr -> ('v, unit) Type.eq option
+
 module Id : sig
   type (!'t, !'k, !'v) t
 
