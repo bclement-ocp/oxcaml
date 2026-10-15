@@ -419,7 +419,7 @@ let usages_rel = Datalog.create_relation ~name:"usages" Usages_rel.columns
 
 let usages_rel v1 v2 = Datalog.atom usages_rel [v1; v2]
 
-let with_usages = true
+let with_usages = false
 
 let datalog_schedule_usages =
   let open Datalog in
