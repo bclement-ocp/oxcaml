@@ -51,7 +51,7 @@ let fixpoint0 (graph : Global_flow_graph.graph) ~analysis_scope =
 let fixpoint graph ~analysis_scope =
   if Flambda_features.debug_reaper "print-raw" then Dot_printer.print_dep graph;
   let solved_dep =
-    Gc.full_major ();
+    Profile.record ~accumulate:true "gc" Gc.full_major ();
     Profile.record_call ~accumulate:true "solver" (fun () ->
         fixpoint0 graph ~analysis_scope)
   in

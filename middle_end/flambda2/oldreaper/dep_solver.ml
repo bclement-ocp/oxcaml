@@ -806,19 +806,20 @@ let fixpoint (graph_new : Global_flow_graph.graph) =
   Profile.record_call ~accumulate:true "solver" @@ fun () ->
   let result = Hashtbl.create 17 in
   let uses =
+    Profile.record_call ~accumulate:true "used" @@ fun () ->
     Global_flow_graph.used graph_new
     |> Hashtbl.to_seq_keys |> List.of_seq |> Code_id_or_name.Set.of_list
   in
-  Gc.full_major ();
+  Profile.record ~accumulate:true "gc" Gc.full_major ();
   Profile.record_call ~accumulate:true "topo" (fun () ->
       Solver.fixpoint_topo graph_new uses result);
   let datalog = Global_flow_graph.to_datalog graph_new in
   let stats = Datalog.Schedule.create_stats datalog in
   let db =
-    Gc.full_major ();
+    Profile.record ~accumulate:true "gc" Gc.full_major ();
     Profile.record_call ~accumulate:true "datalog" @@ fun () ->
     Datalog.Schedule.run ~stats datalog_schedule datalog
   in
-  Solver.check_fixpoint graph_new uses result;
-  let _result2 = db_to_uses db in
+  ignore Solver.check_fixpoint;
+  ignore db_to_uses;
   result, db
