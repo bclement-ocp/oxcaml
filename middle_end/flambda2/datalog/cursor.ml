@@ -141,42 +141,25 @@ type ('p, !'v) with_parameters =
     cursor : 'v t
   }
 
-module From_plan = struct
+module Builder = struct
   open Lang
   open! Planner
-  module Int = Numbers.Int
 
   module Env = struct
     type bound_var =
       | Bound_var : 'a variable * 'a Channel.or_null_receiver -> bound_var
 
-    type naive_table =
-      | Naive_table :
-          ('t, _, _) Table.Id.t
-          * 't Channel.or_null_sender
-          * 't Channel.or_null_receiver
-          -> naive_table
+    module Output_map = Variable.Map.Make (struct
+      type 'a t = 'a Bytecode.output_ref with_name
+    end)
 
     type t =
       { bound_vars : bound_var Variable.Id.Map.t;
-        naive_tables : naive_table Int.Tbl.t;
-        output_tables : output Int.Tbl.t
+        bound_outputs : Output_map.t
       }
 
     let create () =
-      { bound_vars = Variable.Id.Map.empty;
-        naive_tables = Int.Tbl.create 0;
-        output_tables = Int.Tbl.create 0
-      }
-
-    let get_naive_tables t =
-      Int.Tbl.fold
-        (fun _ (Naive_table (table, sender, _)) acc ->
-          Bind_table (table, sender) :: acc)
-        t.naive_tables []
-
-    let get_output_tables t =
-      Int.Tbl.fold (fun _ output acc -> output :: acc) t.output_tables []
+      { bound_vars = Variable.Id.Map.empty; bound_outputs = Output_map.empty }
 
     let bind_var env var receiver =
       if Variable.Id.Map.mem (Variable.uid var) env.bound_vars
@@ -191,6 +174,27 @@ module From_plan = struct
           env.bound_vars
       in
       { env with bound_vars }
+
+    let rec bind_vars : type p.
+        _ -> p Variable.hlist -> _ * p Or_null_sender.hlist =
+     fun env -> function
+      | [] -> env, []
+      | p :: ps ->
+        let sender, receiver = Channel.create_or_null Or_null.null in
+        let env = bind_var env p receiver in
+        let env, senders = bind_vars env ps in
+        env, sender :: senders
+
+    let bind_inputs env tables =
+      let env, tables =
+        Iarray.fold_left
+          (fun (env, binders) (Bound_table (table, var)) ->
+            let sender, receiver = Channel.create_or_null Or_null.null in
+            let binders = Bind_table (table, sender) :: binders in
+            bind_var env var receiver, binders)
+          (env, []) tables
+      in
+      env, List.rev tables
 
     let must_be_bound (type a) env (var : a variable) :
         a Channel.or_null_receiver with_name =
@@ -224,29 +228,37 @@ module From_plan = struct
         let { values; names } = must_be_bound_term_hlist env terms in
         { values = value :: values; names = name :: names }
 
-    let get_table (type t k v) env (tid : (t, k, v) Table.Id.t) :
-        t Channel.or_null_receiver with_name =
-      match Int.Tbl.find env.naive_tables (Table.Id.uid tid) with
-      | exception Not_found ->
-        let sender, receiver = Channel.create_or_null Or_null.null in
-        Int.Tbl.replace env.naive_tables (Table.Id.uid tid)
-          (Naive_table (tid, sender, receiver));
-        { value = receiver; name = Table.Id.name tid }
-      | Naive_table (tid', _, receiver) ->
-        let Equal = Table.Id.provably_equal_exn tid tid' in
-        { value = receiver; name = Table.Id.name tid }
+    let bind_output env var output_ref =
+      if Variable.Id.Map.mem (Variable.uid var) env.bound_vars
+      then
+        Misc.fatal_errorf
+          "*BUG*: Datalog planner tried to bind output %a, but it is already \
+           bound"
+          Variable.print var;
+      let bound_outputs =
+        Output_map.add var
+          { value = output_ref; name = Variable.name var }
+          env.bound_outputs
+      in
+      { env with bound_outputs }
 
-    let get_output (type t k v) env (tid : (t, k, v) Table.Id.t) :
+    let bind_outputs env output_tables =
+      let env, outputs =
+        Iarray.fold_left
+          (fun (env, cursor_outputs) (Bound_table (tid, table)) ->
+            let output_ref = Bytecode.create_output () in
+            let env = bind_output env table output_ref in
+            env, Output_table (tid, output_ref) :: cursor_outputs)
+          (env, []) output_tables
+      in
+      env, List.rev outputs
+
+    let must_be_bound_output (type t) env (table : t variable) :
         t Bytecode.output_ref with_name =
-      match Int.Tbl.find env.output_tables (Table.Id.uid tid) with
-      | exception Not_found ->
-        let output_ref = Bytecode.create_output () in
-        Int.Tbl.replace env.output_tables (Table.Id.uid tid)
-          (Output_table (tid, output_ref));
-        { value = output_ref; name = Table.Id.name tid }
-      | Output_table (tid', output_ref) ->
-        let Equal = Table.Id.provably_equal_exn tid tid' in
-        { value = output_ref; name = Table.Id.name tid }
+      try Output_map.find table env.bound_outputs
+      with Not_found ->
+        Misc.fatal_errorf "Datalog output not bound in this context: %a"
+          Variable.print table
   end
 
   type _ column = Column : (_, 'k, _) Column.id -> 'k column
@@ -287,23 +299,18 @@ module From_plan = struct
         let receiver = Env.must_be_bound_term ~column env term in
         Executor.if_in receiver iterators
         @@ build_stages env stages (index + 1) k
-      | Check_stage (Atom (relation, terms)) ->
-        (match relation with
-          | Table _ ->
-            Misc.fatal_error "*BUG*: Should have been planned as a trie"
-          | Unless tid ->
-            Executor.if_not_in (Table.Id.columns tid) (Env.get_table env tid)
-              (Env.must_be_bound_term_hlist env terms)
-          | Distinct column ->
-            let [term1; term2] = terms in
+      | Check_stage check_atom ->
+        (match check_atom with
+          | Unless (columns, table, args) ->
+            Executor.if_not_in columns
+              (Env.must_be_bound env table)
+              (Env.must_be_bound_term_hlist env args)
+          | Distinct (column, arg1, arg2) ->
             Executor.if_not_equal column
-              (Env.must_be_bound_term ~column env term1)
-              (Env.must_be_bound_term ~column env term2)
-          | Filter (fn, name) ->
-            Executor.if_ { value = fn; name }
-              (Env.must_be_bound_term_hlist env terms)
-          | Callback_with_bindings _ ->
-            Misc.fatal_error "Callback with bindings cannot be used in the body")
+              (Env.must_be_bound_term ~column env arg1)
+              (Env.must_be_bound_term ~column env arg2)
+          | Filter (fn, args) ->
+            Executor.if_ fn (Env.must_be_bound_term_hlist env args))
         @@ build_stages env stages (index + 1) k
       | Existential_stage existential_stages ->
         Executor.exists
@@ -311,40 +318,15 @@ module From_plan = struct
             build_stages env existential_stages 0 (fun _env -> accept))
           (build_stages env stages (index + 1) k)
 
-  let create_from_plan_with_parameters ?(callback = ref ignore) ?stats
-      ~original_rule parameters
-      ({ tables; input_stages = _; output_atoms = _ } as plan) :
-      (_, _) with_parameters =
-    let env = Env.create () in
-    let env, parameters =
-      let rec bind_params : type p.
-          _ -> p Variable.hlist -> _ * p Or_null_sender.hlist =
-       fun env -> function
-         | [] -> env, []
-         | p :: ps ->
-           let sender, receiver = Channel.create_or_null Or_null.null in
-           let env = Env.bind_var env p receiver in
-           let env, senders = bind_params env ps in
-           env, sender :: senders
-      in
-      bind_params env parameters
-    in
-    let env, cursor_binders =
-      Iarray.fold_left
-        (fun (env, binders) (Bound_table (table, var)) ->
-          let sender, receiver = Channel.create_or_null Or_null.null in
-          let binders = Bind_table (table, sender) :: binders in
-          Env.bind_var env var receiver, binders)
-        (env, []) tables
-    in
+  let create_executor ~stats env input_stages output_atoms =
     let assembler =
-      build_stages env plan.input_stages 0 (fun env ->
+      build_stages env input_stages 0 (fun env ->
           Iarray.fold_right
             (fun head_atom body ->
               match head_atom with
-              | Output (tid, Union (columns, args, value, inner_columns, repr))
+              | Output (table, Union (columns, args, value, inner_columns, repr))
                 ->
-                let table = Env.get_output env tid in
+                let table = Env.must_be_bound_output env table in
                 let value = Env.must_be_bound_term env value in
                 let args = Env.must_be_bound_term_hlist env args in
                 Executor.list
@@ -353,7 +335,7 @@ module From_plan = struct
               | Callback_with_bindings (fn, args) ->
                 let args = Env.must_be_bound_term_hlist env args in
                 Executor.list [Executor.call_with_bindings fn args; body])
-            plan.output_atoms
+            output_atoms
             (match stats with
             | None -> Executor.nop
             | Some stats -> Executor.increase_count ~stats))
@@ -363,19 +345,7 @@ module From_plan = struct
       | None -> assembler
       | Some stats -> Executor.with_timer ~stats assembler
     in
-    let executor = Executor.assemble assembler in
-    let cursor_naive_binders = Env.get_naive_tables env in
-    let cursor_outputs = Env.get_output_tables env in
-    { parameters;
-      cursor =
-        { cursor_binders;
-          cursor_naive_binders;
-          cursor_outputs;
-          executor;
-          callback;
-          original_rule
-        }
-    }
+    Executor.assemble assembler
 end
 
 module With_parameters = struct
@@ -385,10 +355,32 @@ module With_parameters = struct
 
   let without_parameters { parameters = []; cursor } = cursor
 
-  let create_from_rule ?callback ?stats params rule =
-    let plan = Planner.plan_rule rule in
-    From_plan.create_from_plan_with_parameters ?callback ?stats
-      ~original_rule:rule params plan
+  let create_from_rule ?(callback = ref ignore) ?stats params rule =
+    let open! Builder in
+    let { Planner.monotone_tables;
+          non_monotone_tables;
+          input_stages;
+          output_atoms;
+          output_tables
+        } =
+      Planner.plan_rule rule
+    in
+    let env = Env.create () in
+    let env, cursor_outputs = Env.bind_outputs env output_tables in
+    let env, parameters = Env.bind_vars env params in
+    let env, cursor_binders = Env.bind_inputs env monotone_tables in
+    let env, cursor_naive_binders = Env.bind_inputs env non_monotone_tables in
+    let executor = create_executor ~stats env input_stages output_atoms in
+    { parameters;
+      cursor =
+        { cursor_binders;
+          cursor_naive_binders;
+          cursor_outputs;
+          executor;
+          callback;
+          original_rule = rule
+        }
+    }
 
   let naive_fold { parameters; cursor } ps db f acc =
     Or_null_sender.send_hlist parameters ps;

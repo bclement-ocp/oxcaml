@@ -38,10 +38,17 @@ type 'k column_iterator =
       * 'v Table.result_repr
       -> 'k column_iterator
 
+type check_atom =
+  | Distinct : (_, 'k, _) Column.id * 'k term * 'k term -> check_atom
+  | Unless :
+      ('t, 'k, 'v) Column.hlist * 't variable * 'k Term.hlist
+      -> check_atom
+  | Filter : ('k Constant.hlist -> bool) with_name * 'k Term.hlist -> check_atom
+
 type stage =
   | Join_stage : 'k variable * 'k column_iterator list -> stage
   | Seek_stage : 'k term * 'k column_iterator list -> stage
-  | Check_stage : atom -> stage
+  | Check_stage : check_atom -> stage
   | Existential_stage : stage iarray -> stage
 (* Variables bound by existential stages are not accessible in the output, which
    allows skipping the full existential stage once we have found any satisfying
@@ -60,16 +67,18 @@ type (_, _) union =
       -> ('t, 'v) union
 
 type head_atom =
-  | Output : ('t, _, _) Table.Id.t * ('t, _) union -> head_atom
+  | Output : 't variable * ('t, _) union -> head_atom
   | Callback_with_bindings :
       (Bytecode.bindings_ref -> 'k Constant.hlist -> unit) with_name
       * 'k Term.hlist
       -> head_atom
 
 type plan =
-  { tables : bound_table iarray;
+  { monotone_tables : bound_table iarray;
+    non_monotone_tables : bound_table iarray;
     input_stages : stage iarray;
-    output_atoms : head_atom iarray
+    output_atoms : head_atom iarray;
+    output_tables : bound_table iarray
   }
 
 val print_plan : Format.formatter -> plan -> unit

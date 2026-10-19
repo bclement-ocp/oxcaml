@@ -38,10 +38,17 @@ type 'k column_iterator =
       * 'v Table.result_repr
       -> 'k column_iterator
 
+type check_atom =
+  | Distinct : (_, 'k, _) Column.id * 'k term * 'k term -> check_atom
+  | Unless :
+      ('t, 'k, 'v) Column.hlist * 't variable * 'k Term.hlist
+      -> check_atom
+  | Filter : ('k Constant.hlist -> bool) with_name * 'k Term.hlist -> check_atom
+
 type stage =
   | Join_stage : 'k variable * 'k column_iterator list -> stage
   | Seek_stage : 'k term * 'k column_iterator list -> stage
-  | Check_stage : atom -> stage
+  | Check_stage : check_atom -> stage
   | Existential_stage : stage iarray -> stage
 
 type bound_table =
@@ -57,22 +64,24 @@ type (_, _) union =
       -> ('t, 'v) union
 
 type head_atom =
-  | Output : ('t, _, _) Table.Id.t * ('t, _) union -> head_atom
+  | Output : 't variable * ('t, _) union -> head_atom
   | Callback_with_bindings :
       (Bytecode.bindings_ref -> 'k Constant.hlist -> unit) with_name
       * 'k Term.hlist
       -> head_atom
 
 type plan =
-  { tables : bound_table iarray;
+  { monotone_tables : bound_table iarray;
+    non_monotone_tables : bound_table iarray;
     input_stages : stage iarray;
-    output_atoms : head_atom iarray
+    output_atoms : head_atom iarray;
+    output_tables : bound_table iarray
   }
 
 let print_head_atom ppf head_atom =
   match head_atom with
   | Output (tid, Union (columns, args, value, _, _)) ->
-    Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])%a@]" Table.Id.print tid
+    Format.fprintf ppf "@[<1>@[%a@](@,@[%a@])%a@]" Variable.print tid
       (Term.print_columns
          ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
          columns)
@@ -84,6 +93,25 @@ let print_head_atom ppf head_atom =
       value
   | Callback_with_bindings (fn, args) ->
     Format.fprintf ppf "%s@[<1>(%a)@]" fn.name
+      (Term.print_hlist ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ "))
+      args
+
+let print_neg_check_atom ppf check_atom =
+  match check_atom with
+  | Distinct (column, arg1, arg2) ->
+    Format.fprintf ppf "%a = %a"
+      (print_term (Column.print_key column))
+      arg1
+      (print_term (Column.print_key column))
+      arg2
+  | Unless (columns, table, args) ->
+    Format.fprintf ppf "%a@[<1>(%a)@]" Variable.print table
+      (Term.print_columns
+         ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ ")
+         columns)
+      args
+  | Filter ({ name; _ }, args) ->
+    Format.fprintf ppf "not %s@[<1>(%a)@]" name
       (Term.print_hlist ~pp_sep:(fun ppf () -> Format.fprintf ppf ",@ "))
       args
 
@@ -108,7 +136,7 @@ let rec print_stage ppf stage =
          (fun ppf (Column_iterator (_, tbl, _, _, _)) -> Variable.print ppf tbl))
       join_columns
   | Check_stage atom ->
-    Format.fprintf ppf "@[<2>@[if %a:@]@ continue@]" print_neg_atom atom
+    Format.fprintf ppf "@[<2>@[if %a:@]@ continue@]" print_neg_check_atom atom
   | Existential_stage stages ->
     Format.fprintf ppf
       "@[<v 2>@[<v>if not exists (@;<1 2>@[<v>%a@]@ ):@]@ continue@]"
@@ -303,6 +331,19 @@ let introduce_copies ~binding_times ~join_stages ~body_occurrences head =
       true
     | _ | (exception Not_found) -> false
   in
+  let output_tables = Numbers.Int.Tbl.create 0 in
+  let get_or_create_output_table (type t k v) (tid : (t, k, v) Table.Id.t) :
+      t variable =
+    match Numbers.Int.Tbl.find output_tables (Table.Id.uid tid) with
+    | Bound_table (tid', output_table) ->
+      let Equal = Table.Id.provably_equal_exn tid tid' in
+      output_table
+    | exception Not_found ->
+      let output_table = Variable.create ("out_" ^ Table.Id.name tid) in
+      Numbers.Int.Tbl.add output_tables (Table.Id.uid tid)
+        (Bound_table (tid, output_table));
+      output_table
+  in
   let plan_head_table tid args =
     let rec loop : type t k v.
         (t, k, v) Column.hlist ->
@@ -338,17 +379,25 @@ let introduce_copies ~binding_times ~join_stages ~body_occurrences head =
               else no_copy ())
           | Variable _ | Literal _ -> no_copy ()))
     in
-    Output (tid, loop (Table.Id.columns tid) args (Table.Id.result_repr tid))
+    Output
+      ( get_or_create_output_table tid,
+        loop (Table.Id.columns tid) args (Table.Id.result_repr tid) )
   in
-  Iarray.map
-    (fun (Atom (relation, args)) ->
-      match relation with
-      | Unless _ | Distinct _ | Filter _ ->
-        Misc.fatal_error "not supported in the head"
-      | Table tid -> plan_head_table tid args
-      | Callback_with_bindings (fn, name) ->
-        Callback_with_bindings ({ value = fn; name }, args))
-    head
+  let output_atoms =
+    Iarray.map
+      (fun (Atom (relation, args)) ->
+        match relation with
+        | Unless _ | Distinct _ | Filter _ ->
+          Misc.fatal_error "not supported in the head"
+        | Table tid -> plan_head_table tid args
+        | Callback_with_bindings (fn, name) ->
+          Callback_with_bindings ({ value = fn; name }, args))
+      head
+  in
+  let output_tables =
+    Numbers.Int.Tbl.to_list output_tables |> List.map snd |> Iarray.of_list
+  in
+  output_atoms, output_tables
 
 let prepare_rule ~binding_times body head =
   let join_stages = ref Join_stages.empty in
@@ -422,24 +471,52 @@ let prepare_rule ~binding_times body head =
     loop ~min_binding_time:0 [] (Table.Id.columns tid) (bind_table tid) args
       (Table.Id.result_repr tid)
   in
+  let non_monotone_tables_cache = Numbers.Int.Tbl.create 0 in
+  let non_monotone_tables = ref [] in
+  let get_non_monotone_table (type t) (tid : (t, _, _) Table.Id.t) : t variable
+      =
+    match Numbers.Int.Tbl.find non_monotone_tables_cache (Table.Id.uid tid) with
+    | Bound_table (tid', table) ->
+      let Equal = Table.Id.provably_equal_exn tid tid' in
+      table
+    | exception Not_found ->
+      let table = Variable.create (Table.Id.name tid) in
+      non_monotone_tables := Bound_table (tid, table) :: !non_monotone_tables;
+      Numbers.Int.Tbl.add non_monotone_tables_cache (Table.Id.uid tid)
+        (Bound_table (tid, table));
+      table
+  in
   let stages =
     List.concat_map
-      (fun (Atom (relation, args) as atom) ->
+      (fun (Atom (relation, args)) ->
         match relation with
         | Table tid -> plan_body_table tid args
-        | Unless _ | Distinct _ | Filter _ | Callback_with_bindings _ ->
+        | Unless tid ->
+          let table = get_non_monotone_table tid in
+          Var_occurrences.add_var body_occurrences table;
           Var_occurrences.add_terms body_occurrences args;
-          [Check_stage atom])
+          [Check_stage (Unless (Table.Id.columns tid, table, args))]
+        | Distinct repr ->
+          Var_occurrences.add_terms body_occurrences args;
+          let [arg1; arg2] = args in
+          [Check_stage (Distinct (repr, arg1, arg2))]
+        | Filter (fn, name) ->
+          Var_occurrences.add_terms body_occurrences args;
+          [Check_stage (Filter ({ value = fn; name }, args))]
+        | Callback_with_bindings _ ->
+          Misc.fatal_error "Callback with bindings cannot be used in the body")
       (Iarray.to_list body)
   in
-  let head =
+  let head, output_tables =
     introduce_copies ~binding_times ~join_stages ~body_occurrences head
   in
-  ( List.rev !bound_tables,
+  ( ~monotone_tables:(List.rev !bound_tables),
+    ~non_monotone_tables:(List.rev !non_monotone_tables),
     Join_stages.fold
       (fun (B (var, iterators)) stages -> Join_stage (var, iterators) :: stages)
       !join_stages stages
     |> Iarray.of_list,
+    output_tables,
     head )
 
 let vars_used_by_term = function
@@ -452,12 +529,19 @@ let vars_defined_by_stage = function
   | Seek_stage (_arg, iterators) -> vars_defined_by_iterators iterators
   | Check_stage _ | Existential_stage _ -> Variable.Id.Set.empty
 
+let vars_used_by_check_atom = function
+  | Unless (_columns, table, args) ->
+    Variable.Id.Set.add (Variable.uid table) (free_vars_term_hlist args)
+  | Distinct (_column, arg1, arg2) ->
+    Variable.Id.Set.union_list [vars_used_by_term arg1; vars_used_by_term arg2]
+  | Filter (_fn, args) -> free_vars_term_hlist args
+
 let rec vars_used_by_stage = function
   | Join_stage (_var, iterators) -> vars_used_by_iterators iterators
   | Seek_stage (arg, iterators) ->
     Variable.Id.Set.union (vars_used_by_term arg)
       (vars_used_by_iterators iterators)
-  | Check_stage (Atom (_relation, args)) -> free_vars_term_hlist args
+  | Check_stage check_atom -> vars_used_by_check_atom check_atom
   | Existential_stage stages ->
     (* Variables are only bound once, so we don't need to care about order of
        definition and use within the existential stage. *)
@@ -783,7 +867,9 @@ let plan_rule0 { variables; head; body } =
         ))
       (0, Variable.Id.Map.empty) variables
   in
-  let tables, stages, head = prepare_rule ~binding_times body head in
+  let ~monotone_tables, ~non_monotone_tables, stages, output_tables, head =
+    prepare_rule ~binding_times body head
+  in
   let vars_used_by_head =
     Iarray.fold_left
       (fun vars atom ->
@@ -800,7 +886,12 @@ let plan_rule0 { variables; head; body } =
       stages
     |> plan_stages ~binding_times
   in
-  { tables = Iarray.of_list tables; input_stages; output_atoms = head }
+  { monotone_tables = Iarray.of_list monotone_tables;
+    non_monotone_tables = Iarray.of_list non_monotone_tables;
+    input_stages;
+    output_atoms = head;
+    output_tables
+  }
 
 let plan_rule rule =
   try plan_rule0 rule
