@@ -80,62 +80,6 @@ let naive_fold cursor db f acc =
   naive_iter cursor db (fun args -> acc := f args !acc);
   !acc
 
-(* Seminaive evaluation iterates over all the {b new} tuples in the [diff]
-   database that are not in the [previous] database.
-
-   [current] must be equal to [concat ~earlier:previous ~later:diff]. *)
-let[@inline] seminaive_run cursor ~previous ~diff ~current ~output ~added =
-  with_bound_cursor cursor current @@ fun () ->
-  let rec loop ~outputs ~executor ~previous ~diff ~output ~added binders =
-    let[@local] return () =
-      List.fold_left
-        (fun (~output, ~added) (Output_table (tid, output_ref)) ->
-          match Bytecode.get_and_clear_output output_ref with
-          | Null -> ~output, ~added
-          | This output_table -> (
-            let columns = Table.Id.columns tid in
-            let result_repr = Table.Id.result_repr tid in
-            let current_table = Table.Map.get_or_null tid output in
-            let diff_or_null =
-              Column.diff_or_null_hlist columns
-                (Table.result_repr_diff_or_null result_repr)
-            in
-            let[@inline] diff_or_null' table1 table2 =
-              match table2 with
-              | Or_null.Null -> Or_null.this table1
-              | Or_null.This table2 -> diff_or_null table1 table2
-            in
-            match diff_or_null' output_table current_table with
-            | Null -> ~output, ~added
-            | This output_table ->
-              let union_trie =
-                Column.union_total_hlist columns
-                  (Table.result_repr_union result_repr)
-              in
-              let[@inline] union_trie' table1 table2 =
-                match table1 with
-                | Or_null.Null -> table2
-                | Or_null.This table1 -> union_trie table1 table2
-              in
-              let current_table = union_trie' current_table output_table in
-              let diff_table = Table.Map.get_or_null tid added in
-              let diff_table = union_trie' diff_table output_table in
-              let output = Table.Map.set tid current_table output in
-              let added = Table.Map.set tid diff_table added in
-              ~output, ~added))
-        (~output, ~added) outputs
-    in
-    match binders with
-    | [] -> return ()
-    | binder :: binders ->
-      if bind_table binder diff then Executor.run executor;
-      if bind_table binder previous
-      then loop ~outputs ~executor ~previous ~diff ~output ~added binders
-      else return ()
-  in
-  loop ~outputs:cursor.cursor_outputs ~executor:cursor.executor ~previous ~diff
-    ~output ~added cursor.cursor_binders
-
 type ('p, !'v) with_parameters =
   { parameters : 'p Or_null_sender.hlist;
     cursor : 'v t
@@ -185,9 +129,13 @@ module Builder = struct
         let env, senders = bind_vars env ps in
         env, sender :: senders
 
+    let bind_input env (Bound_table (table, var)) =
+      let sender, receiver = Channel.create_or_null Or_null.null in
+      bind_var env var receiver, Bind_table (table, sender)
+
     let bind_inputs env tables =
       let env, tables =
-        Iarray.fold_left
+        List.fold_left
           (fun (env, binders) (Bound_table (table, var)) ->
             let sender, receiver = Channel.create_or_null Or_null.null in
             let binders = Bind_table (table, sender) :: binders in
@@ -244,7 +192,7 @@ module Builder = struct
 
     let bind_outputs env output_tables =
       let env, outputs =
-        Iarray.fold_left
+        List.fold_left
           (fun (env, cursor_outputs) (Bound_table (tid, table)) ->
             let output_ref = Bytecode.create_output () in
             let env = bind_output env table output_ref in
@@ -357,23 +305,21 @@ module With_parameters = struct
 
   let create_from_rule ?(callback = ref ignore) ?stats params rule =
     let open! Builder in
-    let { Planner.monotone_tables;
-          non_monotone_tables;
-          input_stages;
-          output_atoms;
-          output_tables
+    let { Planner.inputs;
+          outputs;
+          rule_plan =
+            { input_stages; output_atoms; rule_id = _; monotone_inputs = _ }
         } =
       Planner.plan_rule rule
     in
     let env = Env.create () in
-    let env, cursor_outputs = Env.bind_outputs env output_tables in
+    let env, cursor_outputs = Env.bind_outputs env outputs in
     let env, parameters = Env.bind_vars env params in
-    let env, cursor_binders = Env.bind_inputs env monotone_tables in
-    let env, cursor_naive_binders = Env.bind_inputs env non_monotone_tables in
+    let env, cursor_naive_binders = Env.bind_inputs env inputs in
     let executor = create_executor ~stats env input_stages output_atoms in
     { parameters;
       cursor =
-        { cursor_binders;
+        { cursor_binders = [];
           cursor_naive_binders;
           cursor_outputs;
           executor;
@@ -389,4 +335,263 @@ module With_parameters = struct
   let naive_iter { parameters; cursor } ps db f =
     Or_null_sender.send_hlist parameters ps;
     naive_iter cursor db f
+end
+
+module Incremental = struct
+  type monotone_input =
+    | Monotone_input : _ Or_null_receiver.t -> monotone_input
+
+  type guarded_executor =
+    { executor : Executor.t;
+      rule_id : int;
+      monotone_inputs : monotone_input list;
+          (* Only run if all the monotone inputs are non-null. *)
+      stats : Bytecode.stats option
+    }
+
+  module Sender_and_executors_map = Table.Id.Map.Make (struct
+    type 'a t = 'a Or_null_sender.t * guarded_executor list
+  end)
+
+  type t =
+    { current_inputs : binder list;
+      outputs : output list;
+      initial_executors : guarded_executor list;
+      previous_inputs : binder list;
+      incremental_executors : Sender_and_executors_map.t;
+      rules : Lang.rule iarray
+    }
+
+  let create_executors ~with_stats env plans =
+    List.map
+      (fun { Planner.input_stages; output_atoms; rule_id; monotone_inputs } ->
+        let monotone_inputs =
+          List.map
+            (fun (Lang.Variable.Any monotone_input) ->
+              let receiver = Builder.Env.must_be_bound env monotone_input in
+              Monotone_input receiver.value)
+            monotone_inputs
+        in
+        let stats =
+          if with_stats then Some (Bytecode.create_stats ()) else None
+        in
+        { executor =
+            Builder.create_executor ~stats env input_stages output_atoms;
+          monotone_inputs;
+          rule_id;
+          stats
+        })
+      plans
+
+  let from_rules ?(with_stats = false) rules =
+    let open! Builder in
+    let { Planner.initial_plans;
+          incremental_plans;
+          current_inputs;
+          previous_inputs;
+          outputs
+        } =
+      Planner.plan_incremental rules
+    in
+    let env = Env.create () in
+    let env, current_inputs = Env.bind_inputs env current_inputs in
+    let env, outputs = Env.bind_outputs env outputs in
+    let initial_executors = create_executors ~with_stats env initial_plans in
+    let env, previous_inputs = Env.bind_inputs env previous_inputs in
+    let incremental_executors =
+      List.fold_left
+        (fun incremental_executors (delta, plans) ->
+          let env, Bind_table (tid, sender) = Env.bind_input env delta in
+          let executors = create_executors ~with_stats env plans in
+          Sender_and_executors_map.add tid (sender, executors)
+            incremental_executors)
+        Sender_and_executors_map.empty incremental_plans
+    in
+    { current_inputs;
+      outputs;
+      initial_executors;
+      previous_inputs;
+      incremental_executors;
+      rules = Iarray.of_list rules
+    }
+
+  type rule_stats =
+    { num_iterations : int;
+      num_outputs : int;
+      total_time : float
+    }
+
+  let print_rule_stats ppf stats =
+    if stats.num_iterations = 0
+    then Format.fprintf ppf "---"
+    else
+      Format.fprintf ppf
+        "%d iteration(s) (total: %f, mean: %f), producing %d output(s) \
+         (average: %f, average time: %f)"
+        stats.num_iterations stats.total_time
+        (stats.total_time /. float stats.num_iterations)
+        stats.num_outputs
+        (float stats.num_outputs /. float stats.num_iterations)
+        (stats.total_time /. float stats.num_outputs)
+
+  let compare_stats stats1 stats2 =
+    Float.compare
+      (stats1.total_time /. float (stats1.num_outputs + 1))
+      (stats2.total_time /. float (stats2.num_outputs + 1))
+
+  let zero_stats = { num_iterations = 0; num_outputs = 0; total_time = 0. }
+
+  let add_stats stats1 stats2 =
+    { num_iterations = stats1.num_iterations + stats2.num_iterations;
+      num_outputs = stats1.num_outputs + stats2.num_outputs;
+      total_time = stats1.total_time +. stats2.total_time
+    }
+
+  let get_stats stats =
+    { num_iterations = Bytecode.num_iterations stats;
+      num_outputs = Bytecode.num_outputs stats;
+      total_time = Bytecode.total_time stats
+    }
+
+  type incremental_stats =
+    { rule : Lang.rule;
+      initial_stats : rule_stats;
+      incremental_stats : (string * rule_stats) list  (** Per table in [diff] *)
+    }
+
+  let print_incremental_stats ppf { rule; initial_stats; incremental_stats } =
+    let total_stats =
+      List.fold_left
+        (fun total_stats (_, stats) -> add_stats total_stats stats)
+        initial_stats incremental_stats
+    in
+    Format.fprintf ppf
+      "@[<v 2>@[Rule produced %d outputs in %fs (mean: %fs):@]@ "
+      total_stats.num_outputs total_stats.total_time
+      (total_stats.total_time /. float total_stats.num_outputs);
+    Lang.print_rule ppf rule;
+    Format.fprintf ppf "@ @[<v 2>Initial run:@ @[%a@]@]@ " print_rule_stats
+      initial_stats;
+    Format.pp_print_list ~pp_sep:Format.pp_print_space
+      (fun ppf (table, stats) ->
+        Format.fprintf ppf "@[<v 2>From new %s facts:@ @[%a@]@]" table
+          print_rule_stats stats)
+      ppf incremental_stats;
+    Format.fprintf ppf "@]"
+
+  let collect_stats { initial_executors; incremental_executors; rules; _ } =
+    let initial_stats = Array.make (Iarray.length rules) zero_stats in
+    List.iter
+      (fun { rule_id; stats; _ } ->
+        match stats with
+        | Some stats when Bytecode.num_iterations stats > 0 ->
+          initial_stats.(rule_id)
+            <- add_stats (get_stats stats) initial_stats.(rule_id)
+        | _ -> ())
+      initial_executors;
+    let incremental_stats =
+      Array.init (Iarray.length rules) (fun _ -> Numbers.Int.Tbl.create 0)
+    in
+    Sender_and_executors_map.iter
+      (fun (B (tid, (_, executors))) ->
+        List.iter
+          (fun { rule_id; stats; _ } ->
+            match stats with
+            | Some stats when Bytecode.num_iterations stats > 0 -> (
+              let stats_per_table = incremental_stats.(rule_id) in
+              match Numbers.Int.Tbl.find stats_per_table (Table.Id.uid tid) with
+              | exception Not_found ->
+                Numbers.Int.Tbl.add stats_per_table (Table.Id.uid tid)
+                  (Table.Id.name tid, get_stats stats)
+              | name, other_stats ->
+                Numbers.Int.Tbl.replace stats_per_table (Table.Id.uid tid)
+                  (name, add_stats other_stats (get_stats stats)))
+            | _ -> ())
+          executors)
+      incremental_executors;
+    let stats = ref [] in
+    for rule_id = 0 to Iarray.length rules - 1 do
+      let rule = Iarray.get rules rule_id in
+      let initial_stats = initial_stats.(rule_id) in
+      let incremental_stats =
+        incremental_stats.(rule_id)
+        |> Numbers.Int.Tbl.to_list |> List.map snd
+        |> List.sort (fun (_, stats1) (_, stats2) ->
+            compare_stats stats1 stats2)
+      in
+      if
+        not (initial_stats.num_iterations = 0 && List.is_empty incremental_stats)
+      then stats := { rule; initial_stats; incremental_stats } :: !stats
+    done;
+    !stats
+
+  let[@inline] seminaive_run
+      { current_inputs;
+        outputs;
+        initial_executors = _;
+        previous_inputs;
+        incremental_executors;
+        rules = _
+      } ~previous ~diff ~current ~output ~added =
+    bind_table_list current_inputs current;
+    bind_table_list previous_inputs previous;
+    clear_outputs outputs;
+    Fun.protect ~finally:(fun () ->
+        clear_outputs outputs;
+        unbind_table_list current_inputs;
+        unbind_table_list previous_inputs)
+    @@ fun () ->
+    Sender_and_executors_map.iter
+      (fun (B (tid, (sender, executors))) ->
+        if bind_table (Bind_table (tid, sender)) diff
+        then
+          Fun.protect ~finally:(fun () ->
+              unbind_table (Bind_table (tid, sender)))
+          @@ fun () ->
+          List.iter
+            (fun { executor; monotone_inputs; rule_id = _; stats = _ } ->
+              if
+                List.for_all
+                  (fun (Monotone_input receiver) ->
+                    Or_null.is_this (Channel.recv_or_null receiver))
+                  monotone_inputs
+              then Executor.run executor)
+            executors)
+      incremental_executors;
+    List.fold_left
+      (fun (~output, ~added) (Output_table (tid, output_ref)) ->
+        match Bytecode.get_and_clear_output output_ref with
+        | Null -> ~output, ~added
+        | This output_table -> (
+          let columns = Table.Id.columns tid in
+          let result_repr = Table.Id.result_repr tid in
+          let current_table = Table.Map.get_or_null tid output in
+          let diff_or_null =
+            Column.diff_or_null_hlist columns
+              (Table.result_repr_diff_or_null result_repr)
+          in
+          let[@inline] diff_or_null' table1 table2 =
+            match table2 with
+            | Or_null.Null -> Or_null.this table1
+            | Or_null.This table2 -> diff_or_null table1 table2
+          in
+          match diff_or_null' output_table current_table with
+          | Null -> ~output, ~added
+          | This output_table ->
+            let union_trie =
+              Column.union_total_hlist columns
+                (Table.result_repr_union result_repr)
+            in
+            let[@inline] union_trie' table1 table2 =
+              match table1 with
+              | Or_null.Null -> table2
+              | Or_null.This table1 -> union_trie table1 table2
+            in
+            let current_table = union_trie' current_table output_table in
+            let diff_table = Table.Map.get_or_null tid added in
+            let diff_table = union_trie' diff_table output_table in
+            let output = Table.Map.set tid current_table output in
+            let added = Table.Map.set tid diff_table added in
+            ~output, ~added))
+      (~output, ~added) outputs
 end

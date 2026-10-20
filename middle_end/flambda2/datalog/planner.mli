@@ -73,14 +73,33 @@ type head_atom =
       * 'k Term.hlist
       -> head_atom
 
-type plan =
-  { monotone_tables : bound_table iarray;
-    non_monotone_tables : bound_table iarray;
+type rule_plan =
+  { rule_id : int;
+        (** Index in the list of rules provided to [plan_incremental], or [0]
+            for [plan_rule]. *)
+    monotone_inputs : Variable.t_ list;
     input_stages : stage iarray;
-    output_atoms : head_atom iarray;
-    output_tables : bound_table iarray
+    output_atoms : head_atom iarray
   }
+
+type plan =
+  { rule_plan : rule_plan;
+    inputs : bound_table list;
+    outputs : bound_table list
+  }
+
+val print_rule_plan : Format.formatter -> rule_plan -> unit
 
 val print_plan : Format.formatter -> plan -> unit
 
 val plan_rule : rule -> plan
+
+type incremental_plan =
+  { initial_plans : rule_plan list;
+    incremental_plans : (bound_table * rule_plan list) list;
+    current_inputs : bound_table list;
+    previous_inputs : bound_table list;
+    outputs : bound_table list
+  }
+
+val plan_incremental : rule list -> incremental_plan
